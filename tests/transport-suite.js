@@ -475,8 +475,8 @@ function spawnServer(ports) {
     PORT: String(ports.api),
     BIND_HOST: "127.0.0.1",
     UDS_PORT: String(ports.mcp),
-    UDS_PATH: path.join(TMP, "mcp.sock"),
-    OPENAI_UDS_PATH: path.join(TMP, "openai.sock"),
+    UDS: path.join(TMP, "mcp.sock"),
+    UDS_OPENAI: "1",
     GRPC_PORT: String(ports.grpc),
     HTTPS_PORT: String(ports.https),
     HTTPS_CERT_PATH: path.join(TMP, "cert.pem"),
@@ -561,7 +561,7 @@ async function main() {
     grpc: await freePort(),
     https: await freePort(),
   };
-  const udsPath = path.join(TMP, "openai.sock");
+  const udsPath = path.join(TMP, "mcp.sock");
   const server = spawnServer(ports);
 
   try {
@@ -610,7 +610,7 @@ async function main() {
     }
 
     const stdio = startStdio(
-      Object.assign({}, process.env, { OPENAI_UDS_PATH: udsPath }),
+      Object.assign({}, process.env, { UDS: udsPath }),
     );
     try {
       stdio.send(chatBody(false));

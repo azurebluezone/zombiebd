@@ -6,7 +6,7 @@
  */
 module.exports = {
   id: "security-hero",
-  name: "সিকিউরিটি হিরো - বাবলু",
+  name: "\u09b8\u09bf\u0995\u09bf\u0989\u09b0\u09bf\u099f\u09bf \u09b9\u09bf\u09b0\u09cb - \u09ac\u09be\u09ac\u09b2\u09c1",
   role: "security",
   expertise: "security audit, vulnerability detection, secure coding, OWASP, SQL injection, XSS, CSRF, authentication, data protection",
   priority: 3,

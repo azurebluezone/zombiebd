@@ -259,47 +259,47 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;m
 </div>
 <div class="langs">
 <button class="lang on" onclick="L('en')">English</button>
-<button class="lang" onclick="L('bn')">বাংলা</button>
+<button class="lang" onclick="L('bn')">\u09ac\u09be\u0982\u09b2\u09be</button>
 </div>
 <div class="body">
 <div class="box info">
-<b data-en="How it works" data-bn="কিভাবে কাজ করে">How it works</b>
-<span data-en="Enter your Facebook Conversion API token. Saved in browser only." data-bn="Facebook Conversion API টোকেন দিন। শুধু ব্রাউজারে সংরক্ষিত।">Enter your Facebook Conversion API token. Saved in browser only.</span>
+<b data-en="How it works" data-bn="\u0995\u09bf\u09ad\u09be\u09ac\u09c7 \u0995\u09be\u099c \u0995\u09b0\u09c7">How it works</b>
+<span data-en="Enter your Facebook Conversion API token. Saved in browser only." data-bn="Facebook Conversion API \u099f\u09cb\u0995\u09c7\u09a8 \u09a6\u09bf\u09a8। \u09b6\u09c1\u09a7\u09c1 \u09ac\u09cd\u09b0\u09be\u0989\u099c\u09be\u09b0\u09c7 \u09b8\u0982\u09b0\u0995\u09cd\u09b7\u09bf\u09a4।">Enter your Facebook Conversion API token. Saved in browser only.</span>
 </div>
 <div class="field">
-<label data-en="Conversion API Token" data-bn="Conversion API টোকেন">Conversion API Token</label>
+<label data-en="Conversion API Token" data-bn="Conversion API \u099f\u09cb\u0995\u09c7\u09a8">Conversion API Token</label>
 <input type="text" id="tk" placeholder="Paste token here...">
-<p class="hint" data-en="From: Developers Portal → Graph API Explorer" data-bn="পান: Developers Portal → Graph API Explorer">From: Developers Portal → Graph API Explorer</p>
+<p class="hint" data-en="From: Developers Portal → Graph API Explorer" data-bn="\u09aa\u09be\u09a8: Developers Portal → Graph API Explorer">From: Developers Portal → Graph API Explorer</p>
 </div>
 <div class="field">
-<label data-en="Validity (Hours)" data-bn="মেয়াদ (ঘন্টা)">Validity (Hours)</label>
+<label data-en="Validity (Hours)" data-bn="\u09ae\u09c7\u09af\u09bc\u09be\u09a6 (\u0998\u09a8\u09cd\u099f\u09be)">Validity (Hours)</label>
 <input type="number" id="dur" value="24" min="1" max="720">
-<p class="hint" data-en="Max 720h (30 days). After expiry re-enter." data-bn="সর্বোচ্চ ৭২০ ঘন্টা। মেয়াদ শেষে আবার দিতে হবে।">Max 720h (30 days). After expiry re-enter.</p>
+<p class="hint" data-en="Max 720h (30 days). After expiry re-enter." data-bn="\u09b8\u09b0\u09cd\u09ac\u09cb\u099a\u09cd\u099a \u09ed\u09e8\u09e6 \u0998\u09a8\u09cd\u099f\u09be। \u09ae\u09c7\u09af\u09bc\u09be\u09a6 \u09b6\u09c7\u09b7\u09c7 \u0986\u09ac\u09be\u09b0 \u09a6\u09bf\u09a4\u09c7 \u09b9\u09ac\u09c7।">Max 720h (30 days). After expiry re-enter.</p>
 </div>
 <div class="box warn">
-<b data-en="Important" data-bn="গুরুত্বপূর্ণ">Important</b>
-<span data-en="Clear browser data = Token lost. Must re-enter." data-bn="ব্রাউজার ডাটা মুছলে = টোকেন হারিয়ে যাবে।">Clear browser data = Token lost. Must re-enter.</span>
+<b data-en="Important" data-bn="\u0997\u09c1\u09b0\u09c1\u09a4\u09cd\u09ac\u09aa\u09c2\u09b0\u09cd\u09a3">Important</b>
+<span data-en="Clear browser data = Token lost. Must re-enter." data-bn="\u09ac\u09cd\u09b0\u09be\u0989\u099c\u09be\u09b0 \u09a1\u09be\u099f\u09be \u09ae\u09c1\u099b\u09b2\u09c7 = \u099f\u09cb\u0995\u09c7\u09a8 \u09b9\u09be\u09b0\u09bf\u09af\u09bc\u09c7 \u09af\u09be\u09ac\u09c7।">Clear browser data = Token lost. Must re-enter.</span>
 </div>
 <div class="terms">
-<b data-en="Terms & Conditions" data-bn="শর্তাবলী">Terms & Conditions</b>
+<b data-en="Terms & Conditions" data-bn="\u09b6\u09b0\u09cd\u09a4\u09be\u09ac\u09b2\u09c0">Terms & Conditions</b>
 <ul>
-<li data-en="Token stored in browser only" data-bn="টোকেন শুধু ব্রাউজারে সংরক্ষিত">Token stored in browser only</li>
-<li data-en="Never sent to external servers" data-bn="বহিঃস্থ সার্ভারে পাঠানো হয় না">Never sent to external servers</li>
-<li data-en="Use at your own risk" data-bn="নিজ ঝুঁকিতে ব্যবহার করুন">Use at your own risk</li>
+<li data-en="Token stored in browser only" data-bn="\u099f\u09cb\u0995\u09c7\u09a8 \u09b6\u09c1\u09a7\u09c1 \u09ac\u09cd\u09b0\u09be\u0989\u099c\u09be\u09b0\u09c7 \u09b8\u0982\u09b0\u0995\u09cd\u09b7\u09bf\u09a4">Token stored in browser only</li>
+<li data-en="Never sent to external servers" data-bn="\u09ac\u09b9\u09bf\u0983\u09b8\u09cd\u09a5 \u09b8\u09be\u09b0\u09cd\u09ad\u09be\u09b0\u09c7 \u09aa\u09be\u09a0\u09be\u09a8\u09cb \u09b9\u09af\u09bc \u09a8\u09be">Never sent to external servers</li>
+<li data-en="Use at your own risk" data-bn="\u09a8\u09bf\u099c \u099d\u09c1\u0981\u0995\u09bf\u09a4\u09c7 \u09ac\u09cd\u09af\u09ac\u09b9\u09be\u09b0 \u0995\u09b0\u09c1\u09a8">Use at your own risk</li>
 </ul>
 </div>
 <div class="box danger">
-<b data-en="Disclaimer" data-bn="দায়মুক্তি">Disclaimer</b>
-<span data-en="For educational purposes. We collect no data." data-bn="শিক্ষামূলক। আমরা ডাটা সংগ্রহ করি না।">For educational purposes. We collect no data.</span>
+<b data-en="Disclaimer" data-bn="\u09a6\u09be\u09af\u09bc\u09ae\u09c1\u0995\u09cd\u09a4\u09bf">Disclaimer</b>
+<span data-en="For educational purposes. We collect no data." data-bn="\u09b6\u09bf\u0995\u09cd\u09b7\u09be\u09ae\u09c2\u09b2\u0995। \u0986\u09ae\u09b0\u09be \u09a1\u09be\u099f\u09be \u09b8\u0982\u0997\u09cd\u09b0\u09b9 \u0995\u09b0\u09bf \u09a8\u09be।">For educational purposes. We collect no data.</span>
 </div>
 <div class="btns">
-<button class="btn p" onclick="save()" data-en="Save Token" data-bn="সংরক্ষণ করুন">Save Token</button>
-<button class="btn d" onclick="clr()" data-en="Clear" data-bn="মুছুন">Clear</button>
+<button class="btn p" onclick="save()" data-en="Save Token" data-bn="\u09b8\u0982\u09b0\u0995\u09cd\u09b7\u09a3 \u0995\u09b0\u09c1\u09a8">Save Token</button>
+<button class="btn d" onclick="clr()" data-en="Clear" data-bn="\u09ae\u09c1\u099b\u09c1\u09a8">Clear</button>
 </div>
 <div class="msg" id="msg"></div>
 <div class="saved" id="svd">
-<h4 data-en="Token Saved!" data-bn="টোকেন সংরক্ষিত!">Token Saved!</h4>
-<p data-en="You can close this page." data-bn="পৃষ্ঠা বন্ধ করতে পারেন।">You can close this page.</p>
+<h4 data-en="Token Saved!" data-bn="\u099f\u09cb\u0995\u09c7\u09a8 \u09b8\u0982\u09b0\u0995\u09cd\u09b7\u09bf\u09a4!">Token Saved!</h4>
+<p data-en="You can close this page." data-bn="\u09aa\u09c3\u09b7\u09cd\u09a0\u09be \u09ac\u09a8\u09cd\u09a7 \u0995\u09b0\u09a4\u09c7 \u09aa\u09be\u09b0\u09c7\u09a8।">You can close this page.</p>
 <p id="exp"></p>
 </div>
 </div>
@@ -309,8 +309,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;m
 <script>
 let c='en';
 function L(l){c=l;document.querySelectorAll('[data-en]').forEach(e=>{e.textContent=e.getAttribute('data-'+l)});document.querySelectorAll('.lang').forEach(b=>b.classList.remove('on'));event.target.classList.add('on')}
-function save(){const t=document.getElementById('tk').value.trim(),d=parseInt(document.getElementById('dur').value)||24,m=document.getElementById('msg');if(!t){m.textContent=c==='bn'?'টোকেন দিন':'Enter token';m.className='msg err';return}const o={token:t,savedAt:new Date().toISOString(),expiresAt:new Date(Date.now()+d*36e5).toISOString(),duration:d};localStorage.setItem('fb_mcp_token',JSON.stringify(o));m.textContent=c==='bn'?'সফল!':'Saved!';m.className='msg ok';document.getElementById('svd').classList.add('show');document.getElementById('exp').textContent=(c==='bn'?'মেয়াদ: ':'Expires: ')+new Date(o.expiresAt).toLocaleString();document.getElementById('tk').value=''}
-function clr(){localStorage.removeItem('fb_mcp_token');document.getElementById('msg').textContent=c==='bn'?'মুছে ফেলা হয়েছে':'Cleared';document.getElementById('msg').className='msg ok';document.getElementById('svd').classList.remove('show')}
+function save(){const t=document.getElementById('tk').value.trim(),d=parseInt(document.getElementById('dur').value)||24,m=document.getElementById('msg');if(!t){m.textContent=c==='bn'?'\u099f\u09cb\u0995\u09c7\u09a8 \u09a6\u09bf\u09a8':'Enter token';m.className='msg err';return}const o={token:t,savedAt:new Date().toISOString(),expiresAt:new Date(Date.now()+d*36e5).toISOString(),duration:d};localStorage.setItem('fb_mcp_token',JSON.stringify(o));m.textContent=c==='bn'?'\u09b8\u09ab\u09b2!':'Saved!';m.className='msg ok';document.getElementById('svd').classList.add('show');document.getElementById('exp').textContent=(c==='bn'?'\u09ae\u09c7\u09af\u09bc\u09be\u09a6: ':'Expires: ')+new Date(o.expiresAt).toLocaleString();document.getElementById('tk').value=''}
+function clr(){localStorage.removeItem('fb_mcp_token');document.getElementById('msg').textContent=c==='bn'?'\u09ae\u09c1\u099b\u09c7 \u09ab\u09c7\u09b2\u09be \u09b9\u09af\u09bc\u09c7\u099b\u09c7':'Cleared';document.getElementById('msg').className='msg ok';document.getElementById('svd').classList.remove('show')}
 (function(){const s=localStorage.getItem('fb_mcp_token');if(s){const d=JSON.parse(s);if(new Date(d.expiresAt)>new Date()){document.getElementById('svd').classList.add('show');document.getElementById('exp').textContent='Expires: '+new Date(d.expiresAt).toLocaleString()}else localStorage.removeItem('fb_mcp_token')}})();
 </script>
 </body></html>`;

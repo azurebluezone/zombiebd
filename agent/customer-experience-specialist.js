@@ -6,7 +6,7 @@
  */
 module.exports = {
   id: "customer-experience-specialist",
-  name: "কাস্টমার এক্সপেরিয়েন্স স্পেশালিস্ট",
+  name: "\u0995\u09be\u09b8\u09cd\u099f\u09ae\u09be\u09b0 \u098f\u0995\u09cd\u09b8\u09aa\u09c7\u09b0\u09bf\u09af\u09bc\u09c7\u09a8\u09cd\u09b8 \u09b8\u09cd\u09aa\u09c7\u09b6\u09be\u09b2\u09bf\u09b8\u09cd\u099f",
   role: "customer-experience",
   expertise: "customer journey, UX, satisfaction, retention, support, customer feedback analysis, brand loyalty",
   priority: 8,

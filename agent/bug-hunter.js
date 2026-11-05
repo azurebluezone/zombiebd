@@ -6,7 +6,7 @@
  */
 module.exports = {
   id: "bug-hunter",
-  name: "বাগ হান্টার - জুয়েল",
+  name: "\u09ac\u09be\u0997 \u09b9\u09be\u09a8\u09cd\u099f\u09be\u09b0 - \u099c\u09c1\u09af\u09bc\u09c7\u09b2",
   role: "debugging",
   expertise: "bug detection, error analysis, debugging, root cause analysis, stack trace analysis, memory leak detection",
   priority: 2,

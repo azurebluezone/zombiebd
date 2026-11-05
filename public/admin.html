@@ -907,6 +907,9 @@
       <div class="nav-item" data-page="mcp" onclick="switchPage('mcp')">
         MCP & Tools
       </div>
+      <div class="nav-item" data-page="transport" onclick="switchPage('transport')">
+        Transport
+      </div>
       <div class="nav-item" data-page="ssot" onclick="switchPage('ssot')">
         SSOT Status
       </div>
@@ -1123,12 +1126,12 @@
             <span style="font-weight:600;font-size:14px;">Agent Chat</span>
             <select id="chatAgentSelect" onchange="onChatAgentChange()">
               <option value="mission">Mission (All Agents)</option>
-              <option value="code-guru">মনু — Architect</option>
-              <option value="bug-hunter">জারিন — Debugger</option>
-              <option value="security-hero">ব্রিশ্টি — Security</option>
-              <option value="perf-wizard">রাশেদ — Performance</option>
-              <option value="doc-king">হালিম — Documentation</option>
-              <option value="qa-tyrant">মজনু — QA</option>
+              <option value="code-guru">Manu — Architect</option>
+              <option value="bug-hunter">Jarin — Debugger</option>
+              <option value="security-hero">Brishti — Security</option>
+              <option value="perf-wizard">Rashed — Performance</option>
+              <option value="doc-king">Halim — Documentation</option>
+              <option value="qa-tyrant">Majnu — QA</option>
             </select>
             <select id="chatSessionSelect" onchange="loadChatSession(this.value)">
               <option value="">New Conversation</option>
@@ -1139,12 +1142,12 @@
           <div class="chat-messages" id="chatMessages">
             <div class="chat-msg agent">
               <div class="msg-sender">Mission Barisal</div>
-              নমস্কার! আমি Mission Barisal AI। কোন এজেন্টের সাথে কথা বলতে চান? উপরে সিলেক্ট করুন আর মেসেজ লিখুন।
+              Hello. I am Mission Barisal AI. Pick an agent above, then send a message.
               <div class="msg-time">just now</div>
             </div>
           </div>
           <div class="chat-input-area">
-            <input type="text" id="chatInput" placeholder="এজেন্টকে কিছু বলুন..." onkeydown="if(event.key==='Enter')sendChatMessage()">
+            <input type="text" id="chatInput" placeholder="Message the agent..." onkeydown="if(event.key==='Enter')sendChatMessage()">
             <button id="chatSendBtn" onclick="sendChatMessage()">Send</button>
           </div>
         </div>
@@ -1193,6 +1196,34 @@
         <div class="card">
           <div class="card-header"><h3>Tool Usage</h3></div>
           <div class="card-body" style="overflow-x:auto"><table><thead><tr><th>Tool</th><th>Calls</th><th>Errors</th><th>Last Used</th><th>Status</th></tr></thead><tbody id="toolUsageTable"><tr><td colspan="5"><div class="loading">Loading...</div></td></tr></tbody></table></div>
+        </div>
+      </div>
+
+      <!-- ═══ PAGE: TRANSPORT ═══ -->
+      <div class="page" id="page-transport">
+        <div class="stats-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px">
+          <div class="stat-card"><div class="stat-value" id="transportUdsStatus">—</div><div class="stat-label">UDS</div></div>
+          <div class="stat-card"><div class="stat-value" id="transportHttpStatus">—</div><div class="stat-label">HTTP</div></div>
+          <div class="stat-card"><div class="stat-value" id="transportGrpcStatus">—</div><div class="stat-label">gRPC</div></div>
+          <div class="stat-card"><div class="stat-value" id="transportProviderCount">—</div><div class="stat-label">Providers (not transports)</div></div>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <h3>Inbound Transports</h3>
+            <button class="refresh-btn" onclick="loadTransports()">Reload</button>
+          </div>
+          <div class="card-body">
+            <p style="font-size:12px;color:var(--text2);margin:0 0 12px">
+              Copy a command, <code>cd</code> into any project folder, and run it.
+              UDS is local IPC only: the client must pass <code>--unix-socket</code>.
+              Models and providers are routing targets, not transports.
+            </p>
+            <div id="transportList"><div class="loading">Loading transports...</div></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header"><h3>UDS path contract</h3></div>
+          <div class="card-body" id="transportUdsDetail"><div class="loading">Loading UDS state...</div></div>
         </div>
       </div>
 
@@ -1344,6 +1375,7 @@
       const titles = { dashboard:'Dashboard', agents:'Agents', models:'Models',
         sessions:'Sessions', logs:'Runtime Logs', providers:'Providers',
         chat:'Agent Chat', usage:'Usage Stats', mcp:'MCP & Tools',
+        transport:'Transport',
         ssot:'SSOT Status', config:'Config', about:'About' };
       document.getElementById('pageTitle').textContent = titles[page] || page;
 
@@ -1360,6 +1392,7 @@
       else if (page === 'providers') loadProviders();
       else if (page === 'usage') loadUsageStats();
       else if (page === 'mcp') loadMcpTools();
+      else if (page === 'transport') loadTransports();
       else if (page === 'ssot') loadSsotStatus();
       else if (page === 'config') loadConfig();
       else if (page === 'about') loadAbout();
@@ -2088,7 +2121,7 @@
       if (!sessionId) {
         currentChatSessionId = 'session_' + Date.now();
         document.getElementById('chatMessages').innerHTML =
-          '<div class="chat-msg agent"><div class="msg-sender">Mission Barisal</div>নতুন কথা শুরু করুন! <div class="msg-time">just now</div></div>';
+          '<div class="chat-msg agent"><div class="msg-sender">Mission Barisal</div>New conversation started. <div class="msg-time">just now</div></div>';
         return;
       }
       currentChatSessionId = sessionId;
@@ -2108,12 +2141,12 @@
     }
 
     function clearChatHistory() {
-      if (!confirm('সব চ্যাট হিস্টোরি ডিলিট করবেন?')) return;
+      if (!confirm('Delete all chat history?')) return;
       chatSessions = {};
       localStorage.removeItem(CHAT_STORAGE_KEY);
       currentChatSessionId = 'session_' + Date.now();
       document.getElementById('chatMessages').innerHTML =
-        '<div class="chat-msg agent"><div class="msg-sender">Mission Barisal</div>হিস্টোরি ক্লিয়ার! নতুন কথা শুরু করুন।<div class="msg-time">just now</div></div>';
+        '<div class="chat-msg agent"><div class="msg-sender">Mission Barisal</div>History cleared. New conversation started.<div class="msg-time">just now</div></div>';
       refreshChatSessionList();
     }
 
@@ -2142,7 +2175,7 @@
       }
 
       // Add user message
-      addChatMessage('user', msg, 'আপনি');
+      addChatMessage('user', msg, 'You');
       input.value = '';
 
       // Set agent busy
@@ -2448,6 +2481,94 @@
     // ═══════════════════════════════════════════════
     //  MCP & TOOLS PAGE
     // ═══════════════════════════════════════════════
+    function escTransport(value) {
+      return String(value == null ? '' : value).replace(/[&<>"']/g, (c) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+      }[c]));
+    }
+
+    function renderTransport(t) {
+      const commands = t.commands
+        ? Object.keys(t.commands).map((name) => ({ name, command: t.commands[name] }))
+        : [{ name: 'command', command: t.command || '' }];
+      const meta = [];
+      if (t.endpoint) meta.push('<div><span style="color:var(--text2)">Endpoint</span> <code>' + escTransport(t.endpoint) + '</code></div>');
+      if (t.bound_path) meta.push('<div><span style="color:var(--text2)">Bound path</span> <code>' + escTransport(t.bound_path) + '</code></div>');
+      if (Array.isArray(t.paths) && t.paths.length) {
+        meta.push('<div><span style="color:var(--text2)">Candidates</span> <code>' +
+          escTransport(t.paths.join('  ->  ')) + '</code></div>');
+      }
+      if (t.fallback_used) meta.push('<div style="color:var(--amber)">Fallback path is active</div>');
+      return '<div style="border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:12px">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px">' +
+        '<strong>' + escTransport(t.label || t.id) + '</strong>' +
+        '<span class="badge">' + escTransport(t.status) + '</span></div>' +
+        '<div style="display:grid;gap:4px;font-size:12px;margin-top:8px">' + meta.join('') + '</div>' +
+        commands.map((c) =>
+          '<div style="margin-top:10px">' +
+          '<div style="display:flex;justify-content:space-between;align-items:center">' +
+          '<span style="font-size:11px;color:var(--text2)">' + escTransport(c.name) + '</span>' +
+          '<button class="refresh-btn" onclick="copyTransportCommand(this)">Copy</button></div>' +
+          '<pre style="margin:6px 0 0;padding:10px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;' +
+          'white-space:pre-wrap;word-break:break-word;user-select:all;font-size:12px;line-height:1.5">' +
+          escTransport(c.command) + '</pre></div>'
+        ).join('') +
+        '</div>';
+    }
+
+    async function loadTransports() {
+      const list = document.getElementById('transportList');
+      const detail = document.getElementById('transportUdsDetail');
+      list.innerHTML = '<div class="loading">Loading transports...</div>';
+      try {
+        const res = await fetch(API + '/api/transports');
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || ('HTTP ' + res.status));
+        const byId = {};
+        (data.transports || []).forEach((t) => { byId[t.id] = t; });
+        document.getElementById('transportUdsStatus').textContent = (byId.uds && byId.uds.status) || '—';
+        document.getElementById('transportHttpStatus').textContent = (byId.http && byId.http.status) || '—';
+        document.getElementById('transportGrpcStatus').textContent = (byId.grpc && byId.grpc.status) || '—';
+        document.getElementById('transportProviderCount').textContent = (data.providers && data.providers.count) || 0;
+        list.innerHTML = (data.transports || []).map(renderTransport).join('');
+        const uds = byId.uds || {};
+        detail.innerHTML = '<div style="display:grid;gap:6px;font-size:12px">' +
+          '<div><strong>Configured candidates</strong>: <code>' + escTransport((uds.paths || []).join('  ->  ')) + '</code></div>' +
+          '<div><strong>Bound</strong>: <code>' + escTransport(uds.bound_path || 'none') + '</code></div>' +
+          '<div><strong>Fallback used</strong>: ' + (uds.fallback_used ? 'yes' : 'no') + '</div>' +
+          '<div><strong>Protocols</strong>: ' + escTransport((uds.protocols || []).join(', ')) + '</div>' +
+          '<div><strong>Working directory</strong>: <code>' + escTransport(data.working_dir || '') + '</code></div>' +
+          '<div style="color:var(--text2)">' + escTransport((data.providers && data.providers.note) || '') + '</div>' +
+          '</div>';
+      } catch (err) {
+        list.innerHTML = '<div style="color:var(--red)">Transport load failed: ' + escTransport(err.message) + '</div>';
+        detail.innerHTML = '';
+      }
+    }
+
+    function copyTransportCommand(btn) {
+      const pre = btn.parentElement && btn.parentElement.nextElementSibling;
+      const text = pre ? pre.textContent : '';
+      const done = () => {
+        const old = btn.textContent;
+        btn.textContent = 'Copied';
+        setTimeout(() => { btn.textContent = old; }, 1200);
+      };
+      const fallback = () => {
+        const area = document.createElement('textarea');
+        area.value = text;
+        document.body.appendChild(area);
+        area.select();
+        try { document.execCommand('copy'); done(); } catch (_) {}
+        area.remove();
+      };
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(text).then(done).catch(fallback);
+      } else {
+        fallback();
+      }
+    }
+
     async function loadMcpTools() {
       const [data, toolsRes] = await Promise.all([
         apiFetch('/api/admin/mcp-connections'),

@@ -83,7 +83,7 @@ async function main() {
 
   if (readme.includes("Mission Barisal")) pass("name-mission-barisal");
   else fail("README does not name Mission Barisal");
-  for (const forbidden of ["Monu The Builder", "মনুদা বিল্ডার"]) {
+  for (const forbidden of ["Monu The Builder", "\u09ae\u09a8\u09c1\u09a6\u09be \u09ac\u09bf\u09b2\u09cd\u09a1\u09be\u09b0"]) {
     if (readme.includes(forbidden) || spec.includes(forbidden)) fail("stale name: " + forbidden);
   }
   const node24Claim = /Node(?:\.js)?[^\n]{0,30}(?:≥|>=|24\s*\+|24 or newer)/i.test(readme);

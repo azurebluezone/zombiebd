@@ -258,17 +258,39 @@ const UDS_PORT = parseInt(
   "5150",
   10,
 );
-const UDS_PATH = path.resolve(
-  PROJECT_ROOT,
-  process.env.UDS_PATH || path.join(os.tmpdir(), "zombiecoder", "mcp.sock"),
+function parseUdsCandidates(value) {
+  const list = String(value || "").split(",");
+  const out = [];
+  const seen = new Set();
+  for (const item of list) {
+    const text = String(item || "").trim();
+    if (!text) continue;
+    const resolved = path.resolve(PROJECT_ROOT, text);
+    if (seen.has(resolved)) continue;
+    seen.add(resolved);
+    out.push(resolved);
+  }
+  return out;
+}
+
+// One option owns every inbound UDS path. Comma-separated candidates bind in
+// order: the first usable path wins and the next one is the immediate fallback.
+const UDS_PATHS = parseUdsCandidates(
+  process.env.UDS ||
+  process.env.UDS_PATH ||
+  path.join(os.tmpdir(), "zombiecoder", "mcp.sock"),
 );
-let udsServer = null; // MCP UDS server (newline JSON-RPC)
-let openaiUdsServer = null; // OpenAI HTTP over UDS
+const UDS_PATH = UDS_PATHS[0];
+let udsServer = null; // legacy MCP-only UDS server
+let udsGateway = null; // unified MCP + OpenAI HTTP over one UDS
+let openaiUdsServer = null; // legacy separate OpenAI HTTP over UDS
 // Socket ownership is tracked by inode, not by path. On a restart the old
 // process can outlive the new listener for a few milliseconds; an unguarded
 // unlink then deletes the *new* socket path and leaves a live-but-unreachable
 // listener behind (reproduced after the Caddy install restart).
 let udsBoundIno = 0;
+let udsBoundPath = "";
+let udsFallbackUsed = false;
 let openaiUdsPath = "";
 let openaiUdsIno = 0;
 let httpsServer = null; // optional in-process TLS listener
@@ -305,7 +327,10 @@ function updateRuntimeConfig(updates) {
     RUNTIME_CONFIG.logLevel = updates.logLevel;
   }
   if (updates.allowedOrigins && Array.isArray(updates.allowedOrigins)) {
-    RUNTIME_CONFIG.allowedOrigins = updates.allowedOrigins;
+    RUNTIME_CONFIG.allowedOrigins = Array.from(new Set([
+      ...(DOMAIN_CFG.corsOrigins || []),
+      ...updates.allowedOrigins,
+    ]));
   }
   if (typeof updates.antiDoteEnabled === "boolean") {
     RUNTIME_CONFIG.antiDoteEnabled = updates.antiDoteEnabled;
@@ -345,6 +370,17 @@ function loadRuntimeConfig() {
     if (Array.isArray(saved.allowedOrigins)) {
       RUNTIME_CONFIG.allowedOrigins = saved.allowedOrigins;
     }
+    // The effective allowlist is derived origins + persisted origins + the
+    // origin of the configured session verifier. This keeps a local verifier
+    // on :3000 usable even when the SQLite row predates it.
+    const merged = new Set([
+      ...(DOMAIN_CFG.corsOrigins || []),
+      ...(RUNTIME_CONFIG.allowedOrigins || []),
+    ]);
+    try {
+      merged.add(new URL(RUNTIME_CONFIG.sessionVerifyUrl).origin);
+    } catch (_) { /* empty or relative verifier URL */ }
+    RUNTIME_CONFIG.allowedOrigins = Array.from(merged);
     RUNTIME_CONFIG.updatedAt = new Date().toISOString();
     log("INFO", "RUNTIME_CONFIG_LOADED", { keys: Object.keys(saved) });
   } catch (e) {
@@ -653,7 +689,7 @@ Check criteria:
 7. PROOF & EVIDENCE: Does the response provide verifiable proof for each claim? Check for specific references to files, line numbers, search results, SSOT data, syllabus entries, or other concrete evidence. Opinions without evidence = FAIL.
 8. TEST CLAIMS (NEW): If the agent claims a code change "works", "fixes", or "solves" — check if test evidence is provided. "It will work" without proof = MISALIGNED with truth.
 9. CODE SAFETY (NEW): If suggesting code modifications, check if specific files and lines are mentioned. Vague suggestions without file paths = UNSAFE.
-10. KNOWLEDGE REFERENCE (NEW): If the response mentions technical concepts, frameworks, or patterns — check if the agent referenced its syllabus.md or memory.json. If the agent claims knowledge without source (SSOT/syllabus/web search), flag it as unverfied. "Syllabus অনুযায়ী" or "memory থেকে পাওয়া" = GOOD. Unexplained expert claims = BAD.
+10. KNOWLEDGE REFERENCE (NEW): If the response mentions technical concepts, frameworks, or patterns — check if the agent referenced its syllabus.md or memory.json. If the agent claims knowledge without source (SSOT/syllabus/web search), flag it as unverfied. "Syllabus \u0985\u09a8\u09c1\u09af\u09be\u09df\u09c0" or "memory \u09a5\u09c7\u0995\u09c7 \u09aa\u09be\u0993\u09df\u09be" = GOOD. Unexplained expert claims = BAD.
 
 SCORING:
 - 100 = perfect alignment, directly answers user input with verifiable content AND provides evidence for claims
@@ -676,11 +712,11 @@ const PROOF_CHECK_PROMPT = `You are a strict evidence verifier. Your job is to c
 
 Check criteria:
 1. EVIDENCE: Does the response contain specific data, code analysis, search results, file contents, or explicit references? Opinions, guesses, and assumptions are NOT evidence.
-2. SOURCE CITATION: Does the response cite where information came from? (e.g., "SSOT অনুযায়ী", "web search ফলাফলে দেখা গেছে", "api.js এর লাইন ১৫০-তে দেখা যাচ্ছে")
+2. SOURCE CITATION: Does the response cite where information came from? (e.g., "SSOT \u0985\u09a8\u09c1\u09af\u09be\u09df\u09c0", "web search \u09ab\u09b2\u09be\u09ab\u09b2\u09c7 \u09a6\u09c7\u0996\u09be \u0997\u09c7\u099b\u09c7", "api.js \u098f\u09b0 \u09b2\u09be\u0987\u09a8 \u09e7\u09eb\u09e6-\u09a4\u09c7 \u09a6\u09c7\u0996\u09be \u09af\u09be\u099a\u09cd\u099b\u09c7")
 3. VERIFIABILITY: Can the claims be independently verified? If the response makes a claim without showing how it was derived, flag it.
-4. EMPTY ASSURANCES: Does the response use phrases like "আমি মনে করি", "probably", "I think", "maybe", "আমার ধারণা" without supporting evidence? These are RED FLAGS.
+4. EMPTY ASSURANCES: Does the response use phrases like "\u0986\u09ae\u09bf \u09ae\u09a8\u09c7 \u0995\u09b0\u09bf", "probably", "I think", "maybe", "\u0986\u09ae\u09be\u09b0 \u09a7\u09be\u09b0\u09a3\u09be" without supporting evidence? These are RED FLAGS.
 5. HALLUCINATION: Does the response invent facts, APIs, functions, or capabilities that don't exist in the provided context?
-6. TEST CLAIMS (NEW — STRICT): If the response claims a code change "works", "fixes", or "solves" a problem — it MUST provide test evidence. Phrases like "it will work", "this should fix", "এতে কাজ করবে" without test proof MUST be flagged. Valid test evidence = "tested with X input", "ran the code and got Y output", "verified with unit test Z", or explicit "UNTESTED" disclaimer.
+6. TEST CLAIMS (NEW — STRICT): If the response claims a code change "works", "fixes", or "solves" a problem — it MUST provide test evidence. Phrases like "it will work", "this should fix", "\u098f\u09a4\u09c7 \u0995\u09be\u099c \u0995\u09b0\u09ac\u09c7" without test proof MUST be flagged. Valid test evidence = "tested with X input", "ran the code and got Y output", "verified with unit test Z", or explicit "UNTESTED" disclaimer.
 7. CODE SAFETY: If the response suggests modifying code, verify it mentions WHICH files and lines to change. Unsafe = vague suggestions without file paths or awareness of existing code structure.
 
 SCORING:
@@ -950,11 +986,8 @@ const PROVIDER_CONFIG = {
     // Set OLLAMA_DIALECT=openai to route through {base}/v1/chat/completions.
     // Unset ⇒ "" (falsy) ⇒ adapterFor() falls through exactly as before.
     dialect: process.env.OLLAMA_DIALECT || "",
-    // UDS fast path: when OLLAMA_SOCKET is set (socat -> ollama:11434),
-    //    transport.js sends requests over the unix socket FIRST and falls
-    //    back to plain HTTP (this baseUrl) on connection errors only —
-    //    never on timeout (a slow local model must not be tried twice).
-    socketPath: process.env.OLLAMA_SOCKET || undefined,
+    // Outbound provider calls use the HTTP base URL. The gateway's UDS is an
+    // inbound transport; it is never reused as a provider socket.
     // CPU inference on a small box can exceed the 60s transport default while
     // still producing a valid answer. The budget is env-only, per provider.
     timeout: positiveIntEnv("OLLAMA_TIMEOUT_MS"),
@@ -1014,8 +1047,6 @@ function loadCustomProviders() {
     const models = modelsStr ? parseCustomModelsEnv(modelsStr) : ["*"];
 
     const providerId = "custom_" + num;
-    const socket =
-      process.env["CUSTOM_PROVIDER_" + num + "_SOCKET"] || "";
     // A CPU model can spend minutes on prefill; the cloud-shaped 60s default
     // aborted real answers. Budget is per provider, set by env only.
     const timeout = parseInt(
@@ -1038,7 +1069,6 @@ function loadCustomProviders() {
       type: type,
       models: models,
       custom: true,
-      socketPath: socket || undefined,
       ...(Number.isFinite(timeout) && timeout > 0 ? { timeout } : {}),
       ...(Number.isFinite(streamTimeout) && streamTimeout > 0 ? { streamTimeout } : {}),
       ...(Number.isFinite(maxPromptChars) && maxPromptChars > 0 ? { maxPromptChars } : {}),
@@ -2018,7 +2048,7 @@ function generateSSOT(rootDir, projectInfo) {
 - Agents MUST reference this SSOT.md when answering project-related questions.
 - If the user asks about the project code, agents should check this file first.
 - Any code changes recommendations should be based on the detected framework and tech stack above.
-- If information is not in SSOT, agents should say "এই তথ্য বর্তমানে SSOT এ নেই" and suggest adding it.
+- If information is not in SSOT, agents should say "\u098f\u0987 \u09a4\u09a5\u09cd\u09af \u09ac\u09b0\u09cd\u09a4\u09ae\u09be\u09a8\u09c7 SSOT \u098f \u09a8\u09c7\u0987" and suggest adding it.
 `;
 
   return header + structure + footer;
@@ -2217,7 +2247,7 @@ function autoSyllabus(projectDir) {
       "",
       "## Latest Learnings",
       "",
-      "| তারিখ | সোর্স | টপিক |",
+      "| \u09a4\u09be\u09b0\u09bf\u0996 | \u09b8\u09cb\u09b0\u09cd\u09b8 | \u099f\u09aa\u09bf\u0995 |",
       "|------|-------|-------|",
       "| — | — | Initial syllabus created |",
       "",
@@ -2378,7 +2408,7 @@ function bootstrapSyllabus(projectDir) {
 
 ## Latest Learnings
 
-| তারিখ | সোর্স | টপিক |
+| \u09a4\u09be\u09b0\u09bf\u0996 | \u09b8\u09cb\u09b0\u09cd\u09b8 | \u099f\u09aa\u09bf\u0995 |
 |------|-------|-------|
 | — | — | Initial syllabus bootstrapped |
 
@@ -2454,7 +2484,7 @@ Format normalization: Haq Mawla Normalizer converts ALL provider responses to Op
 
 - Sessions auto-verify via /api/verify-session
 - Three-file memory: SSOT.md (project state) → syllabus.md (knowledge) → memory.json (conversations)
-- SSOT, Memory, and Syllabus are BOUNDED parameters — if input falls outside them, agents say "আমার কাছে প্রমাণ নেই"
+- SSOT, Memory, and Syllabus are BOUNDED parameters — if input falls outside them, agents say "\u0986\u09ae\u09be\u09b0 \u0995\u09be\u099b\u09c7 \u09aa\u09cd\u09b0\u09ae\u09be\u09a3 \u09a8\u09c7\u0987"
 
 ## 7. UNIVERSAL SOCKET ARCHITECTURE
 
@@ -2545,7 +2575,7 @@ function _updateSyllabusIndex(agentsDir, topic, date, source) {
 
     // Find the latest learnings table and prepend a row
     const tableLine = `| ${date} | ${source || "—"} | ${topic} |\n`;
-    const tableMarker = "| তারিখ | সোর্স | টপিক |";
+    const tableMarker = "| \u09a4\u09be\u09b0\u09bf\u0996 | \u09b8\u09cb\u09b0\u09cd\u09b8 | \u099f\u09aa\u09bf\u0995 |";
 
     if (content.includes(tableMarker)) {
       // Insert after the header row (header + separator)
@@ -2564,7 +2594,7 @@ function _updateSyllabusIndex(agentsDir, topic, date, source) {
       // This migrates existing bootstrapped syllabi + new ones.
       const tableSection =
         "## Latest Learnings\n\n" +
-        "| তারিখ | সোর্স | টপিক |\n" +
+        "| \u09a4\u09be\u09b0\u09bf\u0996 | \u09b8\u09cb\u09b0\u09cd\u09b8 | \u099f\u09aa\u09bf\u0995 |\n" +
         "|------|-------|-------|\n" +
         tableLine.trimEnd() + "\n\n---";
       content = content.replace(/^---/m, tableSection);
@@ -3823,12 +3853,14 @@ function isOriginAllowed(origin) {
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
 
   const candidates = new Set();
-  for (const item of DOMAIN_CFG.corsOrigins || []) {
-    if (!item) continue;
-    try {
-      candidates.add(new URL(String(item).trim()).origin);
-    } catch (_) {
-      /* malformed derived entry: ignore */
+  for (const source of [DOMAIN_CFG.corsOrigins || [], RUNTIME_CONFIG.allowedOrigins || []]) {
+    for (const item of source) {
+      if (!item) continue;
+      try {
+        candidates.add(new URL(String(item).trim()).origin);
+      } catch (_) {
+        /* malformed entry: ignore */
+      }
     }
   }
   if (DOMAIN_CFG.appUrl) {
@@ -4152,12 +4184,12 @@ async function autoWebSearch(agent, response, userInput) {
 
   const query = searchMatch[1].trim();
   const skipPatterns = [
-    /তোমার প্রশ্ন/i,
-    /আপনার প্রশ্ন/i,
-    /লিখে দাও/i,
+    /\u09a4\u09cb\u09ae\u09be\u09b0 \u09aa\u09cd\u09b0\u09b6\u09cd\u09a8/i,
+    /\u0986\u09aa\u09a8\u09be\u09b0 \u09aa\u09cd\u09b0\u09b6\u09cd\u09a8/i,
+    /\u09b2\u09bf\u0996\u09c7 \u09a6\u09be\u0993/i,
     /enter.*query/i,
     /your.*question/i,
-    /উদাহরণ/i,
+    /\u0989\u09a6\u09be\u09b9\u09b0\u09a3/i,
   ];
   if (query.length > 100 || skipPatterns.some((p) => p.test(query))) {
     log("INFO", "WEB_SEARCH_SKIP", {
@@ -6296,11 +6328,11 @@ function classifyInput(input) {
 
   // ─── GREETING DETECTION ───
   const greetingPatterns = [
-    /^(hi|hello|hey|হাই|হ্যালো|ওহে|salam|সালাম)(\s|$|[.!?,])/i,
+    /^(hi|hello|hey|\u09b9\u09be\u0987|\u09b9\u09cd\u09af\u09be\u09b2\u09cb|\u0993\u09b9\u09c7|salam|\u09b8\u09be\u09b2\u09be\u09ae)(\s|$|[.!?,])/i,
     /^(good\s*(morn(ing)?|afternoon|evening|night))/i,
-    /^(kmon\s*aco|ki\s*obostha|কেমন\s*আছ[ো]?|কি\s*অবস্থা)/i,
-    /^(কে\s*তুমি|name\s*$|what\s*is\s*your\s*name|তোমার\s*নাম\s*কি)/i,
-    /^(ধন্যবাদ|thanks|thank you|dhonnobad)(\s|$|[.!?,])/i,
+    /^(kmon\s*aco|ki\s*obostha|\u0995\u09c7\u09ae\u09a8\s*\u0986\u099b[\u09cb]?|\u0995\u09bf\s*\u0985\u09ac\u09b8\u09cd\u09a5\u09be)/i,
+    /^(\u0995\u09c7\s*\u09a4\u09c1\u09ae\u09bf|name\s*$|what\s*is\s*your\s*name|\u09a4\u09cb\u09ae\u09be\u09b0\s*\u09a8\u09be\u09ae\s*\u0995\u09bf)/i,
+    /^(\u09a7\u09a8\u09cd\u09af\u09ac\u09be\u09a6|thanks|thank you|dhonnobad)(\s|$|[.!?,])/i,
   ];
 
   for (const p of greetingPatterns) {
@@ -6316,11 +6348,11 @@ function classifyInput(input) {
   // ─── SIMPLE Q&A DETECTION ───
   const simpleQaPatterns = [
     /^\d+\s*[+\-*\/]\s*\d+/,
-    /^(yes|no|ok|ঠিক\s*আছে|হ্যাঁ|না)\s*$/i,
+    /^(yes|no|ok|\u09a0\u09bf\u0995\s*\u0986\u099b\u09c7|\u09b9\u09cd\u09af\u09be\u0981|\u09a8\u09be)\s*$/i,
     /^(what\s*(is|are)\s+\w+\s*\w*\.?\s*\?*$)/i,
-    /^(কে\s+|কি\s+|কোথায়\s+|কখন\s+|কেন\s+)/i,
+    /^(\u0995\u09c7\s+|\u0995\u09bf\s+|\u0995\u09cb\u09a5\u09be\u09af\u09bc\s+|\u0995\u0996\u09a8\s+|\u0995\u09c7\u09a8\s+)/i,
     /^(how\s+(many|much|far|long|old)\s+\w+\s*\?*$)/i,
-    /^(বাংলাদেশের\s+(রাজধানী|মুদ্রা|ধর্ম|ভাষা))/i,
+    /^(\u09ac\u09be\u0982\u09b2\u09be\u09a6\u09c7\u09b6\u09c7\u09b0\s+(\u09b0\u09be\u099c\u09a7\u09be\u09a8\u09c0|\u09ae\u09c1\u09a6\u09cd\u09b0\u09be|\u09a7\u09b0\u09cd\u09ae|\u09ad\u09be\u09b7\u09be))/i,
     /capital\s+of\s+\w+/i,
   ];
 
@@ -6338,21 +6370,21 @@ function classifyInput(input) {
   // Detect queries that need real-time data (news, current events, factual lookups)
   const webSearchPatterns = [
     // Current events / news
-    /latest|recent|today|this week|this month|this year|সর্বশেষ|সাম্প্রতিক|আজ|এই সপ্তাহ|এই মাস|এই বছর/i,
-    /news|খবর|সংবাদ|heading|headlines/i,
+    /latest|recent|today|this week|this month|this year|\u09b8\u09b0\u09cd\u09ac\u09b6\u09c7\u09b7|\u09b8\u09be\u09ae\u09cd\u09aa\u09cd\u09b0\u09a4\u09bf\u0995|\u0986\u099c|\u098f\u0987 \u09b8\u09aa\u09cd\u09a4\u09be\u09b9|\u098f\u0987 \u09ae\u09be\u09b8|\u098f\u0987 \u09ac\u099b\u09b0/i,
+    /news|\u0996\u09ac\u09b0|\u09b8\u0982\u09ac\u09be\u09a6|heading|headlines/i,
     /what('s| is) (happening|going on|new)/i,
     // Factual lookups that may change
-    /price|দাম|cost|খরচ|rate|exchange rate|বিনিময় হার/i,
-    /population|জনসংখ্যা|GDP|economy|অর্থনীতি/i,
-    /weather|আবহাওয়া|temperature|তাপমাত্রা/i,
+    /price|\u09a6\u09be\u09ae|cost|\u0996\u09b0\u099a|rate|exchange rate|\u09ac\u09bf\u09a8\u09bf\u09ae\u09af\u09bc \u09b9\u09be\u09b0/i,
+    /population|\u099c\u09a8\u09b8\u0982\u0996\u09cd\u09af\u09be|GDP|economy|\u0985\u09b0\u09cd\u09a5\u09a8\u09c0\u09a4\u09bf/i,
+    /weather|\u0986\u09ac\u09b9\u09be\u0993\u09af\u09bc\u09be|temperature|\u09a4\u09be\u09aa\u09ae\u09be\u09a4\u09cd\u09b0\u09be/i,
     // Technology updates
-    /release|আপডেট|update.*version|new.*feature|changelog/i,
+    /release|\u0986\u09aa\u09a1\u09c7\u099f|update.*version|new.*feature|changelog/i,
     /which\s+(company|platform|service)\s+( owns | runs | made)/i,
     // Questions about specific entities that may change
     /who\s+(is|was|are|were)\s+the\s+(current|new|president|ceo|pm|minister)/i,
-    /কে\s+(হল[ো]?|আছেন?|ছিলেন?)\s+(রাষ্ট্রপতি|প্রধানমন্ত্রী|মন্ত্রী)/i,
+    /\u0995\u09c7\s+(\u09b9\u09b2[\u09cb]?|\u0986\u099b\u09c7\u09a8?|\u099b\u09bf\u09b2\u09c7\u09a8?)\s+(\u09b0\u09be\u09b7\u09cd\u099f\u09cd\u09b0\u09aa\u09a4\u09bf|\u09aa\u09cd\u09b0\u09a7\u09be\u09a8\u09ae\u09a8\u09cd\u09a4\u09cd\u09b0\u09c0|\u09ae\u09a8\u09cd\u09a4\u09cd\u09b0\u09c0)/i,
     // Comparison that needs current data
-    /best|top|সেরা|শীর্ষ|compared?\s+to|তুলনা/i,
+    /best|top|\u09b8\u09c7\u09b0\u09be|\u09b6\u09c0\u09b0\u09cd\u09b7|compared?\s+to|\u09a4\u09c1\u09b2\u09a8\u09be/i,
   ];
 
   for (const p of webSearchPatterns) {
@@ -6364,11 +6396,11 @@ function classifyInput(input) {
 
   // ─── PROJECT TASK DETECTION ───
   const projectPatterns = [
-    /project|প্রজেক্ট|প্রকল্প|কোড|code|ফাইল|file|directory|ডিরেক্টরি/i,
-    /analyze|analyse|বিশ্লেষণ|analysis/i,
+    /project|\u09aa\u09cd\u09b0\u099c\u09c7\u0995\u09cd\u099f|\u09aa\u09cd\u09b0\u0995\u09b2\u09cd\u09aa|\u0995\u09cb\u09a1|code|\u09ab\u09be\u0987\u09b2|file|directory|\u09a1\u09bf\u09b0\u09c7\u0995\u09cd\u099f\u09b0\u09bf/i,
+    /analyze|analyse|\u09ac\u09bf\u09b6\u09cd\u09b2\u09c7\u09b7\u09a3|analysis/i,
     /technology|language|framework|tech\s+stack/i,
-    /structure|architecture|আর্কিটেকচার/i,
-    /feature|feature|বৈশিষ্ট্য/i,
+    /structure|architecture|\u0986\u09b0\u09cd\u0995\u09bf\u099f\u09c7\u0995\u099a\u09be\u09b0/i,
+    /feature|feature|\u09ac\u09c8\u09b6\u09bf\u09b7\u09cd\u099f\u09cd\u09af/i,
   ];
 
   let projectScore = 0;
@@ -6378,7 +6410,7 @@ function classifyInput(input) {
 
   if (
     projectScore >= 2 ||
-    /^(analyze|বিশ্লেষণ|explain.*project|project.*(about|what))/.test(cleaned)
+    /^(analyze|\u09ac\u09bf\u09b6\u09cd\u09b2\u09c7\u09b7\u09a3|explain.*project|project.*(about|what))/.test(cleaned)
   ) {
     result.type = "project_task";
     result.complexity = "moderate";
@@ -6391,16 +6423,16 @@ function classifyInput(input) {
 
   // ─── CODE CHANGE / DEBUG DETECTION ───
   const codeChangePatterns = [
-    /fix|ঠিক|solve|সমাধান|bug|বাগ|error|এরর|ভুল/i,
-    /change|পরিবর্তন|add|যোগ|remove|মুছে|update|আপডেট/i,
-    /implement|ইমপ্লিমেন্ট|create|তৈরি|build|বানাও/i,
-    /function|ফাংশন|method|মেথড|class|ক্লাস|component/i,
+    /fix|\u09a0\u09bf\u0995|solve|\u09b8\u09ae\u09be\u09a7\u09be\u09a8|bug|\u09ac\u09be\u0997|error|\u098f\u09b0\u09b0|\u09ad\u09c1\u09b2/i,
+    /change|\u09aa\u09b0\u09bf\u09ac\u09b0\u09cd\u09a4\u09a8|add|\u09af\u09cb\u0997|remove|\u09ae\u09c1\u099b\u09c7|update|\u0986\u09aa\u09a1\u09c7\u099f/i,
+    /implement|\u0987\u09ae\u09aa\u09cd\u09b2\u09bf\u09ae\u09c7\u09a8\u09cd\u099f|create|\u09a4\u09c8\u09b0\u09bf|build|\u09ac\u09be\u09a8\u09be\u0993/i,
+    /function|\u09ab\u09be\u0982\u09b6\u09a8|method|\u09ae\u09c7\u09a5\u09a1|class|\u0995\u09cd\u09b2\u09be\u09b8|component/i,
     /api|endpoint|route|router/i,
-    /database|db|ডাটাবেস|ডিবি/i,
-    /crash|crashes|hangs|freeze|ল্যাগ/i,
-    /performance|পারফরম্যান্স|speed|গতি|slow|ধীর/i,
-    /security|নিরাপত্তা|secure|সুরক্ষিত|vulnerability/i,
-    /test|টেস্ট|unit|integration|পরীক্ষা/i,
+    /database|db|\u09a1\u09be\u099f\u09be\u09ac\u09c7\u09b8|\u09a1\u09bf\u09ac\u09bf/i,
+    /crash|crashes|hangs|freeze|\u09b2\u09cd\u09af\u09be\u0997/i,
+    /performance|\u09aa\u09be\u09b0\u09ab\u09b0\u09ae\u09cd\u09af\u09be\u09a8\u09cd\u09b8|speed|\u0997\u09a4\u09bf|slow|\u09a7\u09c0\u09b0/i,
+    /security|\u09a8\u09bf\u09b0\u09be\u09aa\u09a4\u09cd\u09a4\u09be|secure|\u09b8\u09c1\u09b0\u0995\u09cd\u09b7\u09bf\u09a4|vulnerability/i,
+    /test|\u099f\u09c7\u09b8\u09cd\u099f|unit|integration|\u09aa\u09b0\u09c0\u0995\u09cd\u09b7\u09be/i,
   ];
 
   let codeScore = 0;
@@ -6411,7 +6443,7 @@ function classifyInput(input) {
   if (
     codeScore >= 2 ||
     cleaned.includes("write code") ||
-    cleaned.includes("code লিখ")
+    cleaned.includes("code \u09b2\u09bf\u0996")
   ) {
     result.type = "code_change";
     result.complexity = codeScore >= 4 ? "complex" : "moderate";
@@ -6431,8 +6463,8 @@ function classifyInput(input) {
   if (
     cleaned.includes("bug") ||
     cleaned.includes("error") ||
-    cleaned.includes("ভুল") ||
-    cleaned.includes("কাজ করছে না") ||
+    cleaned.includes("\u09ad\u09c1\u09b2") ||
+    cleaned.includes("\u0995\u09be\u099c \u0995\u09b0\u099b\u09c7 \u09a8\u09be") ||
     cleaned.includes("not working") ||
     cleaned.includes("crash") ||
     cleaned.includes("broken")
@@ -6473,12 +6505,12 @@ function selectRelevantAgents(input) {
   selected.add("code-guru");
 
   // Bug/Error patterns → bug-hunter
-  if (/\b(bug|error|fix|crash|broken|fail|issue|ভুল|ত্রুটি)\b/i.test(cleaned))
+  if (/\b(bug|error|fix|crash|broken|fail|issue|\u09ad\u09c1\u09b2|\u09a4\u09cd\u09b0\u09c1\u099f\u09bf)\b/i.test(cleaned))
     selected.add("bug-hunter");
 
   // Security patterns → security-hero
   if (
-    /\b(security|secure|auth|vulnerability|hack|password|encrypt|নিরাপত্তা|সুরক্ষা)\b/i.test(
+    /\b(security|secure|auth|vulnerability|hack|password|encrypt|\u09a8\u09bf\u09b0\u09be\u09aa\u09a4\u09cd\u09a4\u09be|\u09b8\u09c1\u09b0\u0995\u09cd\u09b7\u09be)\b/i.test(
       cleaned,
     )
   )
@@ -6486,7 +6518,7 @@ function selectRelevantAgents(input) {
 
   // Performance patterns → perf-wizard
   if (
-    /\b(performance|speed|slow|fast|optimize|memory|load|পারফরম্যান্স|গতি)\b/i.test(
+    /\b(performance|speed|slow|fast|optimize|memory|load|\u09aa\u09be\u09b0\u09ab\u09b0\u09ae\u09cd\u09af\u09be\u09a8\u09cd\u09b8|\u0997\u09a4\u09bf)\b/i.test(
       cleaned,
     )
   )
@@ -6494,7 +6526,7 @@ function selectRelevantAgents(input) {
 
   // Documentation patterns → doc-king
   if (
-    /\b(doc|readme|documentation|api\s*ref|guide|manual|ডক|ডকুমেন্টেশন)\b/i.test(
+    /\b(doc|readme|documentation|api\s*ref|guide|manual|\u09a1\u0995|\u09a1\u0995\u09c1\u09ae\u09c7\u09a8\u09cd\u099f\u09c7\u09b6\u09a8)\b/i.test(
       cleaned,
     )
   )
@@ -6502,7 +6534,7 @@ function selectRelevantAgents(input) {
 
   // Quality/Test patterns → qa-tyrant
   if (
-    /\b(test|qa|quality|verify|check|assure|টেস্ট|পরীক্ষা|গুণগত)\b/i.test(
+    /\b(test|qa|quality|verify|check|assure|\u099f\u09c7\u09b8\u09cd\u099f|\u09aa\u09b0\u09c0\u0995\u09cd\u09b7\u09be|\u0997\u09c1\u09a3\u0997\u09a4)\b/i.test(
       cleaned,
     )
   )
@@ -6549,7 +6581,7 @@ async function phase1_initialResponse(
   });
   await pushLog(
     "phase",
-    "মিশন শুরু করা যাক — " + agents.length + " জন এজেন্ট কাজ করছে",
+    "\u09ae\u09bf\u09b6\u09a8 \u09b6\u09c1\u09b0\u09c1 \u0995\u09b0\u09be \u09af\u09be\u0995 — " + agents.length + " \u099c\u09a8 \u098f\u099c\u09c7\u09a8\u09cd\u099f \u0995\u09be\u099c \u0995\u09b0\u099b\u09c7",
   );
 
   // Tracking state
@@ -6977,7 +7009,7 @@ async function phase2_intentCrossVerify(
         "\n\nIssues raised:\n- " +
         issues.join("\n- ") +
         "\n\nYou MUST address each issue with SPECIFIC EVIDENCE." +
-        "\nIf you cannot provide proof, say 'আমার কাছে প্রমাণ নেই'." +
+        "\nIf you cannot provide proof, say '\u0986\u09ae\u09be\u09b0 \u0995\u09be\u099b\u09c7 \u09aa\u09cd\u09b0\u09ae\u09be\u09a3 \u09a8\u09c7\u0987'." +
         "\nCorrect yourself NOW with proper evidence, file references, or code line numbers.";
 
       try {
@@ -7094,17 +7126,17 @@ async function phase3_combinedOutput(
       /definitely works/i,
       /nischitbhabe kaj korbe/i,
       // ── REAL BENGALI patterns ──
-      /নিশ্চিতভাবে কাজ করবে/i,
-      /এটা কাজ করবেই/i,
-      /কাজ করবে বলে মনে হচ্ছে/i,
-      /আমি নিশ্চিত/i,
-      /সম্ভবত কাজ করবে/i,
-      /এইভাবেই হবে/i,
-      /ঠিক আছে এইভাবে করো/i,
-      /বিশ্বাস কর/i,
-      /নিশ্চয়ই কাজ করবে/i,
-      /কোনো সমস্যা নাই/i,
-      /এটা সঠিক/i,
+      /\u09a8\u09bf\u09b6\u09cd\u099a\u09bf\u09a4\u09ad\u09be\u09ac\u09c7 \u0995\u09be\u099c \u0995\u09b0\u09ac\u09c7/i,
+      /\u098f\u099f\u09be \u0995\u09be\u099c \u0995\u09b0\u09ac\u09c7\u0987/i,
+      /\u0995\u09be\u099c \u0995\u09b0\u09ac\u09c7 \u09ac\u09b2\u09c7 \u09ae\u09a8\u09c7 \u09b9\u099a\u09cd\u099b\u09c7/i,
+      /\u0986\u09ae\u09bf \u09a8\u09bf\u09b6\u09cd\u099a\u09bf\u09a4/i,
+      /\u09b8\u09ae\u09cd\u09ad\u09ac\u09a4 \u0995\u09be\u099c \u0995\u09b0\u09ac\u09c7/i,
+      /\u098f\u0987\u09ad\u09be\u09ac\u09c7\u0987 \u09b9\u09ac\u09c7/i,
+      /\u09a0\u09bf\u0995 \u0986\u099b\u09c7 \u098f\u0987\u09ad\u09be\u09ac\u09c7 \u0995\u09b0\u09cb/i,
+      /\u09ac\u09bf\u09b6\u09cd\u09ac\u09be\u09b8 \u0995\u09b0/i,
+      /\u09a8\u09bf\u09b6\u09cd\u099a\u09af\u09bc\u0987 \u0995\u09be\u099c \u0995\u09b0\u09ac\u09c7/i,
+      /\u0995\u09cb\u09a8\u09cb \u09b8\u09ae\u09b8\u09cd\u09af\u09be \u09a8\u09be\u0987/i,
+      /\u098f\u099f\u09be \u09b8\u09a0\u09bf\u0995/i,
     ];
     for (const pat of unsupportedPatterns) {
       if (pat.test(content)) {
@@ -7117,7 +7149,7 @@ async function phase3_combinedOutput(
 
     // 2. Check for code claims without file references
     if (
-      /\b(code|fix|implement|create|write|function|class|method|কোড|ফিক্স|ইমপ্লিমেন্ট)\b/i.test(
+      /\b(code|fix|implement|create|write|function|class|method|\u0995\u09cb\u09a1|\u09ab\u09bf\u0995\u09cd\u09b8|\u0987\u09ae\u09aa\u09cd\u09b2\u09bf\u09ae\u09c7\u09a8\u09cd\u099f)\b/i.test(
         content,
       )
     ) {
@@ -7210,7 +7242,7 @@ async function phase3_combinedOutput(
       "If an agent made unsupported claims, mark them. If code lacks file references, note it. " +
       "Do NOT let unsupported claims pass through. Be the strict Quality Tyrant! " +
       "If you find any issues, REJECT the response and demand corrections. " +
-      "The agents must provide SPECIFIC evidence: file paths, line numbers, test results, or 'আমার কাছ প্রমাণ নেই' if unsure."
+      "The agents must provide SPECIFIC evidence: file paths, line numbers, test results, or '\u0986\u09ae\u09be\u09b0 \u0995\u09be\u099b \u09aa\u09cd\u09b0\u09ae\u09be\u09a3 \u09a8\u09c7\u0987' if unsure."
       : "";
 
   // Check if this involves code (to enforce test-before-answer in QA)
@@ -7252,7 +7284,7 @@ async function phase3_combinedOutput(
           "\n- Security claims: MUST cite OWASP/CVE or specific vulnerability details" +
           "\n- Any claim without evidence  mark as [UNVERIFIED]" +
           "\n\nFORBIDDEN phrases (do NOT start with these):" +
-          "\n- 'I will combine' / 'Let me merge' / 'আমি এখন একত্রিত করব'" +
+          "\n- 'I will combine' / 'Let me merge' / '\u0986\u09ae\u09bf \u098f\u0996\u09a8 \u098f\u0995\u09a4\u09cd\u09b0\u09bf\u09a4 \u0995\u09b0\u09ac'" +
           "\n- 'Based on the analysis' / 'After reviewing'" +
           "\n- 'The combined response' / 'Here is the merged output'" +
           "\n\nREQUIRED: Start with the ACTUAL ANSWER to the user's question." +
@@ -7299,10 +7331,10 @@ async function phase3_combinedOutput(
       /^(Based on the analysis|After reviewing|Looking at|Examining|The user asked|The user wants).{0,200}\n/gim,
       /^(Actually|However|Wait|Hmm|So basically|In other words|Let me explain).{0,200}\n/gim,
       // Bengali thinking patterns
-      /^(আমি এখন|এখন আমি|আমাকে এখন|দেখি তো|বলতে হবে|চেক করি|বিশ্লেষণ|পরীক্ষা করি).{0,200}\n/gim,
-      /^(একত্রিত|মার্জ|সংযুক্ত|সমন্বয়).{0,200}\n/gim,
+      /^(\u0986\u09ae\u09bf \u098f\u0996\u09a8|\u098f\u0996\u09a8 \u0986\u09ae\u09bf|\u0986\u09ae\u09be\u0995\u09c7 \u098f\u0996\u09a8|\u09a6\u09c7\u0996\u09bf \u09a4\u09cb|\u09ac\u09b2\u09a4\u09c7 \u09b9\u09ac\u09c7|\u099a\u09c7\u0995 \u0995\u09b0\u09bf|\u09ac\u09bf\u09b6\u09cd\u09b2\u09c7\u09b7\u09a3|\u09aa\u09b0\u09c0\u0995\u09cd\u09b7\u09be \u0995\u09b0\u09bf).{0,200}\n/gim,
+      /^(\u098f\u0995\u09a4\u09cd\u09b0\u09bf\u09a4|\u09ae\u09be\u09b0\u09cd\u099c|\u09b8\u0982\u09af\u09c1\u0995\u09cd\u09a4|\u09b8\u09ae\u09a8\u09cd\u09ac\u09af\u09bc).{0,200}\n/gim,
       // Agent report references (model describing what agents said)
-      /^((?:Code Guru|Bug Hunter|Security|Performance|Doc King|QA Tyrant|মনু|জুয়েল|বৃষ্টি|রাশেদ|হালিম|মজনু).{0,50}(started|gave|says|mentioned|noted|pointed out)).{0,200}\n/gim,
+      /^((?:Code Guru|Bug Hunter|Security|Performance|Doc King|QA Tyrant|\u09ae\u09a8\u09c1|\u099c\u09c1\u09af\u09bc\u09c7\u09b2|\u09ac\u09c3\u09b7\u09cd\u099f\u09bf|\u09b0\u09be\u09b6\u09c7\u09a6|\u09b9\u09be\u09b2\u09bf\u09ae|\u09ae\u099c\u09a8\u09c1).{0,50}(started|gave|says|mentioned|noted|pointed out)).{0,200}\n/gim,
       // "Write the FINAL ANSWER" echo
       /^(Write the FINAL|FINAL ANSWER|The final answer).{0,200}\n/gim,
     ];
@@ -7733,7 +7765,7 @@ function antiDoteVerifyOutput(contract) {
       /\b(server\/|src\/|app\/|lib\/|components\/|\.js|\.py|\.ts)\b/.test(
         combined,
       );
-    const hasLineRefs = /\b(line\s+\d+|L\d+|লাইন\s+\d+)\b/i.test(combined);
+    const hasLineRefs = /\b(line\s+\d+|L\d+|\u09b2\u09be\u0987\u09a8\s+\d+)\b/i.test(combined);
     const hasTestMention = /\b(test|tested|verified|untested|UNTESTED)\b/i.test(
       combined,
     );
@@ -8256,7 +8288,7 @@ async function executeMission(
     log("WARN", "MISSION_NO_AGENTS", {});
     return {
       success: false,
-      combined: "কোনো এজেন্ট লোড হয়নি। agent/*.js ফাইল চেক করুন।",
+      combined: "\u0995\u09cb\u09a8\u09cb \u098f\u099c\u09c7\u09a8\u09cd\u099f \u09b2\u09cb\u09a1 \u09b9\u09af\u09bc\u09a8\u09bf। agent/*.js \u09ab\u09be\u0987\u09b2 \u099a\u09c7\u0995 \u0995\u09b0\u09c1\u09a8।",
       agents: [],
       verification: { verified: false, rounds: 0, challenges: 0 },
       stats: { totalAgents: 0, responded: 0, failed: 1 },
@@ -8398,7 +8430,7 @@ async function executeMission(
     if (!greetingAgent) {
       return {
         success: false,
-        combined: "কোনো এজেন্ট পাওয়া যায়নি। agent/*.js চেক করুন।",
+        combined: "\u0995\u09cb\u09a8\u09cb \u098f\u099c\u09c7\u09a8\u09cd\u099f \u09aa\u09be\u0993\u09af\u09bc\u09be \u09af\u09be\u09af\u09bc\u09a8\u09bf। agent/*.js \u099a\u09c7\u0995 \u0995\u09b0\u09c1\u09a8।",
         agents: [],
         verification: { verified: false, rounds: 0, challenges: 0 },
         stats: { totalAgents: 0, responded: 0, failed: 1 },
@@ -8420,7 +8452,7 @@ async function executeMission(
 
     const greetingContent = quickResponse.success
       ? maskModelIdentity(quickResponse.content)
-      : "হ্যালো! আমি " + greetingAgent.name + "। কীভাবে সাহায্য করতে পারি?";
+      : "\u09b9\u09cd\u09af\u09be\u09b2\u09cb! \u0986\u09ae\u09bf " + greetingAgent.name + "। \u0995\u09c0\u09ad\u09be\u09ac\u09c7 \u09b8\u09be\u09b9\u09be\u09af\u09cd\u09af \u0995\u09b0\u09a4\u09c7 \u09aa\u09be\u09b0\u09bf?";
 
     const greetingOutput = {
       success: true,
@@ -8457,7 +8489,7 @@ async function executeMission(
     const qaAgentId = classification.recommended_agents?.[0] || "code-guru";
     const qaAgent = AGENTS.find((a) => a.id === qaAgentId) || AGENTS[0];
     if (qaAgent) {
-      await pushLog("phase", "সরাসরি উত্তর তৈরি করছি...");
+      await pushLog("phase", "\u09b8\u09b0\u09be\u09b8\u09b0\u09bf \u0989\u09a4\u09cd\u09a4\u09b0 \u09a4\u09c8\u09b0\u09bf \u0995\u09b0\u099b\u09bf...");
       const quickResponse = await callModel(qaAgent.model, [
         {
           role: "system",
@@ -8468,7 +8500,7 @@ async function executeMission(
 
       const qaContent = quickResponse.success
         ? maskModelIdentity(quickResponse.content)
-        : "উত্তর তৈরি করতে সমস্যা হয়েছে। আবার চেষ্টা করুন।";
+        : "\u0989\u09a4\u09cd\u09a4\u09b0 \u09a4\u09c8\u09b0\u09bf \u0995\u09b0\u09a4\u09c7 \u09b8\u09ae\u09b8\u09cd\u09af\u09be \u09b9\u09af\u09bc\u09c7\u099b\u09c7। \u0986\u09ac\u09be\u09b0 \u099a\u09c7\u09b7\u09cd\u099f\u09be \u0995\u09b0\u09c1\u09a8।";
 
       const qaOutput = {
         success: true,
@@ -8497,7 +8529,7 @@ async function executeMission(
         mode: "simple_qa_skip",
       });
 
-      await pushLog("phase", "উত্তর প্রস্তুত!");
+      await pushLog("phase", "\u0989\u09a4\u09cd\u09a4\u09b0 \u09aa\u09cd\u09b0\u09b8\u09cd\u09a4\u09c1\u09a4!");
       return qaOutput;
     }
   }
@@ -8636,7 +8668,7 @@ async function executeMission(
           // Replace the call marker with the actual result
           output.combined = output.combined.replace(
             call.fullMatch,
-            "\n\n[তথ্য প্রাপ্ত: " +
+            "\n\n[\u09a4\u09a5\u09cd\u09af \u09aa\u09cd\u09b0\u09be\u09aa\u09cd\u09a4: " +
             callResult.agent +
             "]\n" +
             callResult.content,
@@ -8644,7 +8676,7 @@ async function executeMission(
         } else {
           output.combined = output.combined.replace(
             call.fullMatch,
-            "\n\n[এজেন্ট কল ব্যর্থ: " + call.targetAgent + "]",
+            "\n\n[\u098f\u099c\u09c7\u09a8\u09cd\u099f \u0995\u09b2 \u09ac\u09cd\u09af\u09b0\u09cd\u09a5: " + call.targetAgent + "]",
           );
         }
       } catch (e) {
@@ -9076,7 +9108,7 @@ async function executeSingleAgent(
     return {
       success: false,
       content:
-        "ভাইয়া! সব provider ব্যর্থ হয়েছে। [model: " +
+        "\u09ad\u09be\u0987\u09af\u09bc\u09be! \u09b8\u09ac provider \u09ac\u09cd\u09af\u09b0\u09cd\u09a5 \u09b9\u09af\u09bc\u09c7\u099b\u09c7। [model: " +
         agent.model +
         ", provider: " +
         provInfo +
@@ -9154,7 +9186,7 @@ async function executeSingleAgent(
         if (callResult.success) {
           response.content = response.content.replace(
             call.fullMatch,
-            "\n\n[তথ্য প্রাপ্ত: " +
+            "\n\n[\u09a4\u09a5\u09cd\u09af \u09aa\u09cd\u09b0\u09be\u09aa\u09cd\u09a4: " +
             callResult.agent +
             "]\n" +
             callResult.content,
@@ -9162,7 +9194,7 @@ async function executeSingleAgent(
         } else {
           response.content = response.content.replace(
             call.fullMatch,
-            "\n\n[এজেন্ট কল ব্যর্থ: " + call.targetAgent + "]",
+            "\n\n[\u098f\u099c\u09c7\u09a8\u09cd\u099f \u0995\u09b2 \u09ac\u09cd\u09af\u09b0\u09cd\u09a5: " + call.targetAgent + "]",
           );
         }
       } catch (e) {
@@ -10941,7 +10973,7 @@ function handleMCP(req, res) {
           client: clientName,
           dir: detectedDir,
           ssot: ssotResult ? ssotResult.length + " bytes" : "failed",
-          message: "বংশবিস্তার! .zombiecoder/SSOT.md planted in " + detectedDir,
+          message: "\u09ac\u0982\u09b6\u09ac\u09bf\u09b8\u09cd\u09a4\u09be\u09b0! .zombiecoder/SSOT.md planted in " + detectedDir,
         });
       }
 
@@ -11400,7 +11432,7 @@ function verifyGoalOutput(content, userInput) {
       passed: false,
       reason: "empty_output",
       message:
-        "ভাইয়া, এই মুহূর্তে আমার কাছে এই তথ্যগুলো নাই। এজেন্ট কোনো উত্তর তৈরি করতে পারেনি।",
+        "\u09ad\u09be\u0987\u09af\u09bc\u09be, \u098f\u0987 \u09ae\u09c1\u09b9\u09c2\u09b0\u09cd\u09a4\u09c7 \u0986\u09ae\u09be\u09b0 \u0995\u09be\u099b\u09c7 \u098f\u0987 \u09a4\u09a5\u09cd\u09af\u0997\u09c1\u09b2\u09cb \u09a8\u09be\u0987। \u098f\u099c\u09c7\u09a8\u09cd\u099f \u0995\u09cb\u09a8\u09cb \u0989\u09a4\u09cd\u09a4\u09b0 \u09a4\u09c8\u09b0\u09bf \u0995\u09b0\u09a4\u09c7 \u09aa\u09be\u09b0\u09c7\u09a8\u09bf।",
     };
   }
 
@@ -11414,18 +11446,18 @@ function verifyGoalOutput(content, userInput) {
       passed: false,
       reason: "too_short",
       message:
-        "ভাইয়া, এই মুহূর্তে আমার কাছে এই তথ্যগুলো নাই। উত্তরটি খুবই সংক্ষিপ্ত।",
+        "\u09ad\u09be\u0987\u09af\u09bc\u09be, \u098f\u0987 \u09ae\u09c1\u09b9\u09c2\u09b0\u09cd\u09a4\u09c7 \u0986\u09ae\u09be\u09b0 \u0995\u09be\u099b\u09c7 \u098f\u0987 \u09a4\u09a5\u09cd\u09af\u0997\u09c1\u09b2\u09cb \u09a8\u09be\u0987। \u0989\u09a4\u09cd\u09a4\u09b0\u099f\u09bf \u0996\u09c1\u09ac\u0987 \u09b8\u0982\u0995\u09cd\u09b7\u09bf\u09aa\u09cd\u09a4।",
     };
   }
 
   // Check 2: Contains thinking/reasoning artifacts (should not reach user)
   // Only block if the ENTIRE response is thinking, not if thinking appears mid-response
   const thinkingPatterns = [
-    /^(I need to|I will now|Let me|আমি এখন|এখন আমি|আমাকে এখন)\b/im,
-    /^(Combining|merging|একত্রিত|Merging)\b/im,
-    /^(Based on the analysis|After reviewing|বিশ্লেষণের পর)\b/im,
+    /^(I need to|I will now|Let me|\u0986\u09ae\u09bf \u098f\u0996\u09a8|\u098f\u0996\u09a8 \u0986\u09ae\u09bf|\u0986\u09ae\u09be\u0995\u09c7 \u098f\u0996\u09a8)\b/im,
+    /^(Combining|merging|\u098f\u0995\u09a4\u09cd\u09b0\u09bf\u09a4|Merging)\b/im,
+    /^(Based on the analysis|After reviewing|\u09ac\u09bf\u09b6\u09cd\u09b2\u09c7\u09b7\u09a3\u09c7\u09b0 \u09aa\u09b0)\b/im,
     /^(The combined response|Here is the merged output)\b/im,
-    /^(I will combine|Let me merge|আমি এখন একত্রিত করব)\b/im,
+    /^(I will combine|Let me merge|\u0986\u09ae\u09bf \u098f\u0996\u09a8 \u098f\u0995\u09a4\u09cd\u09b0\u09bf\u09a4 \u0995\u09b0\u09ac)\b/im,
   ];
   // Only block if the first 100 chars match thinking patterns
   const firstChunk = trimmed.slice(0, 100);
@@ -11441,7 +11473,7 @@ function verifyGoalOutput(content, userInput) {
       passed: false,
       reason: "thinking_artifact",
       message:
-        "ভাইয়া, এই মুহূর্তে আমার কাছে এই তথ্যগুলো নাই। এজেন্ট তার ভাবনার অংশ পাঠিয়েছে।",
+        "\u09ad\u09be\u0987\u09af\u09bc\u09be, \u098f\u0987 \u09ae\u09c1\u09b9\u09c2\u09b0\u09cd\u09a4\u09c7 \u0986\u09ae\u09be\u09b0 \u0995\u09be\u099b\u09c7 \u098f\u0987 \u09a4\u09a5\u09cd\u09af\u0997\u09c1\u09b2\u09cb \u09a8\u09be\u0987। \u098f\u099c\u09c7\u09a8\u09cd\u099f \u09a4\u09be\u09b0 \u09ad\u09be\u09ac\u09a8\u09be\u09b0 \u0985\u0982\u09b6 \u09aa\u09be\u09a0\u09bf\u09af\u09bc\u09c7\u099b\u09c7।",
     };
   }
 
@@ -11453,22 +11485,22 @@ function verifyGoalOutput(content, userInput) {
       passed: false,
       reason: "identity_leak",
       message:
-        "ভাইয়া, এই মুহূর্তে আমার কাছে এই তথ্যগুলো নাই। মডেল পরিচয় ফাঁস হয়ে গেছে।",
+        "\u09ad\u09be\u0987\u09af\u09bc\u09be, \u098f\u0987 \u09ae\u09c1\u09b9\u09c2\u09b0\u09cd\u09a4\u09c7 \u0986\u09ae\u09be\u09b0 \u0995\u09be\u099b\u09c7 \u098f\u0987 \u09a4\u09a5\u09cd\u09af\u0997\u09c1\u09b2\u09cb \u09a8\u09be\u0987। \u09ae\u09a1\u09c7\u09b2 \u09aa\u09b0\u09bf\u099a\u09af\u09bc \u09ab\u09be\u0981\u09b8 \u09b9\u09af\u09bc\u09c7 \u0997\u09c7\u099b\u09c7।",
     };
   }
 
   // Check 4: "I don't know" patterns in Bengali/English
   const dontKnowPatterns = [
-    /আমার কাছে.*নাই/i,
-    /জানি না/i,
+    /\u0986\u09ae\u09be\u09b0 \u0995\u09be\u099b\u09c7.*\u09a8\u09be\u0987/i,
+    /\u099c\u09be\u09a8\u09bf \u09a8\u09be/i,
     /I don't know/i,
     /I have no information/i,
     /no information available/i,
     /cannot find/i,
     /unable to determine/i,
     /not available/i,
-    /ভাইয়া.*নাই/i,
-    /এই মুহূর্তে.*নাই/i,
+    /\u09ad\u09be\u0987\u09af\u09bc\u09be.*\u09a8\u09be\u0987/i,
+    /\u098f\u0987 \u09ae\u09c1\u09b9\u09c2\u09b0\u09cd\u09a4\u09c7.*\u09a8\u09be\u0987/i,
   ];
   for (const pat of dontKnowPatterns) {
     if (pat.test(trimmed)) {
@@ -11519,7 +11551,7 @@ async function executeAgentCall(
   if (!targetAgent) {
     return {
       success: false,
-      content: `[${sourceAgent.name}] এজেন্ট ${targetAgentId} পাওয়া যায়নি।`,
+      content: `[${sourceAgent.name}] \u098f\u099c\u09c7\u09a8\u09cd\u099f ${targetAgentId} \u09aa\u09be\u0993\u09af\u09bc\u09be \u09af\u09be\u09af\u09bc\u09a8\u09bf।`,
     };
   }
 
@@ -12528,7 +12560,7 @@ const handleHttpRequest = async (req, res) => {
   );
   res.setHeader(
     "Access-Control-Allow-Headers",
-    "Origin, X-Requested-With, Content-Type, Accept, Authorization, X-Session-Id, X-Verify-Token",
+    "Origin, X-Requested-With, Content-Type, Accept, Authorization, X-Session-Id, X-Verify-Token, X-Working-Dir",
   );
   res.setHeader("Access-Control-Allow-Credentials", "true");
   res.setHeader("Access-Control-Max-Age", "86400");
@@ -12690,6 +12722,110 @@ const handleHttpRequest = async (req, res) => {
       jsonResponse(res, 200, {
         success: true,
         message: "Rate limit state cleared for " + requestDomain,
+      });
+      return;
+    }
+
+    // ─── GET /api/transports ──────────────────────────────────
+    // The admin Transport page reads this. It reports real listener state,
+    // never a static list. Providers/models are deliberately separate: a
+    // model is not a transport.
+    if (url === "/api/transports" && method === "GET") {
+      const publicOrigin = (DOMAIN_CFG.appUrl || `http://localhost:${PORT}`).replace(/\/+$/, "");
+      const wsOrigin = publicOrigin.replace(/^http:/, "ws:").replace(/^https:/, "wss:");
+      const udsPaths = udsGateway ? udsGateway.paths : UDS_PATHS;
+      const boundUds = udsGateway
+        ? (udsGateway.boundPath || "")
+        : (udsBoundPath || "");
+      const udsListening = udsGateway
+        ? udsGateway.listening
+        : !!(udsServer && udsServer.listening);
+      const openaiOnUds = !!(openaiUdsServer && openaiUdsServer.server &&
+        openaiUdsServer.server.listening) ||
+        !!(udsGateway && process.env.OPENAI_UDS !== "0" && process.env.UDS_OPENAI !== "0");
+      const cd = "cd " + JSON.stringify(PROJECT_ROOT);
+      const mcpHttp = "curl -sS " + publicOrigin + "/mcp " +
+        "-H 'content-type: application/json' " +
+        "-d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}'";
+      const mcpUds = boundUds
+        ? cd + "\ncurl -sS --unix-socket " + boundUds + " http://localhost/mcp \\\n" +
+          "  -H 'content-type: application/json' \\\n" +
+          "  -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"set_working_dir\",\"arguments\":{\"path\":\"'\"$PWD\"'\"}}}'"
+        : "# UDS is not bound";
+      const openaiUds = boundUds && openaiOnUds
+        ? cd + "\ncurl -sS --unix-socket " + boundUds + " http://localhost/v1/chat/completions \\\n" +
+          "  -H 'content-type: application/json' \\\n" +
+          "  -H \"x-working-dir: $PWD\" \\\n" +
+          "  -d '{\"model\":\"mission\",\"messages\":[{\"role\":\"user\",\"content\":\"Say OK\"}],\"stream\":false}'"
+        : "# OpenAI over UDS is disabled";
+      const grpcPort = parseInt(process.env.GRPC_PORT || "5052", 10);
+      const httpsReady = !!(httpsServer && httpsServer.listening);
+      const httpsExternal = /^https:/i.test(publicOrigin);
+
+      jsonResponse(res, 200, {
+        ok: true,
+        generated_at: new Date().toISOString(),
+        working_dir: mcpWorkingDir,
+        transports: [
+          {
+            id: "http",
+            label: "HTTP",
+            protocol: "http",
+            status: tcpServer.listening ? "listening" : "stopped",
+            endpoint: "http://127.0.0.1:" + PORT,
+            command: mcpHttp,
+          },
+          {
+            id: "https",
+            label: "HTTPS",
+            protocol: "https",
+            status: httpsReady ? "listening" : (httpsExternal ? "external" : "disabled"),
+            endpoint: publicOrigin,
+            command: "curl -sS " + publicOrigin + "/health",
+          },
+          {
+            id: "uds",
+            label: "UDS (MCP + OpenAI)",
+            protocol: "uds",
+            status: udsListening ? "listening" : "stopped",
+            endpoint: "http://localhost",
+            paths: udsPaths,
+            bound_path: boundUds,
+            fallback_used: !!(udsGateway && udsGateway.fallbackUsed) || udsFallbackUsed,
+            protocols: openaiOnUds ? ["mcp", "openai"] : ["mcp"],
+            commands: { mcp: mcpUds, openai: openaiUds },
+          },
+          {
+            id: "grpc",
+            label: "gRPC (h2c)",
+            protocol: "grpc",
+            status: grpcServer ? "listening" : "disabled",
+            endpoint: "127.0.0.1:" + grpcPort,
+            command: "grpcurl -plaintext -d '{\"model\":\"mission\",\"messages\":[{\"role\":\"user\",\"content\":\"Say OK\"}]}' " +
+              "127.0.0.1:" + grpcPort + " zombie.v1.ChatService/Chat",
+          },
+          {
+            id: "stdio",
+            label: "STDIO",
+            protocol: "stdio",
+            status: "available",
+            endpoint: "node transport/stdio-openai.js",
+            command: cd + "\nprintf '%s\\n' '{\"model\":\"mission\",\"messages\":[{\"role\":\"user\",\"content\":\"Say OK\"}]}' | node transport/stdio-openai.js",
+          },
+          {
+            id: "websocket",
+            label: "WebSocket",
+            protocol: "websocket",
+            status: "available",
+            endpoint: wsOrigin + "/ws",
+            command: "websocat " + wsOrigin + "/ws",
+          },
+        ],
+        providers: {
+          note: "Providers and models are routing targets, not transports. UDS is called only by a client that passes --unix-socket.",
+          count: Object.keys(PROVIDER_CONFIG).length,
+          ids: Object.keys(PROVIDER_CONFIG),
+        },
       });
       return;
     }
@@ -13324,7 +13460,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
           "Content-Type": contentType,
           "Access-Control-Allow-Origin": adminCors,
           "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-          "Access-Control-Allow-Headers": "Content-Type, x-session-id",
+          "Access-Control-Allow-Headers": "Content-Type, x-session-id, x-working-dir",
           "Cache-Control": "no-cache",
         });
         res.end(content);
@@ -14126,6 +14262,23 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
         return;
       }
 
+      // A native client may attach its current directory to the request.
+      // Origin-bearing browsers stay behind the normal CORS gate.
+      const requestedDir = req.headers["x-working-dir"];
+      if (requestedDir && (!req.headers.origin || isOriginAllowed(req.headers.origin))) {
+        const resolved = path.resolve(String(requestedDir));
+        try {
+          if (fs.statSync(resolved).isDirectory()) {
+            mcpWorkingDir = resolved;
+            const sid = req.headers["x-session-id"];
+            if (sid) sessionDirs.set(String(sid), resolved);
+            log("INFO", "CHAT_WORKDIR", { dir: resolved, via: "x-working-dir" });
+          }
+        } catch (_) {
+          log("WARN", "CHAT_WORKDIR_INVALID", { dir: resolved });
+        }
+      }
+
       const model = parsed.model || "mission";
       const messages = parsed.messages || [];
       const stream = parsed.stream || false;
@@ -14410,7 +14563,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
                 "",
               )
               .replace(
-                /^((?:Code Guru|Bug Hunter|Security|Performance|Doc King|QA Tyrant|মনু|জুয়েল|বৃষ্টি|রাশেদ|হালিম|মজনু).{0,50}(started|gave|says|mentioned|noted|pointed out)).{0,200}\n/gim,
+                /^((?:Code Guru|Bug Hunter|Security|Performance|Doc King|QA Tyrant|\u09ae\u09a8\u09c1|\u099c\u09c1\u09af\u09bc\u09c7\u09b2|\u09ac\u09c3\u09b7\u09cd\u099f\u09bf|\u09b0\u09be\u09b6\u09c7\u09a6|\u09b9\u09be\u09b2\u09bf\u09ae|\u09ae\u099c\u09a8\u09c1).{0,50}(started|gave|says|mentioned|noted|pointed out)).{0,200}\n/gim,
                 "",
               )
               .trim();
@@ -14483,7 +14636,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
               "",
             )
             .replace(
-              /^((?:Code Guru|Bug Hunter|Security|Performance|Doc King|QA Tyrant|মনু|জুয়েল|বৃষ্টি|রাশেদ|হালিম|মজনু).{0,50}(started|gave|says|mentioned|noted|pointed out)).{0,200}\n/gim,
+              /^((?:Code Guru|Bug Hunter|Security|Performance|Doc King|QA Tyrant|\u09ae\u09a8\u09c1|\u099c\u09c1\u09af\u09bc\u09c7\u09b2|\u09ac\u09c3\u09b7\u09cd\u099f\u09bf|\u09b0\u09be\u09b6\u09c7\u09a6|\u09b9\u09be\u09b2\u09bf\u09ae|\u09ae\u099c\u09a8\u09c1).{0,50}(started|gave|says|mentioned|noted|pointed out)).{0,200}\n/gim,
               "",
             )
             .trim();
@@ -16687,31 +16840,24 @@ async function init() {
   }, WATCHDOG_INTERVAL_MS);
   log("INFO", "WATCHDOG_STARTED", { interval_ms: WATCHDOG_INTERVAL_MS });
 
-  // ── MCP Socket Server (UDS on Linux/Mac, TCP fallback on Windows) ──
-  // Doc: doc/Streaming/Server-Sent-Events.md
-  // Windows does NOT support Unix Domain Sockets via net.createServer
-  // So on Windows we fall back to a TCP loopback on UDS_PORT.
+  // ── UDS transport: MCP + OpenAI HTTP on one socket ──────────
+  // Windows has no Unix domain sockets; it keeps the loopback TCP fallback.
+  // On Linux/macOS the UDS list binds in order, so a bad first path falls
+  // through to the next candidate without restarting the server.
   const isWindows = process.platform === "win32";
-  // Use the module-level UDS_PORT from env/DOMAIN_CFG — never derive it here.
   const udsListenPort = isWindows ? UDS_PORT : null;
-  const socketPath = UDS_PATH;
 
-  // Ensure the socket directory exists (OS temp dir per syllabus) — without
-  // this, listen() fails with ENOENT when /tmp/zombiecoder is missing.
-  if (!isWindows) {
-    try {
-      fs.mkdirSync(path.dirname(socketPath), { recursive: true });
-    } catch (_) { /* best-effort; listen() will surface real errors */ }
-  }
+  const routeUdsMessage = (socket, message) => {
+    if (message.type && message.type !== "mcp") {
+      const transport = new TransportAdapter("uds", socket);
+      handleMessage(transport, message);
+      return;
+    }
+    handleUdsMcpMessage(socket, message);
+  };
 
-  udsServer = net.createServer((socket) => {
-    const clientAddr = isWindows
-      ? "tcp:127.0.0.1:" + udsListenPort
-      : socketPath;
-    log("INFO", "UDS_CONNECTED", {
-      transport: isWindows ? "tcp" : "uds",
-      path: clientAddr,
-    });
+  const attachLegacyUds = (socket, socketPath) => {
+    log("INFO", "UDS_CONNECTED", { transport: "uds", path: socketPath });
     let buffer = "";
     socket.on("data", (data) => {
       buffer += data.toString();
@@ -16721,35 +16867,40 @@ async function init() {
         buffer = buffer.slice(idx + 1);
         if (!line) continue;
         try {
-          const message = JSON.parse(line);
-          // Phase 2: Route non-MCP to unified handler
-          if (message.type && message.type !== "mcp") {
-            const transport = new TransportAdapter("uds", socket);
-            handleMessage(transport, message);
-          } else {
-            handleUdsMcpMessage(socket, message);
-          }
+          routeUdsMessage(socket, JSON.parse(line));
         } catch (e) {
-          socket.write(
-            JSON.stringify({
-              jsonrpc: "2.0",
-              id: null,
-              error: { code: -32700, message: "Parse error: " + e.message },
-            }) + "\n",
-          );
+          socket.write(JSON.stringify({
+            jsonrpc: "2.0",
+            id: null,
+            error: { code: -32700, message: "Parse error: " + e.message },
+          }) + "\n");
         }
       }
     });
-    socket.on("end", () =>
-      log("INFO", "UDS_DISCONNECTED", { transport: isWindows ? "tcp" : "uds" }),
-    );
-    socket.on("error", (err) =>
-      log("WARN", "UDS_ERROR", { error: err.message }),
-    );
-  });
+    socket.on("end", () => log("INFO", "UDS_DISCONNECTED", { transport: "uds" }));
+    socket.on("error", (err) => log("WARN", "UDS_ERROR", { error: err.message }));
+  };
 
   if (isWindows) {
-    // Windows: TCP fallback — loopback only, port from UDS_PORT
+    udsServer = net.createServer((socket) => {
+      log("INFO", "UDS_CONNECTED", {
+        transport: "tcp",
+        path: "tcp:127.0.0.1:" + udsListenPort,
+      });
+      socket.on("data", (data) => {
+        for (const line of data.toString().split("\n")) {
+          if (!line.trim()) continue;
+          try { routeUdsMessage(socket, JSON.parse(line)); }
+          catch (e) {
+            socket.write(JSON.stringify({
+              jsonrpc: "2.0", id: null,
+              error: { code: -32700, message: "Parse error: " + e.message },
+            }) + "\n");
+          }
+        }
+      });
+      socket.on("error", (err) => log("WARN", "UDS_ERROR", { error: err.message }));
+    });
     udsServer.listen(udsListenPort, "127.0.0.1", () => {
       log("INFO", "UDS_LISTENING", {
         transport: "tcp-fallback",
@@ -16757,50 +16908,82 @@ async function init() {
         note: "Windows: UDS not supported, using TCP loopback",
       });
     });
-  } else {
-    // Linux/Mac: Unix Domain Socket
-    if (fs.existsSync(socketPath)) {
-      try {
-        fs.unlinkSync(socketPath);
-      } catch (_) { }
+    udsServer.on("error", (err) => {
+      log("WARN", "UDS_SERVER_ERROR", { error: err.message, transport: "tcp" });
+    });
+  } else if (process.env.OPENAI_UDS_PATH) {
+    // Legacy/test mode: two explicit sockets, no demux. Production uses UDS.
+    udsBoundPath = UDS_PATH;
+    try { fs.mkdirSync(path.dirname(UDS_PATH), { recursive: true }); } catch (_) {}
+    if (fs.existsSync(UDS_PATH)) {
+      try { fs.unlinkSync(UDS_PATH); } catch (_) {}
     }
-    udsServer.listen(socketPath, () => {
+    udsServer = net.createServer((socket) => attachLegacyUds(socket, UDS_PATH));
+    udsServer.listen(UDS_PATH, () => {
       try {
-        // UDS security: socket is the trust boundary — group/owner only.
-        // Fix: 0o777 let ANY local user hijack the MCP socket (which serves
-        // unrestricted read_file/terminal). 0o660 = same-user clients only.
-        fs.chmodSync(socketPath, 0o660);
-        udsBoundIno = fs.statSync(socketPath).ino;
-      } catch (_) { }
-      log("INFO", "UDS_LISTENING", { transport: "uds", path: socketPath, ino: udsBoundIno });
+        fs.chmodSync(UDS_PATH, 0o660);
+        udsBoundIno = fs.statSync(UDS_PATH).ino;
+      } catch (_) {}
+      log("INFO", "UDS_LISTENING", {
+        transport: "uds", path: UDS_PATH, ino: udsBoundIno, protocols: ["mcp"],
+      });
     });
-  }
-  udsServer.on("error", (err) => {
-    log("WARN", "UDS_SERVER_ERROR", {
-      error: err.message,
-      transport: isWindows ? "tcp" : "uds",
+    udsServer.on("error", (err) => {
+      log("WARN", "UDS_SERVER_ERROR", { error: err.message, transport: "uds" });
     });
-  });
 
-  // ── OpenAI HTTP over UDS — same handler as TCP ──────────────
-  if (!isWindows && process.env.OPENAI_UDS !== "0") {
-    openaiUdsPath = path.resolve(
-      PROJECT_ROOT,
-      process.env.OPENAI_UDS_PATH || path.join(os.tmpdir(), "zombiecoder", "openai.sock"),
-    );
-    const { createUdsOpenAIServer } = require("./transport/uds-openai");
-    openaiUdsServer = createUdsOpenAIServer({
-      socketPath: openaiUdsPath,
-      handler: handleHttpRequest,
-      onListening: (p) => {
-        try {
-          openaiUdsIno = fs.statSync(p).ino;
-        } catch (_) { }
-        log("INFO", "OPENAI_UDS_LISTENING", { path: p, ino: openaiUdsIno });
+    if (process.env.OPENAI_UDS !== "0") {
+      openaiUdsPath = path.resolve(PROJECT_ROOT, process.env.OPENAI_UDS_PATH);
+      const { createUdsOpenAIServer } = require("./transport/uds-openai");
+      openaiUdsServer = createUdsOpenAIServer({
+        socketPath: openaiUdsPath,
+        handler: handleHttpRequest,
+        onListening: (p) => {
+          try { openaiUdsIno = fs.statSync(p).ino; } catch (_) {}
+          log("INFO", "OPENAI_UDS_LISTENING", { path: p, ino: openaiUdsIno });
+        },
+      });
+      openaiUdsServer.listen().catch((err) => {
+        log("WARN", "OPENAI_UDS_ERROR", { error: err.message });
+      });
+    }
+  } else {
+    const { createUdsGateway } = require("./transport/uds-gateway");
+    const openaiOverUds = process.env.OPENAI_UDS !== "0" && process.env.UDS_OPENAI !== "0";
+    const handler = openaiOverUds
+      ? handleHttpRequest
+      : (req, res) => jsonResponse(res, 404, {
+          error: "OpenAI over UDS is disabled (UDS_OPENAI=0)",
+        });
+    udsGateway = createUdsGateway({
+      paths: UDS_PATHS,
+      handler,
+      onConnection: () => log("INFO", "UDS_CONNECTED", {
+        transport: "uds",
+        path: udsBoundPath || UDS_PATHS[0],
+      }),
+      onMcpMessage: routeUdsMessage,
+      onSocketError: (err) => log("WARN", "UDS_ERROR", { error: err.message }),
+      onListening: (p, meta) => {
+        udsBoundPath = p;
+        udsFallbackUsed = !!meta.fallbackUsed;
+        try { udsBoundIno = fs.statSync(p).ino; } catch (_) {}
+        log("INFO", "UDS_LISTENING", {
+          transport: "uds",
+          path: p,
+          ino: udsBoundIno,
+          candidates: UDS_PATHS,
+          fallback_used: udsFallbackUsed,
+          protocols: openaiOverUds ? ["mcp", "openai"] : ["mcp"],
+        });
       },
     });
-    openaiUdsServer.listen().catch((err) => {
-      log("WARN", "OPENAI_UDS_ERROR", { error: err.message });
+    udsGateway.listen().catch((err) => {
+      log("WARN", "UDS_BIND_FAILED", {
+        candidates: UDS_PATHS,
+        attempts: udsGateway ? udsGateway.attempts : [],
+        error: err.message,
+      });
     });
   }
 
@@ -16964,7 +17147,7 @@ async function init() {
         ? "  TCP  127.0.0.1:" +
             UDS_PORT +
             "        — MCP socket (Windows TCP fallback)"
-        : "  UDS  " + socketPath + "  — MCP socket (Unix domain socket)",
+        : "  UDS  " + (udsBoundPath || UDS_PATH) + "  — MCP + OpenAI (Unix domain socket)",
     );
     console.log("  WS   /                   — WebSocket for real-time");
     console.log("  POST /api/input          — Unified HTTP (handleMessage)");
@@ -17664,7 +17847,7 @@ function detectContradictions(text) {
 }
 
 function hasEvidence(text) {
-  return /(্রমাণ|evidence|according to|as per|reference|source|based on|উল্লেখ|দেখা যায়|মতে|according)/i.test(
+  return /(\u09cd\u09b0\u09ae\u09be\u09a3|evidence|according to|as per|reference|source|based on|\u0989\u09b2\u09cd\u09b2\u09c7\u0996|\u09a6\u09c7\u0996\u09be \u09af\u09be\u09af\u09bc|\u09ae\u09a4\u09c7|according)/i.test(
     text,
   );
 }
@@ -18338,24 +18521,31 @@ function shutdown() {
   log("INFO", "SHUTDOWN", {});
   // Close TCP wrapper (HTTP server is closed by tcpServer)
   tcpServer.close();
-  // Close UDS server and clean up socket file
+  // Close UDS server and clean up socket file. The gateway owns its own
+  // inode check; the legacy listener needs the manual pass below.
+  if (udsGateway) {
+    udsGateway.close().catch(() => {});
+  }
   if (typeof udsServer !== "undefined" && udsServer) {
     udsServer.close();
   }
-  try {
-    const st = fs.statSync(UDS_PATH);
-    if (udsBoundIno && st.ino === udsBoundIno) {
-      fs.unlinkSync(UDS_PATH);
-      log("INFO", "UDS_CLEANUP", { path: UDS_PATH, ino: st.ino });
-    } else {
-      log("INFO", "UDS_CLEANUP_SKIP", {
-        path: UDS_PATH,
-        owned: udsBoundIno,
-        found: st.ino,
-      });
+  if (!udsGateway) {
+    const cleanupPath = udsBoundPath || UDS_PATH;
+    try {
+      const st = fs.statSync(cleanupPath);
+      if (udsBoundIno && st.ino === udsBoundIno) {
+        fs.unlinkSync(cleanupPath);
+        log("INFO", "UDS_CLEANUP", { path: cleanupPath, ino: st.ino });
+      } else {
+        log("INFO", "UDS_CLEANUP_SKIP", {
+          path: cleanupPath,
+          owned: udsBoundIno,
+          found: st.ino,
+        });
+      }
+    } catch (_) {
+      /* path already gone */
     }
-  } catch (_) {
-    /* path already gone */
   }
   if (openaiUdsServer && typeof openaiUdsServer.close === "function") {
     openaiUdsServer.close().catch(() => {});

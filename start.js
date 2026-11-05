@@ -184,7 +184,7 @@ function storeRuntimeConfig(envInfo) {
     
     // Filter and store relevant env vars (exclude secrets)
     const relevantKeys = [
-      "PORT", "SERVER_PORT", "UDS_PORT", "APP_URL", "DOMAIN",
+      "PORT", "SERVER_PORT", "UDS", "UDS_OPENAI", "UDS_PORT", "APP_URL", "DOMAIN",
       "NOTE_ENCRYPTION_KEY", "NOTE_TTL", "MAX_NOTE_SIZE",
       "OPENCODE_MODELS", "GROQ_MODELS", "GEMINI_MODELS",
       "ADMIN_USER", "ADMIN_API_KEY",
@@ -374,6 +374,7 @@ function getDefaultConfig() {
     serverPort: Number(process.env.SERVER_PORT) || Number(process.env.PORT) || 5050,
     udsPort: Number(process.env.UDS_PORT) || 5150,
     udsPath:
+      String(process.env.UDS || "").split(",")[0].trim() ||
       process.env.ZOMBIECODER_UDS_PATH ||
       path.join(os.tmpdir(), "zombiecoder", "mcp.sock"),
     workingDir: process.cwd(),

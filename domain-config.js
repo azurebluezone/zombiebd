@@ -52,7 +52,6 @@ function deriveCorsOrigins(env) {
   const appUrl = String(env.APP_URL || "").trim();
   const appHost = hostOf(appUrl);
   const port = String(env.PORT || "5050");
-  const localApp = !appHost || LOOPBACK.has(appHost);
 
   let scheme = "https";
   let appPort = "";
@@ -102,11 +101,34 @@ function deriveCorsOrigins(env) {
     add(scheme + "://" + host + (appPort ? ":" + appPort : ""));
   }
 
-  if (localApp) {
-    add("http://localhost:" + port);
-    add("http://127.0.0.1:" + port);
-    if (mainHost && LOOPBACK.has(mainHost)) add("http://" + mainHost + ":" + port);
+  // Loopback is how the admin panel and local tools reach this server even
+  // when APP_URL points at a public host. Keep every IP family and every
+  // local port that a real client may use (API, frontend, session verifier).
+  const localPorts = new Set([port]);
+  for (const key of ["FRONTEND_PORT", "CADDY_HTTP_PORT", "SESSION_VERIFY_PORT"]) {
+    const value = String(env[key] || "").trim();
+    if (value) localPorts.add(value);
   }
+  for (const key of ["FRONTEND_URL", "SESSION_VERIFY_URL", "sessionVerifyUrl", "APP_URL"]) {
+    try {
+      const parsed = new URL(String(env[key] || "").trim());
+      if (parsed.port) localPorts.add(parsed.port);
+    } catch (_) {
+      // Not a URL: ignore, the startup report covers malformed APP_URL.
+    }
+  }
+  // 3000 is the default local frontend port in this deployment; keep it
+  // explicitly so a verifier running there is never blocked by CORS.
+  localPorts.add("3000");
+
+  for (const localPort of localPorts) {
+    add("http://localhost:" + localPort);
+    add("http://127.0.0.1:" + localPort);
+    add("http://[::1]:" + localPort);
+  }
+  add("http://localhost");
+  add("http://127.0.0.1");
+  if (mainHost && LOOPBACK.has(mainHost)) add("http://" + mainHost + ":" + port);
 
   return Array.from(origins);
 }
@@ -165,7 +187,7 @@ function buildDefaultConfig() {
     identity: {
       name: process.env.BRANDING_OWNER || "ZombieCoder",
       version: process.env.SERVER_VERSION || "3.2.1",
-      tagline: process.env.BRANDING_TAGLINE || "যোনে কোড ও কথা বলে",
+      tagline: process.env.BRANDING_TAGLINE || "Code that speaks with evidence",
       branding: {
         owner: process.env.BRANDING_OWNER || "Development User",
         organization: process.env.BRANDING_ORGANIZATION || "Developer Zone",

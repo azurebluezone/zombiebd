@@ -273,7 +273,7 @@ async function main() {
     ? pass("format-stream", "chunks=" + sse.events.length + " done=yes")
     : fail("format-stream", summarizeShape(sseErrors, "shape"));
 
-  // Bengali normalizer: both spellings of জয়নাল must land on the same
+  // Bengali normalizer: both spellings of Joynal must land on the same
   // canonical NFC sequence (decomposed, because U+09DF is a composition
   // exclusion), stay idempotent, and never lose ZWNJ/ZWJ or astral chars.
   const normErrors = [];
@@ -306,7 +306,7 @@ async function main() {
     BENGALI.zwnj,
     BENGALI.zwj,
     BENGALI.astral,
-    "বাংলা: ক্\u200Cষ, জয়নাল, ড়, ঢ়",
+    "\u09ac\u09be\u0982\u09b2\u09be: \u0995\u09cd\u200C\u09b7, \u099c\u09af\u09bc\u09a8\u09be\u09b2, \u09a1\u09bc, \u09a2\u09bc",
   ].join(" ");
   const target = path.join(SCRATCH, "bengali-" + process.pid + ".txt");
   const writeRes = await mcpToolHttp(ALLOWED_ORIGIN, "write_file", { path: target, content: bengaliText }, authHeaders);

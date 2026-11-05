@@ -104,7 +104,7 @@ const CFG = {
   gguf: detectGguf(),
   model: process.env.BRIDGE_MODEL || "ollama-local",
   port: parseInt(process.env.BRIDGE_PORT || "11437", 10),
-  socket: process.env.BRIDGE_SOCKET || "/tmp/local-llm.sock",
+  socket: process.env.BRIDGE_SOCKET || "",
   internalPort: parseInt(process.env.BRIDGE_INTERNAL_PORT || "11434", 10),
   upstreamModel:
     process.env.BRIDGE_UPSTREAM_MODEL || process.env.BRIDGE_MODEL || "ollama-local",
@@ -1003,17 +1003,21 @@ async function main() {
     log("INFO", "TCP_SERVER_LISTENING", { host: "127.0.0.1", port: CFG.port });
   });
 
-  cleanupSocket();
-  const udsServer = http.createServer(handler);
-  udsServer.on("connection", (socket) => {
-    socket._isBridgeUDS = true;
-  });
-  udsServer.listen(CFG.socket, () => {
-    try {
-      fs.chmodSync(CFG.socket, CFG.socketMode);
-    } catch (_) {}
-    log("INFO", "UDS_SERVER_LISTENING", { socket: CFG.socket });
-  });
+  // UDS is opt-in: the gateway owns the single inbound socket. The bridge
+  // uses TCP unless an operator explicitly sets BRIDGE_SOCKET.
+  if (CFG.socket) {
+    cleanupSocket();
+    const udsServer = http.createServer(handler);
+    udsServer.on("connection", (socket) => {
+      socket._isBridgeUDS = true;
+    });
+    udsServer.listen(CFG.socket, () => {
+      try {
+        fs.chmodSync(CFG.socket, CFG.socketMode);
+      } catch (_) {}
+      log("INFO", "UDS_SERVER_LISTENING", { socket: CFG.socket });
+    });
+  }
 }
 
 main().catch((err) => {

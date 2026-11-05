@@ -31,7 +31,6 @@ const DATA_DIR = path.join(TMP, "data");
 const LOG_DIR = path.join(TMP, "logs");
 const DB_PATH = path.join(DATA_DIR, "models.db");
 const MCP_SOCK = path.join(TMP, "mcp.sock");
-const OPENAI_SOCK = path.join(TMP, "openai.sock");
 
 function log(line) {
   console.log(line);
@@ -106,8 +105,8 @@ function startInstance(ports) {
     DATA_DIR,
     LOG_DIR,
     DB_SQLITE_PATH: DB_PATH,
-    UDS_PATH: MCP_SOCK,
-    OPENAI_UDS_PATH: OPENAI_SOCK,
+    UDS: MCP_SOCK,
+    UDS_OPENAI: "1",
     INSTANCE_ID: "cwd-db-check-" + Date.now(),
   });
   const child = spawn(process.execPath, [path.join(ROOT, "api.js")], {

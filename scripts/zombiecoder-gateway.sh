@@ -124,15 +124,11 @@ if [ "$APP_DIR/api.js" -nt "$RUNTIME_DIR/api.js" ]; then
   log "WARN dist/ is older than api.js — rebuild before trusting this boot"
 fi
 
-# ── Drop stale sockets so a restart does not hit EADDRINUSE ─────────────────
-# ONLY this service's own sockets. /tmp/local-llm.sock used to be listed here
-# but it is owned by a DIFFERENT unit (zc-gateway.service / monu_the_builder's
-# local-llm-bridge) — deleting it on our restart broke the very UDS path our
-# OLLAMA_SOCKET points at, and provider/transport.js has no socket->HTTP
-# fallback, so every Ollama call died with ENOENT. Verified 2026-10-13.
-for sock in "${UDS_PATH:-/tmp/zombiecoder-test/mcp.sock}"; do
-  if [ -S "$sock" ]; then rm -f "$sock" 2>/dev/null && log "removed stale socket $sock"; fi
-done
+# ── Stale sockets ───────────────────────────────────────────────────────────
+# transport/uds-gateway.js owns socket cleanup: it probes each `UDS` candidate,
+# reuses a live listener, and only unlinks a path whose inode is dead. Never
+# rm -f a socket path here — that would unlink a live listener during restart.
+# /tmp/local-llm.sock belongs to a different unit and is not touched.
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 # exec so systemd tracks this PID directly and restarts it on exit.

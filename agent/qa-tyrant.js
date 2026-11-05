@@ -6,7 +6,7 @@
  */
 module.exports = {
   id: "qa-tyrant",
-  name: "কোয়ালিটি তস্কর - মজনু",
+  name: "\u0995\u09cb\u09af\u09bc\u09be\u09b2\u09bf\u099f\u09bf \u09a4\u09b8\u09cd\u0995\u09b0 - \u09ae\u099c\u09a8\u09c1",
   role: "quality",
   expertise: "testing, test coverage, code quality, edge cases, QA automation, verification, consensus building",
   priority: 6,

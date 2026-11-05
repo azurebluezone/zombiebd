@@ -25,19 +25,19 @@ const ENV = loadEnv({ root: ROOT });
 const PORTS = ENV.ports;
 const MAIN_HOST = ENV.derived.mainHost || "localhost";
 const UDS_MCP = ENV.derived.udsPath || "/tmp/zombiecoder/mcp.sock";
-const UDS_OPENAI = ENV.values.OPENAI_UDS_PATH || "/tmp/zombiecoder/openai.sock";
+const UDS_OPENAI = UDS_MCP;
 
 // Canonically equivalent Bengali forms plus zero-width controls. The
 // normalizer must produce one NFC form and must not corrupt any of them.
 const BENGALI = {
-  // জয়নাল: U+09DF (precomposed) and য + nukta (decomposed). NFC resolves
+  // Joynal: U+09DF (precomposed) and ya + nukta (decomposed). NFC resolves
   // both to the decomposed sequence because U+09DF is a composition exclusion.
   composed: "\u099C\u09DF\u09A8\u09BE\u09B2",
   decomposed: "\u099C\u09AF\u09BC\u09A8\u09BE\u09B2",
   canonical: "\u099C\u09AF\u09BC\u09A8\u09BE\u09B2",
-  rraComposed: "\u09DC", // ড়
+  rraComposed: "\u09DC", // \u09a1\u09bc
   rraDecomposed: "\u09A1\u09BC",
-  rhaComposed: "\u09DD", // ঢ়
+  rhaComposed: "\u09DD", // \u09a2\u09bc
   rhaDecomposed: "\u09A2\u09BC",
   zwnj: "\u0995\u200C\u09B7",
   zwj: "\u0995\u200D\u09B7",
@@ -239,7 +239,7 @@ function grpcCall(request, timeoutMs) {
 function stdioCall(request, timeoutMs) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [path.join(ROOT, "transport", "stdio-openai.js")], {
-      env: Object.assign({}, process.env, { OPENAI_UDS_PATH: UDS_OPENAI }),
+      env: Object.assign({}, process.env, { UDS: UDS_MCP }),
       stdio: ["pipe", "pipe", "pipe"],
     });
     let buffer = "";

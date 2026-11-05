@@ -6,7 +6,7 @@
  */
 module.exports = {
   id: "perf-wizard",
-  name: "পারফরম্যান্স উইজার্ড - রাশেদ",
+  name: "\u09aa\u09be\u09b0\u09ab\u09b0\u09ae\u09cd\u09af\u09be\u09a8\u09cd\u09b8 \u0989\u0987\u099c\u09be\u09b0\u09cd\u09a1 - \u09b0\u09be\u09b6\u09c7\u09a6",
   role: "performance",
   expertise: "performance optimization, caching, database tuning, profiling, memory management, latency reduction, resource utilization",
   priority: 4,

@@ -6,7 +6,7 @@
  */
 module.exports = {
   id: "doc-king",
-  name: "ডকুমেন্টেশন রাজা - হালিম",
+  name: "\u09a1\u0995\u09c1\u09ae\u09c7\u09a8\u09cd\u099f\u09c7\u09b6\u09a8 \u09b0\u09be\u099c\u09be - \u09b9\u09be\u09b2\u09bf\u09ae",
   role: "documentation",
   expertise: "API documentation, code comments, README, technical writing, documentation standards, API specs",
   priority: 5,

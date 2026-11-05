@@ -104,8 +104,7 @@ start-up error instead of a silently different runtime.
 | llama.cpp model | `qwen3-1.7b-abliterated` | `/api/v0/models` |
 | Ollama | `http://127.0.0.1:11434` | `/api/tags` |
 | Local bridge | `127.0.0.1:11435`, backend `ollama`, model `qwen2:0.5b` | `/health` |
-| MCP UDS | `/tmp/zombiecoder/mcp.sock` | `ss -lxp` |
-| OpenAI UDS | `/tmp/zombiecoder/openai.sock` | `ss -lxp` |
+| MCP + OpenAI UDS | `UDS` first candidate `/tmp/zombiecoder/mcp.sock`; fallback `/var/tmp/zombiecoder/mcp.sock` | `ss -lxp`, `GET /api/transports` |
 | Runtime Node | v24.22.2 | `/health` |
 | Process manager | systemd user unit `zombiecoder-gateway.service` (`Restart=always`); a terminal run stops the unit and owns the port | `systemctl --user is-active` |
 

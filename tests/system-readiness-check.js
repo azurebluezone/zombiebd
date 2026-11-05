@@ -39,8 +39,7 @@ const ORIGIN = "https://audit.local";
 const IDENTITY_AGENT = "readiness-audit";
 const LOG_DIR = path.resolve(ROOT, ENV.values.LOG_DIR || "logs");
 const UDS_MCP = ENV.derived.udsPath || "/tmp/zombiecoder/mcp.sock";
-const UDS_OPENAI =
-  ENV.values.OPENAI_UDS_PATH || "/tmp/zombiecoder/openai.sock";
+const UDS_OPENAI = UDS_MCP;
 
 const state = {
   api: 0,
@@ -223,15 +222,15 @@ function udsHttpGet(socketPath, pathname) {
 
 async function localUds() {
   const mcp = await udsMcpTools(UDS_MCP);
-  if (!mcp.ok) throw new Error("mcp.sock " + mcp.error + " path=" + UDS_MCP);
+  if (!mcp.ok) throw new Error("uds " + mcp.error + " path=" + UDS_MCP);
   const tools = mcp.json && mcp.json.result && mcp.json.result.tools;
   if (!Array.isArray(tools) || tools.length !== 153) {
-    throw new Error("mcp.sock tools=" + (Array.isArray(tools) ? tools.length : "bad"));
+    throw new Error("uds tools=" + (Array.isArray(tools) ? tools.length : "bad"));
   }
   const openai = await udsHttpGet(UDS_OPENAI, "/v1/models");
   if (openai.status !== 200 || !openai.json || !Array.isArray(openai.json.data)) {
     throw new Error(
-      "openai.sock status=" + openai.status + " error=" + (openai.error || "no data"),
+      "uds openai status=" + openai.status + " error=" + (openai.error || "no data"),
     );
   }
   pass(

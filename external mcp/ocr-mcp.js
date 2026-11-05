@@ -18,7 +18,7 @@
 //   2. Default language was "eng", which turned Bengali titles into garbage.
 //      Evidence, same cover file:
 //        eng       -> "A523 Clad PATAo prt"
-//        eng+ben   -> "এসইও শেখার কমপ্লিট কোর্স"
+//        eng+ben   -> mixed English and Bengali text sample
 //      The default is now "eng+ben" (override with the OCR_LANGS env or the
 //      per-call `langs` argument).
 //

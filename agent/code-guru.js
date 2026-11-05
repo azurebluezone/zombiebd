@@ -6,7 +6,7 @@
  */
 module.exports = {
   id: "code-guru",
-  name: "কোড গুরু - মনু",
+  name: "\u0995\u09cb\u09a1 \u0997\u09c1\u09b0\u09c1 - \u09ae\u09a8\u09c1",
   role: "architecture",
   expertise: "code review, refactoring, best practices, system design, SOLID principles, design patterns",
   priority: 1,

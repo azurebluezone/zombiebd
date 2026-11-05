@@ -107,7 +107,7 @@ client (https/wss)
         +--> 127.0.0.1:5400   universal adapter (HTTP only)
 
 internal only: Ollama 11434, bridge 11435, adapter HTTPS 5443,
-               UDS /tmp/zombiecoder/mcp.sock, openai.sock,
+               UDS /tmp/zombiecoder/mcp.sock (fallback /var/tmp/...),
                gRPC 5052, optional HTTPS 5444, Windows TCP 5150,
                llama.cpp 9932
 ```
@@ -124,8 +124,8 @@ them only from loopback.
 | --- | ---: | --- | --- | --- |
 | `PORT` | `5050` | main API / MCP | `127.0.0.1` | yes (`MAIN_HOST`) |
 | `UDS_PORT` | `5150` | Windows TCP fallback for UDS | `127.0.0.1` | no |
-| `UDS_PATH` | `/tmp/zombiecoder/mcp.sock` | Linux UDS (newline JSON-RPC) | filesystem `0660` | no |
-| `OPENAI_UDS_PATH` | `/tmp/zombiecoder/openai.sock` | OpenAI HTTP over UDS | filesystem `0660` | no |
+| `UDS` | `/tmp/zombiecoder/mcp.sock,/var/tmp/zombiecoder/mcp.sock` | one inbound socket: MCP JSON-RPC + OpenAI HTTP | first usable path binds; next is immediate fallback | filesystem `0660` | no |
+| `UDS_OPENAI` | `1` | expose OpenAI HTTP on the UDS (`0` = MCP only) | - | no |
 | `GRPC_PORT` | `5052` | gRPC (h2c + protobuf) | `127.0.0.1` | no |
 | `HTTPS_PORT` | `5444` | optional in-process TLS | `127.0.0.1` | no |
 | `OCR_MCP_PORT` | `3110` | OCR MCP | `127.0.0.1` | tool host |
@@ -169,7 +169,8 @@ APP_ROOT=
 BIND_HOST=127.0.0.1
 PORT=5050
 UDS_PORT=5150
-UDS_PATH=/tmp/zombiecoder/mcp.sock
+UDS=/tmp/zombiecoder/mcp.sock,/var/tmp/zombiecoder/mcp.sock
+UDS_OPENAI=1
 
 # Providers
 CUSTOM_PROVIDER_5_ENABLED=true
@@ -295,7 +296,13 @@ Windows: `scripts/install.ps1` exists; it is **NOT_TESTED** on this Linux host.
 
 ## 8. UDS, database and runtime contract
 
-- Linux UDS at `UDS_PATH`; directory `0700`; socket `0660`.
+- Linux UDS: `UDS` is a comma-separated path list. The first usable path binds;
+  if it is already owned or unusable, the next path binds immediately. One socket
+  serves both newline-delimited MCP JSON-RPC and OpenAI HTTP, demultiplexed by the
+  first bytes. Directory `0700`; socket `0660`; only the bound path is removed on
+  shutdown, and only when its inode still belongs to this process.
+- `UDS_OPENAI=0` keeps the socket MCP-only. `UDS_PATH` / `OPENAI_UDS_PATH` remain
+  legacy test inputs and are not part of the production contract.
 - Windows fallback is TCP on `UDS_PORT` (`127.0.0.1` only).
 - DB path comes from `DB_SQLITE_PATH`, default `data/models.db`.
 - First boot creates all tables and seeds agents from `agent/*.js`.

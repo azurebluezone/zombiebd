@@ -6,7 +6,7 @@
  */
 module.exports = {
   id: "team-heart",
-  name: "টিম হার্ট - জারা",
+  name: "\u099f\u09bf\u09ae \u09b9\u09be\u09b0\u09cd\u099f - \u099c\u09be\u09b0\u09be",
   role: "general",
   expertise: "team coordination, user empathy, communication, morale, conflict resolution, stakeholder management",
   priority: 7,
