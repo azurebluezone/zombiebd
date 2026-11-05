@@ -11,6 +11,8 @@
 
 const fs = require("fs");
 const path = require("path");
+const SCRATCH = path.join(__dirname, "..", ".verify");
+fs.mkdirSync(SCRATCH, { recursive: true });
 const crypto = require("crypto");
 const {
   ROOT,
@@ -243,18 +245,11 @@ async function main() {
     "type=" + (ws.json && ws.json.type) + " workdir=" + JSON.stringify(wsText) + (ws.error ? " error=" + ws.error : ""),
   );
 
-  // 13. Origin allow/deny around the same tool call. Every explicit Caddy
-  // host from .env must be allowed; a random external origin must not.
-  const caddyOrigins = [
-    "api.zombiecoder.my.id",
-    "ocr.zombiecoder.my.id",
-    "screen.zombiecoder.my.id",
-    "tts.zombiecoder.my.id",
-    "ads.zombiecoder.my.id",
-    "public.zombiecoder.my.id",
-    "combined.zombiecoder.my.id",
-    "adapter.zombiecoder.my.id",
-  ].map((host) => "https://" + host);
+  // 13. Origin allow/deny around the same tool call. The expected set comes
+  // from the production derivation (APP_URL, MAIN_HOST, TOOL_BASE_DOMAIN x
+  // deploy/tools.json); a hardcoded subdomain list failed once the edge moved
+  // to localhost with an empty TOOL_BASE_DOMAIN.
+  const caddyOrigins = require("../domain-config.js").deriveCorsOrigins(ENV.values);
   const originStatuses = [];
   for (const origin of caddyOrigins) {
     const res = await mcpToolHttp(origin, "get_working_dir", {});
@@ -313,7 +308,7 @@ async function main() {
     BENGALI.astral,
     "বাংলা: ক্\u200Cষ, জয়নাল, ড়, ঢ়",
   ].join(" ");
-  const target = path.join("/tmp/opencode", "bengali-" + process.pid + ".txt");
+  const target = path.join(SCRATCH, "bengali-" + process.pid + ".txt");
   const writeRes = await mcpToolHttp(ALLOWED_ORIGIN, "write_file", { path: target, content: bengaliText }, authHeaders);
   const expected = crypto.createHash("sha256").update(Buffer.from(bengaliText, "utf8")).digest("hex");
   const httpRead = await mcpToolHttp(ALLOWED_ORIGIN, "read_file", { path: target });

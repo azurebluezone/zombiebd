@@ -7,8 +7,6 @@
 module.exports = {
   id: "team-heart",
   name: "টিম হার্ট - জারা",
-  model: "MODELS_DB",
-  fallbackModel: "llama-local",
   role: "general",
   expertise: "team coordination, user empathy, communication, morale, conflict resolution, stakeholder management",
   priority: 7,

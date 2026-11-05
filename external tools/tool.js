@@ -391,7 +391,7 @@ function normalizeChatToolCalls(tcs) {
     .filter((tc) => tc && ((tc.function && tc.function.name) || tc.name))
     .map((tc, i) => {
       const fn = tc.function || tc;
-      return {
+      const out = {
         id: tc.id || tc.call_id || synthId("call_"),
         type: "function",
         function: {
@@ -399,6 +399,10 @@ function normalizeChatToolCalls(tcs) {
           arguments: argsToString(fn.arguments),
         },
       };
+      // Gemini 3.x needs this opaque value replayed with the tool call.
+      const signature = tc.thought_signature || tc.thoughtSignature;
+      if (signature) out.thought_signature = signature;
+      return out;
     });
 }
 
@@ -691,8 +695,8 @@ module.exports = {
 if (require.main === module && process.argv.includes("--selftest")) {
   let pass = 0, fail = 0;
   const ok = (name, cond) => {
-    if (cond) { pass++; console.log("  ✅ " + name); }
-    else { fail++; console.log("  ❌ " + name); }
+    if (cond) { pass++; console.log("  " + name); }
+    else { fail++; console.log("  " + name); }
   };
 
   const chatTools = [

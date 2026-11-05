@@ -25,8 +25,10 @@ const groq = require("./groq");
 const gemini = require("./gemini");
 const ollama = require("./ollama");
 const opencode = require("./opencode");
+const llamacpp = require("./llamacpp");
 const validator = require("./validator");
 const zclog = require("../lib/zc-log");
+const { expandEnv } = require("../lib/expand-env");
 
 // Adapter keyed by WIRE dialect — not by vendor marketing name.
 // `openai` covers OpenAI, vLLM, and every custom_N endpoint.
@@ -37,6 +39,8 @@ const ADAPTERS = {
   gemini: gemini,
   ollama: ollama,
   opencode: opencode,
+  llamacpp: llamacpp,
+  "llama-cpp": llamacpp,
 };
 
 // Selection order (evidence: PROVIDER_CONFIG sets type:"openai" for
@@ -121,7 +125,7 @@ function configForId(id) {
     const streamTimeout = parseInt(env["CUSTOM_PROVIDER_" + n + "_STREAM_TIMEOUT_MS"] || "", 10);
     return {
       id: id,
-      baseUrl: env["CUSTOM_PROVIDER_" + n + "_URL"],
+      baseUrl: expandEnv(env["CUSTOM_PROVIDER_" + n + "_URL"] || "").trim(),
       key: env["CUSTOM_PROVIDER_" + n + "_KEY"],
       type: (env["CUSTOM_PROVIDER_" + n + "_TYPE"] || "openai").toLowerCase(),
       ...(Number.isFinite(timeout) && timeout > 0 ? { timeout } : {}),
@@ -480,5 +484,5 @@ module.exports = {
   adapterFor,
   ADAPTERS,
   // Adapters are exported individually for tests / direct use.
-  adapters: { openai, groq, gemini, ollama, opencode },
+  adapters: { openai, groq, gemini, ollama, opencode, llamacpp },
 };

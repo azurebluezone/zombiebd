@@ -110,7 +110,7 @@ const CFG = {
     process.env.BRIDGE_UPSTREAM_MODEL || process.env.BRIDGE_MODEL || "ollama-local",
   ollamaUrl: process.env.BRIDGE_OLLAMA_URL || "http://127.0.0.1:11434",
   ctx: parseInt(process.env.BRIDGE_CTX || "512", 10),
-  // 🧟 TIMEOUT_FIX: this key was missing while upstreamChat()/chatStream()
+  // TIMEOUT_FIX: this key was missing while upstreamChat()/chatStream()
   // already read `timeout: CFG.timeoutMs`. Undefined made every outbound
   // request carry `timeout: undefined`, which Node 24 does NOT read as
   // "no timeout" — it falls back to 5s, so any prompt big enough to make the
@@ -122,7 +122,7 @@ const CFG = {
   // ollama the real window is whatever Ollama itself allows, not this number.
   timeoutMs: parseInt(process.env.BRIDGE_TIMEOUT_MS || "120000", 10),
   threads: parseInt(process.env.BRIDGE_THREADS || String(os.cpus().length), 10),
-  // 🧟 socket permission — default owner rw only (0o600); override via env
+  // socket permission — default owner rw only (0o600); override via env
   socketMode: parseInt(process.env.BRIDGE_SOCKET_MODE || "600", 8),
 };
 
@@ -531,7 +531,7 @@ async function waitUpstreamReady(ms) {
 }
 
 // ── HTTP Utility Helpers ─────────────────────────────────────
-// 🧟 CORS hardening — reflect only allowed origins; default = loopback only.
+// CORS hardening — reflect only allowed origins; default = loopback only.
 //    BRIDGE_ALLOWED_ORIGINS="*" restores the old any-origin behavior.
 function allowedOrigin(req) {
   const src = req.headers.origin;

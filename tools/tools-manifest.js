@@ -9,7 +9,7 @@
  *
  *     26  core      built into api.js (files, shell, agents, db, web)
  *     10  external  the MCP servers the project itself ships
- *                   (ocr, screen-recorder, tts)          ── together: 36 ✅ docs
+ *                   (ocr, screen-recorder, tts)          ── together: 36 docs
  *     95  pluggable third-party MCP servers the operator adds
  *                   (public-api, facebook-ads, combined)  ── optional
  *

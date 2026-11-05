@@ -7,8 +7,6 @@
 module.exports = {
   id: "bug-hunter",
   name: "বাগ হান্টার - জুয়েল",
-  model: "MODELS_DB",
-  fallbackModel: "llama-local",
   role: "debugging",
   expertise: "bug detection, error analysis, debugging, root cause analysis, stack trace analysis, memory leak detection",
   priority: 2,

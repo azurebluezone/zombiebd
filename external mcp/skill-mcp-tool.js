@@ -1,9 +1,9 @@
 /**
- * 🎯 SKILL.md Plugin MCP Tool
- * 
+ * SKILL.md Plugin MCP Tool
+ *
  * An MCP tool that reads/parses SKILL.md format files.
  * Usable internally (by our agents) AND externally (by other editors).
- * 
+ *
  * SKILL.md Format (industry standard):
  *   ---
  *   name: "skill-name"
@@ -15,7 +15,7 @@
  *   ---
  *   # Skill Name
  *   ... markdown content ...
- * 
+ *
  * This tool spreads the "skill kingdom" everywhere —
  * any editor that supports MCP can use our skills.
  */

@@ -191,15 +191,19 @@ function fromGemini(raw) {
       else text += p.text;
     }
     if (p.functionCall) {
-      toolCalls.push({
-        id: nextToolId("call_"),
+      const call = {
+        id: p.functionCall.id || nextToolId("call_"),
         type: "function",
         function: {
           name: p.functionCall.name || "",
           arguments: asArgString(p.functionCall.args),
         },
         index: toolCalls.length,
-      });
+      };
+      // Gemini 3.x rejects the follow-up turn when the model's functionCall
+      // part is replayed without its opaque thoughtSignature.
+      if (p.thoughtSignature) call.thought_signature = p.thoughtSignature;
+      toolCalls.push(call);
     }
   }
 
@@ -346,13 +350,16 @@ function createStreamNormalizer(opts) {
           else content += p.text;
         }
         if (p.functionCall) {
-          calls.push({
+          const call = {
             index: calls.length,
-            id: nextToolId("call_"),
+            id: p.functionCall.id || nextToolId("call_"),
             name: p.functionCall.name || "",
             args: asArgObject(p.functionCall.args),
             fragments: [],
-          });
+          };
+          // Required by Gemini 3.x when this call is replayed with its result.
+          if (p.thoughtSignature) call.thought_signature = p.thoughtSignature;
+          calls.push(call);
         }
       }
       if (cand.finishReason) {
@@ -423,12 +430,14 @@ function createStreamNormalizer(opts) {
     if (newCalls.length) {
       delta.tool_calls = newCalls.map(function (c) {
         emittedIds.add(c.id);
-        return {
+        const call = {
           index: c.index,
           id: c.id,
           type: "function",
           function: { name: c.name, arguments: joinedArgs(c) },
         };
+        if (c.thought_signature) call.thought_signature = c.thought_signature;
+        return call;
       });
     }
 

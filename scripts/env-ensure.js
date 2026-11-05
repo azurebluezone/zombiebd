@@ -24,6 +24,15 @@ const FRESH = process.argv.includes("--fresh");
 const ollamaIndex = process.argv.indexOf("--ollama-model");
 const OLLAMA_MODEL = ollamaIndex !== -1 ? String(process.argv[ollamaIndex + 1] || "").trim() : "";
 
+function argValue(flag) {
+  const index = process.argv.indexOf(flag);
+  return index !== -1 ? String(process.argv[index + 1] || "").trim() : "";
+}
+
+const APP_URL_ARG = argValue("--app-url");
+const MAIN_HOST_ARG = argValue("--main-host");
+const TOOL_BASE_ARG = argValue("--tool-base-domain");
+
 if (!fs.existsSync(EXAMPLE)) {
   console.error("ENV_ENSURE_FAIL .env.example missing");
   process.exit(1);
@@ -67,6 +76,20 @@ function splitList(value) {
 }
 
 let text = read(ENV_FILE);
+
+if (APP_URL_ARG) {
+  try {
+    const parsed = new URL(APP_URL_ARG);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error("protocol");
+  } catch (_) {
+    console.error("ENV_ENSURE_FAIL --app-url must be an absolute http(s) URL");
+    process.exit(1);
+  }
+  text = setKey(text, "APP_URL", APP_URL_ARG);
+}
+if (MAIN_HOST_ARG) text = setKey(text, "MAIN_HOST", MAIN_HOST_ARG);
+if (TOOL_BASE_ARG) text = setKey(text, "TOOL_BASE_DOMAIN", TOOL_BASE_ARG);
+
 const current = parse(text);
 const example = parse(read(EXAMPLE));
 const added = [];
@@ -94,28 +117,6 @@ if (FRESH) {
   }
 }
 
-const mainHost = resolvedValue("MAIN_HOST") || (() => {
-  try { return new URL(resolvedValue("APP_URL")).hostname; } catch { return "localhost"; }
-})();
-const port = resolvedValue("PORT") || "5050";
-const origins = new Set([
-  "http://127.0.0.1:" + port,
-  "http://localhost:" + port,
-  "https://" + mainHost,
-]);
-if (mainHost !== "localhost" && mainHost !== "127.0.0.1") {
-  origins.add("http://" + mainHost + ":" + port);
-}
-
-for (const key of ["ALLOWED_ORIGINS", "CORS_ORIGINS"]) {
-  const existing = splitList(resolved.get(key) || "");
-  if (existing.includes("*")) continue;
-  const merged = Array.from(new Set(existing.concat(Array.from(origins))));
-  if (merged.join(",") !== existing.join(",")) {
-    text = setKey(text, key, merged.join(","));
-  }
-}
-
 if (OLLAMA_MODEL) {
   const canonical = resolvedValue("BRIDGE_UPSTREAM_MODEL") || OLLAMA_MODEL;
   const existing = splitList(resolved.get("MODEL_ALIASES") || "");
@@ -123,7 +124,7 @@ if (OLLAMA_MODEL) {
   if (FRESH || !hasLlamaLocal) {
     const rest = existing.filter((entry) => entry.split(":")[0] !== "llama-local");
     rest.push("llama-local:" + canonical);
-    text = setEnvKey(text, "MODEL_ALIASES", rest.filter(Boolean).join(","));
+    text = setKey(text, "MODEL_ALIASES", rest.filter(Boolean).join(","));
   }
 }
 

@@ -15,9 +15,9 @@
  *   1. Reads every agent/*.js through the project's own loader (same code
  *      path api.js uses — no parallel parsing that can drift).
  *   2. Writes id, name, role, expertise, persona, priority, enabled.
- *   3. Leaves `model` ALONE. agent/*.js sets model:"MODELS_DB" (a sentinel),
- *      and the live value comes from the admin panel / provider DB. Overwriting
- *      it here would destroy operator choices.
+ *   3. Leaves `model` ALONE. The agent files carry persona only; the live
+ *      model comes from the admin panel / provider DB. Overwriting it here
+ *      would destroy operator choices.
  *   4. Backups the DB first. --dry-run is the default.
  *
  * USAGE

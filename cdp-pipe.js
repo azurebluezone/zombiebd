@@ -4,7 +4,7 @@
 /**
  * cdp-pipe.js — headless Chrome over --remote-debugging-pipe (ZERO HTTP).
  *
- * 🧟 Ethical browsing tool (#7):
+ * Ethical browsing tool (#7):
  *   Chrome is launched with `--remote-debugging-pipe`. CDP JSON messages
  *   travel over **file descriptor 3 (write) / 4 (read)** with `\0` framing.
  *   → No debug port, no TCP, no WebSocket, no HTTP anywhere in the

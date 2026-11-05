@@ -100,10 +100,10 @@ async function verify(modes) {
   const ok = (name, cond, detail = "") => {
     if (cond) {
       pass++;
-      console.log("  ✅ " + name);
+      console.log("  " + name);
     } else {
       fail++;
-      console.log("  ❌ " + name + (detail ? "  → " + detail : ""));
+      console.log("  " + name + (detail ? "  → " + detail : ""));
     }
   };
   const INIT = { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } };

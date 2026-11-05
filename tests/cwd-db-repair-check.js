@@ -14,7 +14,7 @@
  *      logs AGENTS_REPAIRED.
  *
  * Nothing here touches the live stack: ports, DB, logs and sockets are
- * isolated under /tmp/opencode.
+ * isolated under .verify/ in the project.
  */
 
 const fs = require("fs");
@@ -26,7 +26,7 @@ const { DatabaseSync } = require("node:sqlite");
 
 const ROOT = path.resolve(__dirname, "..");
 const LAUNCH_CWD = "/tmp";
-const TMP = path.join("/tmp/opencode", "cwd-db-" + process.pid);
+const TMP = path.join(ROOT, ".verify", "cwd-db-" + process.pid);
 const DATA_DIR = path.join(TMP, "data");
 const LOG_DIR = path.join(TMP, "logs");
 const DB_PATH = path.join(DATA_DIR, "models.db");

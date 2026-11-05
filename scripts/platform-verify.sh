@@ -8,7 +8,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
-OUT_DIR="${PLATFORM_VERIFY_OUT:-/tmp/opencode}"
+OUT_DIR="${PLATFORM_VERIFY_OUT:-$ROOT/logs/verify}"
 mkdir -p "$OUT_DIR"
 LOG="$OUT_DIR/platform-verify-$STAMP.log"
 

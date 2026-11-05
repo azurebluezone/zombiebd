@@ -5,7 +5,7 @@
 //   2. Cloudflare removed entirely; dead custom_3 tunnel disabled
 //   3. Personas (9 agents) intact
 //   4. Tools available via MCP
-//   5. REAL call through local Ollama (llama3.2:latest) via the gateway
+//   5. REAL call through the local Ollama model the live catalogue advertises
 //
 // Run:  node tests/runtime-verify.js
 //       (server must be running on http://127.0.0.1:3000)
@@ -14,8 +14,8 @@ const BASE = "http://127.0.0.1:" + (process.env.PORT || "3000");
 const CHAT_TIMEOUT_MS = 150000;
 
 let pass = 0, fail = 0;
-function ok(name, detail) { pass++; console.log("  ✅ " + name + (detail ? " — " + detail : "")); }
-function bad(name, detail) { fail++; console.log("  ❌ " + name + (detail ? " — " + detail : "")); }
+function ok(name, detail) { pass++; console.log("  " + name + (detail ? " — " + detail : "")); }
+function bad(name, detail) { fail++; console.log("  " + name + (detail ? " — " + detail : "")); }
 function section(t) { console.log("\n" + t + "\n" + "─".repeat(Math.min(72, t.length + 6))); }
 
 async function getJson(path, timeout = 15000) {
@@ -141,9 +141,11 @@ async function mcpToolsList() {
     const rows = s.prepare("SELECT provider, COUNT(*) c FROM models GROUP BY provider ORDER BY c DESC").all();
     console.log("      " + JSON.stringify(rows));
     const cf = s.prepare("SELECT COUNT(*) c FROM models WHERE provider LIKE ?").get("%cloudflare%").c;
-    const ct = s.prepare("SELECT COUNT(*) c FROM models WHERE provider LIKE ?").get("%custom_%").c;
-    if (cf > 0 || ct > 0) bad("cloudflare/custom rows still in DB (cf=" + cf + ", custom=" + ct + ")");
-    else ok("no cloudflare/custom rows in DB (" + s.prepare("SELECT COUNT(*) c FROM models").get().c + " total)");
+    // Only a provider that no longer exists counts as dead. custom_5 and
+    // custom_6 are live, so a broad '%custom_%' match failed a healthy DB.
+    const dead = s.prepare("SELECT COUNT(*) c FROM models WHERE provider = ?").get("custom_3").c;
+    if (cf > 0 || dead > 0) bad("cloudflare/dead-provider rows still in DB (cf=" + cf + ", custom_3=" + dead + ")");
+    else ok("no cloudflare/dead-provider rows in DB (" + s.prepare("SELECT COUNT(*) c FROM models").get().c + " total)");
   } catch (e) { bad("DB check", e.message); }
 
   // ── 5. Tools via MCP ───────────────────────────────────────────
@@ -163,13 +165,19 @@ async function mcpToolsList() {
   }
 
   // ── 6. REAL call through local Ollama ──────────────────────────
-  section("6. Real chat via local Ollama (llama3.2:latest)");
+  // The Ollama tag is operator state: hardcoding one model made this check
+  // fail after the local set changed. Use whatever the live catalogue says
+  // the ollama provider serves, and fail loudly when it serves nothing.
+  const ollamaModel = ((pm.json && pm.json.data) || []).find((m) => m.provider === "ollama");
+  section("6. Real chat via local Ollama (" + (ollamaModel ? ollamaModel.id : "no model advertised") + ")");
   const started = Date.now();
-  const chat = await postChat({
-    model: "llama3.2:latest",
-    messages: [{ role: "user", content: "এক লাইনে উত্তর দাও: ২+২ কত? (শুধু সংখ্যা)" }],
-    max_tokens: 24,
-  });
+  const chat = ollamaModel
+    ? await postChat({
+        model: ollamaModel.id,
+        messages: [{ role: "user", content: "Reply in one line: what is 2+2? (digits only)" }],
+        max_tokens: 24,
+      })
+    : { status: 0, text: "no ollama model in the live catalogue" };
   const elapsed = ((Date.now() - started) / 1000).toFixed(1);
   if (chat.status === 200 && chat.json && chat.json.choices && chat.json.choices[0] && chat.json.choices[0].message) {
     const content = chat.json.choices[0].message.content || "";

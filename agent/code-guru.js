@@ -7,8 +7,6 @@
 module.exports = {
   id: "code-guru",
   name: "কোড গুরু - মনু",
-  model: "MODELS_DB",
-  fallbackModel: "llama-local",
   role: "architecture",
   expertise: "code review, refactoring, best practices, system design, SOLID principles, design patterns",
   priority: 1,

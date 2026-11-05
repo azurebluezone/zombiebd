@@ -58,9 +58,9 @@ if (fs.existsSync(envFile)) {
 
 // ─── Rebuild the set of models providers actually serve ─────────────────────
 // Mirrors api.js loadCustomProviders() + PROVIDER_CONFIG, including the
-// "publicName:apiModel" syntax that parseModelsEnv() (api.js:823) splits on
-// the FIRST colon. Treating the raw string as a model id produced invented
-// ids like "gemini-flash:gemini-3.6-flash" — hence the shared parser.
+// "publicName=>apiModel" (or legacy "publicName:apiModel") syntax that the
+// runtime parsers split. Treating the raw string as one model id produced
+// invented ids like "gemini-flash:gemini-3.6-flash" — hence the shared parser.
 function parseModelsEnv(str) {
   if (!str || !str.trim()) return [];
   return String(str)
@@ -68,6 +68,10 @@ function parseModelsEnv(str) {
     .map((s) => s.trim())
     .filter(Boolean)
     .map((entry) => {
+      const arrow = entry.indexOf("=>");
+      if (arrow > 0) {
+        return { name: entry.slice(0, arrow).trim(), apiModel: entry.slice(arrow + 2).trim() };
+      }
       const idx = entry.indexOf(":");
       if (idx > 0) {
         return { name: entry.slice(0, idx).trim(), apiModel: entry.slice(idx + 1).trim() };
@@ -76,10 +80,27 @@ function parseModelsEnv(str) {
     });
 }
 
+// Local model tags contain colons, so only "=>" may introduce a mask there.
+function parseTagModelsEnv(str) {
+  if (!str || !str.trim()) return [];
+  return String(str)
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const arrow = entry.indexOf("=>");
+      if (arrow > 0) {
+        return { name: entry.slice(0, arrow).trim(), apiModel: entry.slice(arrow + 2).trim() };
+      }
+      return entry;
+    });
+}
+
 /**
  * @returns Map<publicName, { apiModel, providers:Set<string> }>
- * The provider set matters: `qwen2.5:7b` is served by Colab-GPU, not by the
- * local Ollama, so assigning it to a local role would break at call time.
+ * The provider set matters: an id can be advertised by a provider that is
+ * unreachable, so assigning it to a role without checking the provider breaks
+ * at call time.
  */
 function liveModels() {
   const map = new Map();
@@ -99,14 +120,16 @@ function liveModels() {
   for (const [key, val] of Object.entries(process.env)) {
     const std = /^(OLLAMA|GROQ|GEMINI|OPENCODE)_MODELS$/.exec(key);
     if (std) {
-      parseModelsEnv(val).forEach((e) => absorb(e, std[1].toLowerCase()));
+      const provider = std[1].toLowerCase();
+      const parse = provider === "ollama" ? parseTagModelsEnv : parseModelsEnv;
+      parse(val).forEach((e) => absorb(e, provider));
     }
     const cp = /^CUSTOM_PROVIDER_(\d+)_ENABLED$/.exec(key);
     if (cp) {
       if (String(val).toLowerCase() === "false") continue;
       const n = cp[1];
       const pid = `custom_${n}`;
-      parseModelsEnv(process.env[`CUSTOM_PROVIDER_${n}_MODELS`] || "").forEach((e) => absorb(e, pid));
+      parseTagModelsEnv(process.env[`CUSTOM_PROVIDER_${n}_MODELS`] || "").forEach((e) => absorb(e, pid));
     }
   }
 
@@ -203,21 +226,21 @@ const used = new Set();
 for (const a of agents) {
   const ok = catalog.has(a.model);
   if (ok) {
-    console.log("  " + a.id.padEnd(34) + a.model.slice(0, 24).padEnd(26) + "✅ valid");
+    console.log("  " + a.id.padEnd(34) + a.model.slice(0, 24).padEnd(26) + "valid");
     used.add(a.model);
     valid++;
     continue;
   }
   const suggestion = pickForRole(a.role, catalog, a.model, used);
   if (!suggestion) {
-    console.log("  " + a.id.padEnd(34) + a.model.slice(0, 24).padEnd(26) + "❌ missing (no candidate)");
+    console.log("  " + a.id.padEnd(34) + a.model.slice(0, 24).padEnd(26) + "missing (no candidate)");
     unfixable++;
     continue;
   }
   console.log(
     "  " + a.id.padEnd(34) +
     a.model.slice(0, 24).padEnd(26) +
-    `🔧 → ${suggestion}  [${[...(catalog.get(suggestion)?.providers || [])].join(",")}]  (${a.role})`,
+    `→ ${suggestion}  [${[...(catalog.get(suggestion)?.providers || [])].join(",")}]  (${a.role})`,
   );
   // Reserve regardless of --write so the dry run shows the same variety the
   // real run would produce.

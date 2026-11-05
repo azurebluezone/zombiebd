@@ -16,6 +16,7 @@ const http = require("http");
 const net = require("net");
 const { execSync, spawn } = require("child_process");
 const systemInfo = require("./lib/system-info.js");
+const { readEnvFile } = require("./lib/env");
 
 const VERSION = "3.2.1"; // keep in sync with api.js /health version
 const CONFIG_DIR = path.join(os.homedir(), ".zombiecoder");
@@ -55,30 +56,19 @@ function loadEnv() {
     // Anchor to the project, not the shell's cwd. `node /path/to/start.js`
     // from /tmp must still load the project's .env and data directory.
     const envPath = path.join(__dirname, ".env");
-    if (fs.existsSync(envPath)) {
-      const content = fs.readFileSync(envPath, "utf8");
-      let loaded = 0;
-      for (const line of content.split("\n")) {
-        const t = line.trim();
-        if (!t || t.startsWith("#")) continue;
-        // Skip broken separator lines (e.g. "============" without #)
-        if (/^=+$/.test(t)) continue;
-        const eq = t.indexOf("=");
-        if (eq === -1) continue;
-        const k = t.slice(0, eq).trim();
-        if (!k) continue; // skip empty keys from malformed lines
-        let v = t.slice(eq + 1).trim();
-        if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'")))
-          v = v.slice(1, -1);
-        // .env values override empty env vars but never override
-        // explicitly exported shell env vars (OS-level set takes priority)
-        if (!process.env[k]) {
-          process.env[k] = v;
-          loaded++;
-        }
+    const fileVars = readEnvFile(envPath);
+    const keys = Object.keys(fileVars);
+    if (!keys.length) return;
+
+    let loaded = 0;
+    for (const key of keys) {
+      // Explicit shell env always wins over the file.
+      if (!process.env[key]) {
+        process.env[key] = fileVars[key];
+        loaded++;
       }
-      console.log("[ENV] Loaded:", envPath, "(" + loaded + " vars)");
     }
+    console.log("[ENV] Loaded:", envPath, "(" + loaded + " vars)");
   } catch (_) { }
 }
 
@@ -203,8 +193,8 @@ function storeRuntimeConfig(envInfo) {
     
     for (const key of relevantKeys) {
       if (process.env[key]) {
-        runtimeConfig.envVars[key] = key.includes("KEY") || key.includes("SECRET") 
-          ? "***REDACTED***" 
+        runtimeConfig.envVars[key] = key.includes("KEY") || key.includes("SECRET")
+          ? "***REDACTED***"
           : process.env[key];
       }
     }
@@ -327,10 +317,10 @@ async function runHealthChecks(host, port) {
       
       if (ok) {
         passed++;
-        console.log(`  ✅ ${endpoint.name} (${endpoint.method} ${endpoint.path}) — ${response.status} (${elapsed}ms)`);
+        console.log(`  ${endpoint.name} (${endpoint.method} ${endpoint.path}) — ${response.status} (${elapsed}ms)`);
       } else {
         failed++;
-        console.log(`  ❌ ${endpoint.name} (${endpoint.method} ${endpoint.path}) — ${response.status} (${elapsed}ms) — Unexpected response`);
+        console.log(`  ${endpoint.name} (${endpoint.method} ${endpoint.path}) — ${response.status} (${elapsed}ms) — Unexpected response`);
         console.log(`     Response:`, JSON.stringify(response.data).slice(0, 200));
       }
       
@@ -345,7 +335,7 @@ async function runHealthChecks(host, port) {
       });
     } catch (err) {
       failed++;
-      console.log(`  ❌ ${endpoint.name} (${endpoint.method} ${endpoint.path}) — ERROR: ${err.message}`);
+      console.log(`  ${endpoint.name} (${endpoint.method} ${endpoint.path}) — ERROR: ${err.message}`);
       results.push({
         endpoint: endpoint.name,
         path: endpoint.path,
@@ -491,6 +481,78 @@ function cleanupOldProcesses() {
       );
     } catch (_) {}
   };
+
+  // A service-managed gateway has Restart=always. If this process was started
+  // from a terminal, killing the service listener makes systemd restart it at
+  // once, and the new instance kills this one. Stop the unit before touching
+  // the port so exactly one owner survives — the terminal that asked for it.
+  const runsUnderSystemd = (() => {
+    if (process.env.INVOCATION_ID || process.env.SYSTEMD_EXEC_PID) return true;
+    try {
+      return /zombiecoder-gateway\.service/.test(
+        fs.readFileSync("/proc/self/cgroup", "utf8"),
+      );
+    } catch (_) {
+      return false;
+    }
+  })();
+
+  const unitOf = (pid) => {
+    try {
+      // /proc files end with a newline; without trim the lookahead below
+      // treats the final unit as unterminated and returns the session unit.
+      const groups = fs.readFileSync("/proc/" + pid + "/cgroup", "utf8").trim();
+      const units = [...groups.matchAll(/\/([\w@.\-]+\.service)(?=\/|$)/g)].map(
+        (m) => m[1],
+      );
+      return units.length ? units[units.length - 1] : "";
+    } catch (_) {
+      return "";
+    }
+  };
+
+  // Under dist/ the checkout root is one level up; matching only __dirname
+  // would miss a service that still runs the source tree.
+  const projectRoot =
+    path.basename(__dirname) === "dist" ? path.dirname(__dirname) : __dirname;
+  const isThisProjectServer = (pid) => {
+    try {
+      const cmd = fs
+        .readFileSync("/proc/" + pid + "/cmdline", "utf8")
+        .replace(/\0/g, " ");
+      return cmd.includes(projectRoot) && /(start|api)\.js/.test(cmd);
+    } catch (_) {
+      return false;
+    }
+  };
+
+  if (!runsUnderSystemd) {
+    for (const pid of findPidsOnPort()) {
+      if (!isThisProjectServer(pid)) continue;
+      const unit = unitOf(pid);
+      if (!unit || /^user@\d+\.service$/.test(unit)) continue;
+      console.log(
+        "[CLEANUP] Stopping systemd unit " + unit +
+        " so this terminal owns port " + targetPort + " ...",
+      );
+      try {
+        execSync("systemctl --user stop " + unit, { stdio: "inherit" });
+      } catch (err) {
+        console.warn("[CLEANUP] could not stop " + unit + ": " + err.message);
+      }
+    }
+    // Do not kill our way out of a unit that refused to stop: systemd would
+    // start it again and the two processes would keep reaping each other.
+    const stillManaged = findPidsOnPort().filter(isThisProjectServer);
+    if (stillManaged.length) {
+      console.error(
+        "[CLEANUP] Port " + targetPort + " is still held by a systemd-managed " +
+        "gateway. Stop it first, then rerun: systemctl --user stop " +
+        (unitOf(stillManaged[0]) || "zombiecoder-gateway.service"),
+      );
+      process.exit(1);
+    }
+  }
 
   // 1) Kill whatever listens on the target port
   for (const pid of findPidsOnPort()) killPid(pid, false);
@@ -838,11 +900,11 @@ async function startAll() {
       const results = await runHealthChecks(host, port);
       
       if (results.failed === 0) {
-        console.log("\n[START ALL] ✅ All systems operational!");
+        console.log("\n[START ALL] All systems operational!");
         console.log("[START ALL] Server is ready at http://" + host + ":" + port);
         console.log("[START ALL] API endpoints verified and responding.\n");
       } else {
-        console.log("\n[START ALL] ⚠️  Some health checks failed — server running but may need attention");
+        console.log("\n[START ALL]  Some health checks failed — server running but may need attention");
         console.log("[START ALL] Server is at http://" + host + ":" + port + " (check health-check-*.json for details)\n");
       }
       serverStarted = true;

@@ -12,7 +12,9 @@ live verifier is `bash scripts/install-verify.sh --quick`.
 
 ## Requirements
 
-- **Node.js 24 or newer** - `node:sqlite` is built in; there are no npm
+- **Node.js 24 or newer as its own runtime** - the installer places it at
+  `~/.local/node-v24` after verifying the official SHA-256; the gateway never
+  picks a `node` off `PATH`. `node:sqlite` is built in and there are no npm
   dependencies to install.
 - Linux x86_64. The live evidence in this file was captured on Ubuntu 22.04.
 - Optional: `llama.cpp` (`llama-server`) exposing an OpenAI-compatible
@@ -33,14 +35,15 @@ bash scripts/install.sh
 
 `scripts/install.sh` performs these steps, in order, and can be re-run safely:
 
-1. Finds Node 24+. If missing, downloads the official linux-x64/arm64 tarball,
-   verifies its SHA-256 and installs it under `~/.local`.
+1. Installs Node.js 24+ as a separate runtime under `~/.local/node-v24`:
+   downloads the official linux-x64/arm64 tarball and verifies its SHA-256.
+   Nothing is installed into the system `node` path.
 2. Installs minimal KDE Plasma (`plasma-desktop`, `kwin-x11`,
    `plasma-workspace`, `konsole`) when no Plasma session is present. It does
    not install or switch `sddm`.
 3. Creates `.env` from `.env.example` when missing, keeps every existing value,
-   fills missing keys, generates admin tokens on first install, and adds local
-   origins. Secret values are never printed. It also creates
+   fills missing keys, and generates admin tokens on first install. Secret
+   values are never printed. It also creates
    `external mcp/servers.json` from `servers.example.json` when missing, so the
    same set of external MCP servers exists on a fresh clone; credentials stay
    in `.env`, never in that JSON.
@@ -48,12 +51,14 @@ bash scripts/install.sh
 5. Installs Caddy when missing, renders `/etc/caddy/Caddyfile` from the env
    contract, validates it, and reloads the service.
 6. Trusts the Caddy local root CA when `TLS_MODE=internal`.
-7. Builds `dist/` and starts the gateway; the gateway creates and seeds the
-   SQLite database on first boot.
-8. Probes `llama.cpp` on `127.0.0.1:9932`; when it answers, runs
-   `scripts/bind-llama-cpp.js` to register provider `custom_5`, bind all agent
-   rows, then restarts the gateway so routing reloads the new models.
-9. Runs the live verifier and prints the final sentinel.
+7. Builds `dist/` and starts the gateway **from `dist/`**, using
+   `~/.local/node-v24/bin/node`. The launcher links `data/`, `logs/`,
+   `cache/`, `.zombiecoder/`, `.missionbarisal/` and `.env` from the checkout
+   into `dist/`, so a rebuild never erases runtime state. The gateway creates
+   and seeds the SQLite database on first boot.
+8. Loads providers from `.env`; `lib/env.js` is the only place that knows
+   hostnames, ports and provider URLs.
+9. Runs the live verifier against `APP_URL` and prints the final sentinel.
 
 Useful modes:
 
@@ -68,12 +73,16 @@ bash scripts/install.sh --no-start   # configure and build, do not start
 Manual path, if you already manage the services yourself:
 
 ```bash
-cp .env.example .env                 # then edit the values you need
-node start.js --start-all            # creates and seeds data/models.db
-node scripts/bind-llama-cpp.js       # optional: llama.cpp on 127.0.0.1:9932
-systemctl --user restart zombiecoder-gateway.service   # reload agent models
-bash scripts/install-verify.sh --quick
+cp .env.example .env                            # then edit the values you need
+NODE="$HOME/.local/node-v24/bin/node"
+"$NODE" scripts/build.js                        # produce the dist/ runtime
+systemctl --user restart zombiecoder-gateway.service   # boot dist/start.js
+bash scripts/install-verify.sh
 ```
+
+The service unit does not run the source tree. `scripts/zombiecoder-gateway.sh`
+refuses to boot without `dist/start.js`, so a stale or missing build is a
+start-up error instead of a silently different runtime.
 
 ---
 
@@ -84,20 +93,21 @@ bash scripts/install-verify.sh --quick
 | Gateway | `http://127.0.0.1:5050` | `curl -s localhost:5050/health` |
 | gRPC | `127.0.0.1:5052` | `ss -ltnp` |
 | Caddy | `:80` and `:443`, v2.11.7 | `caddy version` |
-| TLS mode | `internal`, host `api.zombiecoder.my.id` | `.env`, `openssl s_client` |
-| Local HTTPS | HTTP 200, verify code 0 | `curl --resolve ... https://.../health` |
+| TLS mode | `internal`, host `localhost` | `.env`, `openssl s_client` |
+| Local HTTPS | HTTP 200, verify code 0 | `curl https://localhost/health` |
 | Agents | 9 | `/health`, `/status` |
 | MCP tools | 153 | `tools/list` over `/mcp` |
 | Model rows | 111 | `/health` |
 | Advertised catalogue | 121 entries | `/api/v0/models` |
-| llama.cpp | `http://127.0.0.1:9932/v1` | `/v1/models` |
-| llama.cpp model | `qwen3-1.7b-abliterated` | `/v1/models` |
+| llama.cpp OpenAI | `custom_5`, `http://127.0.0.1:9932/v1` | `/api/v0/models` |
+| llama.cpp native | `custom_6`, `http://127.0.0.1:9932` | `/api/v0/models` |
+| llama.cpp model | `qwen3-1.7b-abliterated` | `/api/v0/models` |
 | Ollama | `http://127.0.0.1:11434` | `/api/tags` |
 | Local bridge | `127.0.0.1:11435`, backend `ollama`, model `qwen2:0.5b` | `/health` |
 | MCP UDS | `/tmp/zombiecoder/mcp.sock` | `ss -lxp` |
 | OpenAI UDS | `/tmp/zombiecoder/openai.sock` | `ss -lxp` |
 | Runtime Node | v24.22.2 | `/health` |
-| Process manager | systemd user unit `zombiecoder-gateway.service`, active | `systemctl --user is-active` |
+| Process manager | systemd user unit `zombiecoder-gateway.service` (`Restart=always`); a terminal run stops the unit and owns the port | `systemctl --user is-active` |
 
 The two model numbers are different views: `/health` reports the SQLite row
 count, while `/api/v0/models` reports the deduplicated catalogue the router can
@@ -111,13 +121,13 @@ is installed as `/usr/local/share/ca-certificates/caddy-local-root.crt` and
 `update-ca-certificates` has been run. `curl` without `-k` therefore returns
 `verify=0` for the local host.
 
-### Public DNS is not part of this repository
+### Edge is localhost
 
-`api.zombiecoder.my.id` resolves to Cloudflare addresses (`2606:4700:...`).
-On 2026-11-06 the public URL returned HTTP 530 because Cloudflare could not
-reach an origin. The same request with `--resolve api.zombiecoder.my.id:443:127.0.0.1`
-returns HTTP 200 and verify code 0. Fixing DNS/origin routing is an operator
-step, not a code change.
+The Caddy edge serves `https://localhost` with its internal CA. `localhost`
+resolves to `127.0.0.1`, so the verifier calls `https://localhost/health`
+directly; no `--resolve`, no remote host and no Cloudflare tunnel is used.
+The public `zombiecoder.my.id` hostname is an external deployment and is not
+part of this verification.
 
 ---
 
@@ -127,23 +137,24 @@ Agent definitions live in `agent/*.js`; each file carries its persona inline.
 The SQLite `agents` table is the runtime source of truth. The file
 `fallbackModel` is used only when a DB row has no concrete model.
 
-| ID | Role |
-|----|------|
-| `security-hero` | security |
-| `perf-wizard` | performance |
-| `doc-king` | documentation |
-| `qa-tyrant` | quality |
-| `team-heart` | general |
-| `customer-experience-specialist` | customer-experience |
-| `ecommerce-operations-analyst` | ecommerce-operations |
-| `bug-hunter` | debugging |
-| `code-guru` | architecture |
+| ID | Role | Provider | Model |
+|----|------|----------|-------|
+| `security-hero` | security | `custom_5` | `qwen3-1.7b-abliterated` |
+| `perf-wizard` | performance | `custom_6` | `llama-native-qwen` |
+| `doc-king` | documentation | `ollama` | `qwen2:0.5b` |
+| `qa-tyrant` | quality | `groq` | `openai/gpt-oss-20b` |
+| `team-heart` | general | `gemini` | `gemini-2.5-flash-lite` |
+| `customer-experience-specialist` | customer-experience | `gemini` | `gemini-3.6-flash` |
+| `ecommerce-operations-analyst` | ecommerce-operations | `groq` | `openai/gpt-oss-120b` |
+| `bug-hunter` | debugging | `gemini` | `gemini-2.5-flash` |
+| `code-guru` | architecture | `gemini` | `gemini-3.5-flash` |
 
-On 2026-11-06 all nine rows were bound to `qwen3-1.7b-abliterated` after the
-llama.cpp probe succeeded. The binding is reproducible:
+The table is the binding observed on 2026-11-06: every row answered an OpenAI
+request with HTTP 200 through the provider and model shown. The runtime source
+of truth stays the SQLite `agents` table:
 
 ```bash
-node scripts/bind-llama-cpp.js --chat
+node -e 'const {DatabaseSync}=require("node:sqlite");const db=new DatabaseSync("data/models.db",{readOnly:true});console.log(db.prepare("SELECT id,model FROM agents").all())'
 ```
 
 Calling an agent through the OpenAI API uses the agent id as the model name:
@@ -163,13 +174,13 @@ or more returned `PONG` in the verified run.
 ## MCP Tools (153)
 
 The live registry is the only list that matters: 153 tools on 2026-11-06, all
-carrying an `inputSchema`. The count is re-checked against this heading by
-`tests/docs-claims-check.js`, so a stale number fails verification.
+carrying an `inputSchema`. `tests/docs-claims-check.js` audits this heading on
+demand; documentation is advisory and never gates the runtime or the installer.
 
 ```bash
-curl -s http://127.0.0.1:5050/mcp \
+curl -s https://localhost/mcp \
   -H 'Content-Type: application/json' \
-  -H 'Origin: https://api.zombiecoder.my.id' \
+  -H 'Origin: https://localhost' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 ```
 
@@ -203,7 +214,7 @@ node tests/system-readiness-check.js
 ```
 
 The install sentinel in this repository covers HTTP, HTTPS/TLS, origins, the
-tool registry and one real agent request from `/tmp`; it does not claim that
+tool registry, the live working directory and one real agent request; it does not claim that
 every transport in the table passed on the last run. Run the two commands
 above for that evidence.
 
@@ -221,22 +232,23 @@ source code.
 | `groq` | `GROQ_*` | Requires a valid key. |
 | `gemini` | `GEMINI_*` | Requires a valid key. |
 | `ollama` | `OLLAMA_*` | Local, default `127.0.0.1:11434`. |
-| `custom_5` | `CUSTOM_PROVIDER_5_*` | llama.cpp OpenAI endpoint, priority 0. |
+| `custom_5` | `CUSTOM_PROVIDER_5_*` | llama.cpp OpenAI-compatible `/v1`, priority 0. |
+| `custom_6` | `CUSTOM_PROVIDER_6_*` | llama.cpp native `/completion`, priority 1. |
 
-`scripts/bind-llama-cpp.js` writes only these keys: name, URL, empty key,
-model, type, priority, enabled, `CUSTOM_PROVIDER_5_TIMEOUT_MS`,
-`CUSTOM_PROVIDER_5_STREAM_TIMEOUT_MS` and `CUSTOM_PROVIDER_5_MAX_PROMPT_CHARS`.
-It refuses to replace a conflicting `custom_5` unless `--force` is passed.
+Both llama.cpp providers read one URL pair from `.env`:
+`LLAMA_CPP_BASE` and `LLAMA_CPP_URL=${LLAMA_CPP_BASE}/v1`. `custom_5` uses
+`${LLAMA_CPP_URL}` with the OpenAI adapter; `custom_6` uses `${LLAMA_CPP_BASE}`
+with the native `llamacpp` adapter. No provider URL is hardcoded in source.
 
-A CPU-served model needs two budgets that a cloud API does not:
+A CPU-served model gets its budgets from the same per-provider keys:
 
-| Key | Value | Why |
-|-----|-------|-----|
-| `CUSTOM_PROVIDER_5_TIMEOUT_MS` | `300000` | 5.7k-token prefill measured 132 s on this host; the 60 s default aborted real answers |
-| `CUSTOM_PROVIDER_5_STREAM_TIMEOUT_MS` | `600000` | streaming has the same prefill plus generation |
-| `CUSTOM_PROVIDER_5_MAX_PROMPT_CHARS` | `2500` | keeps persona and rules, drops SSOT/syllabus prose, session history and auto-injected tool schemas |
+| Key pattern | Value | Why |
+|-------------|-------|-----|
+| `CUSTOM_PROVIDER_N_TIMEOUT_MS` | `300000` | a 5.7k-token prefill measured 132 s on this host; the 60 s default aborted real answers |
+| `CUSTOM_PROVIDER_N_STREAM_TIMEOUT_MS` | `600000` | streaming has the same prefill plus generation |
+| `CUSTOM_PROVIDER_N_MAX_PROMPT_CHARS` | `2500` | keeps persona and rules, drops SSOT/syllabus prose, session history and auto-injected tool schemas |
 
-With the budget applied, one measured agent request from `/tmp` returned
+With the budget applied, one measured agent request returned
 `CWD-OK` in 1.3 s with a warm prompt cache and 15.9 s cold; the same request
 without it needed 132 s for prefill alone and then emitted a tool call instead
 of text. Client-supplied tools still pass through; only the automatic
@@ -253,34 +265,41 @@ after changing agent models.
 ## Install verification
 
 ```bash
-bash scripts/install-verify.sh --quick
+bash scripts/install-verify.sh
 ```
 
 Every field in the final line is a live check:
 
 | Field | Meaning |
 |-------|---------|
-| `docs=ok` | `tests/docs-claims-check.js` passed |
+| `env=ok` | `scripts/check-env.js` resolved every service once |
 | `installer=ok` | `scripts/install.sh --check` passed |
 | `node=24` | running Node major is 24 or newer |
 | `kde=present` | `startplasma-x11` or `plasmashell` exists |
-| `tls=ok` | Caddy HTTPS returns 200 with system-trust verify code 0 |
+| `tls=ok` | `https://localhost/health` returns 200 with verify code 0 |
 | `origins=ok` | allowed origin 200, hostile origin 401 |
 | `tools=153` | live `tools/list` count |
+| `providers=...` | `llama-cpu-openai` and `llama-native` in the live catalogue |
+| `native=ok` | real llama.cpp `/completion` request through `provider/llamacpp.js` |
 | `db=seed` | 9 agent rows, no `MODELS_DB` sentinel |
 | `build=ok` | `scripts/build.js` produced `dist/manifest.json` |
 | `start=ok` | `/health` returns 200 with 9 agents |
-| `llama=ok` | llama.cpp models + real completion + gateway catalogue + binding |
 | `agents=9` | `/status` agent count |
-| `cwd=/tmp` | real agent completion requested from `/tmp` |
+| `workdir=ok` | live `get_working_dir` is an existing path outside `/tmp`; `set_working_dir` is advertised |
+| `reply=ok` | real agent completion requested from the project root |
 
 A passing run ends with exactly:
 
 ```text
-RESULT: MISSION BARISAL PASS docs=ok installer=ok node=24 kde=present tls=ok origins=ok tools=153 db=seed build=ok start=ok llama=ok agents=9 cwd=/tmp
+RESULT: MISSION BARISAL PASS env=ok installer=ok node=24 kde=present tls=ok origins=ok tools=153 providers=ok native=ok db=seed build=ok start=ok agents=9 workdir=ok reply=ok
 ```
 
-Logs are written under `/tmp/opencode/install-verify-*.log`.
+Documentation is not part of this gate. `tests/docs-claims-check.js` can be run
+separately when auditing the docs; a stale number there never fails an install
+or changes runtime behaviour.
+
+Logs and verification artifacts are written under `logs/verify/` in the
+project, so they survive a reboot.
 
 ---
 
@@ -298,7 +317,7 @@ Logs are written under `/tmp/opencode/install-verify-*.log`.
 | `deploy/tools.json` | tool host manifest consumed by Caddy renderer |
 | `scripts/install.sh` | fresh-clone installer |
 | `scripts/install-verify.sh` | live verification sentinel |
-| `scripts/bind-llama-cpp.js` | llama.cpp provider + agent binding |
+| `provider/llamacpp.js` | llama.cpp native `/completion` adapter |
 | `scripts/build.js` | self-contained `dist/` build |
 | `scripts/env-ensure.js` | complete `.env` without overwriting values |
 | `docs/EDGE-RUNTIME-SPEC.md` | edge/runtime contract and port map |
@@ -312,6 +331,12 @@ Logs are written under `/tmp/opencode/install-verify-*.log`.
   returned HTTP 530 externally on 2026-11-06. Local HTTPS works.
 - The `opencode` provider was rate-limited (`HTTP 429`) during the audit. A
   request that lands on it can fail even when the local stack is healthy.
+- Groq's `qwen/qwen3.8-27b` has a 7000 input-tokens-per-minute limit on this
+  account. A tool-loop second call can therefore return `HTTP 429` even after
+  the first call succeeded, which is why no agent is bound to it.
+- Gemini 3.x free tier allows 20 generate-content requests per day per model.
+  Once that is spent the provider answers `HTTP 429` with a retry window of
+  about 10 hours; the binding is still correct, the quota is not.
 - llama.cpp spends completion tokens on `reasoning_content` before `content`;
   small `max_tokens` values return an empty answer with `finish_reason=length`.
 - The gateway loads agent models into memory at boot. Editing the DB while it

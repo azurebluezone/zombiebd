@@ -7,8 +7,6 @@
 module.exports = {
   id: "doc-king",
   name: "ডকুমেন্টেশন রাজা - হালিম",
-  model: "MODELS_DB",
-  fallbackModel: "llama-local",
   role: "documentation",
   expertise: "API documentation, code comments, README, technical writing, documentation standards, API specs",
   priority: 5,

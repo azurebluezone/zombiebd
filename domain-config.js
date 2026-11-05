@@ -2,7 +2,7 @@
 // Domain Configuration — Per-Server Identity & Settings
 // Mission Barisal v3 — Zero Dependency
 // =============================================================================
-// 🧟 IMPORTANT: No hardcoded domains! Everything comes from environment variables.
+// IMPORTANT: No hardcoded domains! Everything comes from environment variables.
 // Set these in .env file or export them in your shell.
 //
 // URL Resolution Priority:
@@ -23,7 +23,6 @@
 //   SERVER_TYPE           — "production" | "development" | "custom"
 //   PORT                  — Server port (used for CORS)
 //   SESSION_VERIFY_URL    — Session verification endpoint
-//   CORS_ORIGINS          — Comma-separated allowed origins
 //   HAS_FRONTEND          — "true" | "false"
 //   HAS_PUSHER            — "true" | "false"
 //   HAS_DEV_MODELS        — "true" | "false"
@@ -35,6 +34,82 @@
 //   BRANDING_ADDRESS      — Physical address
 //   BRANDING_LOCATION     — Location
 // =============================================================================
+
+const fs = require("fs");
+const path = require("path");
+
+const LOOPBACK = new Set(["localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"]);
+
+function hostOf(value) {
+  try {
+    return new URL(String(value).trim()).hostname.toLowerCase();
+  } catch (_) {
+    return "";
+  }
+}
+
+function deriveCorsOrigins(env) {
+  const appUrl = String(env.APP_URL || "").trim();
+  const appHost = hostOf(appUrl);
+  const port = String(env.PORT || "5050");
+  const localApp = !appHost || LOOPBACK.has(appHost);
+
+  let scheme = "https";
+  let appPort = "";
+  try {
+    const parsed = new URL(appUrl);
+    scheme = parsed.protocol.replace(":", "");
+    appPort = parsed.port;
+  } catch (_) {
+    // An invalid APP_URL is reported by lib/env.js at startup.
+  }
+
+  const mainHost = (String(env.MAIN_HOST || "").trim() || appHost).toLowerCase();
+  const toolBaseDomain = String(env.TOOL_BASE_DOMAIN || "").trim().replace(/^\.+/, "").toLowerCase();
+  let tools = [];
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "deploy", "tools.json"), "utf8"));
+    if (Array.isArray(manifest.tools)) tools = manifest.tools;
+  } catch (_) {
+    // Caddy render fails on a missing manifest; origin derivation stays empty.
+  }
+
+  const origins = new Set();
+  const add = (origin) => {
+    try {
+      const parsed = new URL(String(origin).trim());
+      if (parsed.protocol === "http:" || parsed.protocol === "https:") origins.add(parsed.origin);
+    } catch (_) {
+      /* invalid candidate: ignore */
+    }
+  };
+
+  add(appUrl);
+  if (mainHost && !LOOPBACK.has(mainHost)) {
+    add(scheme + "://" + mainHost + (appPort ? ":" + appPort : ""));
+  }
+
+  for (const tool of tools) {
+    const explicitHost = tool && tool.hostEnv
+      ? String(env[tool.hostEnv] || "").trim().toLowerCase()
+      : "";
+    const host = explicitHost || (
+      toolBaseDomain && tool && tool.subdomain
+        ? tool.subdomain.toLowerCase() + "." + toolBaseDomain
+        : ""
+    );
+    if (!host || LOOPBACK.has(host)) continue;
+    add(scheme + "://" + host + (appPort ? ":" + appPort : ""));
+  }
+
+  if (localApp) {
+    add("http://localhost:" + port);
+    add("http://127.0.0.1:" + port);
+    if (mainHost && LOOPBACK.has(mainHost)) add("http://" + mainHost + ":" + port);
+  }
+
+  return Array.from(origins);
+}
 
 // ─── Default Fallback (all env-var driven) ────────────────────
 function buildDefaultConfig() {
@@ -85,7 +160,7 @@ function buildDefaultConfig() {
     hasPusher: process.env.HAS_PUSHER === "true",
     hasDevModels: process.env.HAS_DEV_MODELS !== "false",
     maxRateLimitPerServer: parseInt(process.env.MAX_RATE_LIMIT || "999999", 10),
-    corsOrigins: parseCorsOrigins(port, domain),
+    corsOrigins: deriveCorsOrigins(process.env),
     sessionVerifyUrl: sessionVerifyUrl,
     identity: {
       name: process.env.BRANDING_OWNER || "ZombieCoder",
@@ -99,9 +174,7 @@ function buildDefaultConfig() {
         contact: {
           phone: process.env.BRANDING_PHONE || "",
           email: process.env.BRANDING_EMAIL || "dev@localhost",
-          website:
-            process.env.BRANDING_WEBSITE ||
-            protocol + "://" + domain + ":" + port,
+          website: process.env.BRANDING_WEBSITE || appUrl || protocol + "://" + domain + ":" + port,
         },
       },
       project: "Mission Barisal — Multi-Agent Code Platform",
@@ -110,47 +183,6 @@ function buildDefaultConfig() {
         (process.env.SERVER_TYPE === "development" ? " · Development" : ""),
     },
   };
-}
-
-// ─── Helper: Parse CORS origins from env or use defaults ──────
-// CORS_ORIGINS and ALLOWED_ORIGINS are merged with the derived
-// APP_URL origin so the public HTTPS origin is never missing.
-function parseCorsOrigins(port, domain) {
-  const configured = [
-    ...(process.env.ALLOWED_ORIGINS || "").split(","),
-    ...(process.env.CORS_ORIGINS || "").split(","),
-  ]
-    .map((origin) => origin.trim())
-    .filter(Boolean);
-  const origins = new Set(configured);
-
-  const appUrl = process.env.APP_URL || "";
-  if (appUrl) {
-    try {
-      origins.add(new URL(appUrl).origin);
-    } catch (_) {
-      // Invalid APP_URL is reported by lib/env.js at startup.
-    }
-  }
-
-  origins.add(`http://localhost:${port}`);
-  origins.add(`http://127.0.0.1:${port}`);
-
-  // Add the detected domain if it's not localhost
-  if (domain && domain !== "localhost" && domain !== "127.0.0.1") {
-    origins.add(`http://${domain}:${port}`);
-    origins.add(`https://${domain}:${port}`);
-    origins.add(`http://${domain}`);
-    origins.add(`https://${domain}`);
-  }
-
-  // Tool hosts live under TOOL_BASE_DOMAIN; allow exactly one wildcard label.
-  const toolBaseDomain = (process.env.TOOL_BASE_DOMAIN || "").trim().replace(/^\.+/, "");
-  if (toolBaseDomain) {
-    origins.add(`https://*.${toolBaseDomain}`);
-  }
-
-  return [...origins];
 }
 
 // ─── DOMAIN_CONFIGS — empty by default, all config driven by env ──
@@ -167,7 +199,7 @@ const DOMAIN_CONFIGS = {};
  *   3. Request Host header (runtime detection)
  *   4. Fallback to "localhost"
  *
- * 🧟 NO PORT-BASED DETECTION: Port 3000 no longer auto-routes to
+ * NO PORT-BASED DETECTION: Port 3000 no longer auto-routes to
  *    skilltoearn, port 7799 no longer auto-routes to kingwin360.
  *    Everything is explicit via env vars.
  */
@@ -231,11 +263,6 @@ function getDomainConfig(detectedDomain) {
 function applyEnvOverrides(config, domain) {
   const overridden = { ...config };
 
-  if (process.env.CORS_ORIGINS) {
-    overridden.corsOrigins = process.env.CORS_ORIGINS.split(",").map((o) =>
-      o.trim(),
-    );
-  }
   if (process.env.PUSHER_APP_ID) {
     overridden.hasPusher = true;
   }
@@ -263,4 +290,5 @@ module.exports = {
   detectDomain,
   getDomainConfig,
   buildDefaultConfig,
+  deriveCorsOrigins,
 };

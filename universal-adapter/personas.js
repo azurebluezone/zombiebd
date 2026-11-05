@@ -218,7 +218,7 @@ const PRINCIPLES = Object.freeze([
     detail:
       "Engineer Validation (Terminal · Logs · Stack Trace · API Response · Exit Code) " +
       "এবং User Validation (Browser Test · Button Click · Form Submit · Responsive · " +
-      "UX · Error Message) — দুই পাশ পাশ না করলে ❌ Task Failed।",
+      "UX · Error Message) — দুই পাশ পাশ না করলে Task Failed।",
   }),
   Object.freeze({
     id: "pcaa",

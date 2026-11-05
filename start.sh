@@ -8,7 +8,7 @@ cd "$(dirname "$0")"
 
 bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 info()  { printf '\033[36m%s\033[0m\n' "$*"; }
-warn()  { printf '\033[33m⚠  %s\033[0m\n' "$*"; }
+warn()  { printf '\033[33m %s\033[0m\n' "$*"; }
 
 NODE_VER="$(node -v 2>/dev/null || true)"
 if [ -z "$NODE_VER" ]; then
@@ -44,5 +44,5 @@ if [ ! -f .env ]; then
   echo
 fi
 
-info "🚀 Booting ZombieCoder (PORT=$(grep -E '^PORT=' .env 2>/dev/null | cut -d= -f2 || echo 3000)) ..."
+info "Booting ZombieCoder (PORT=$(grep -E '^PORT=' .env 2>/dev/null | cut -d= -f2 || echo 3000)) ..."
 exec node start.js --start-all -s

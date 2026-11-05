@@ -23,18 +23,21 @@ set -uo pipefail
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_DIR="$APP_DIR/logs"
 ENV_FILE="$APP_DIR/.env"
-# /usr/bin/node is often too old (no node:sqlite). Discover a 24+ binary the
-# same way a user would: current PATH first, then nvm and the installer's
-# per-user Node. No literal version path is baked in.
+# The gateway runs the built tree, never the source tree. `scripts/build.js`
+# produces dist/ with every tool and helper inside it, so a source checkout is
+# not a runtime dependency at request time.
+RUNTIME_DIR="$APP_DIR/dist"
+
+# Node.js is its own runtime, installed separately from the OS (the installer
+# uses $HOME/.local/node-v24 with an official checksum). PATH and /usr/bin are
+# deliberately not searched: a system Node older than 24 lacks node:sqlite and
+# the failure would surface at request time instead of boot time.
 find_node() {
   local candidate
   for candidate in \
-    "$(command -v node 2>/dev/null || true)" \
-    "$HOME"/.nvm/versions/node/v24*/bin/node \
-    "$HOME"/.local/node-v24*/bin/node \
-    "$HOME"/.local/node/bin/node \
-    /usr/local/bin/node \
-    /usr/bin/node; do
+    "$APP_DIR/runtime/node/bin/node" \
+    "$HOME"/.local/node-v24/bin/node \
+    "$HOME"/.local/node-v24.*/bin/node; do
     [ -n "$candidate" ] || continue
     if [ -x "$candidate" ] && "$candidate" -e 'process.exit(Number(process.versions.node.split(".")[0])>=24?0:1)' 2>/dev/null; then
       printf '%s' "$candidate"
@@ -44,7 +47,6 @@ find_node() {
   return 1
 }
 NODE_BIN="$(find_node || true)"
-[ -n "$NODE_BIN" ] || NODE_BIN="/usr/bin/node"
 START_LOG="$LOG_DIR/gateway.log"
 
 mkdir -p "$LOG_DIR" 2>/dev/null || true
@@ -56,7 +58,8 @@ log "--- gateway starting ---"
 # ── Pre-flight ────────────────────────────────────────────────────────────────
 [ -d "$APP_DIR" ]   || { log "FATAL: $APP_DIR missing"; exit 1; }
 [ -f "$ENV_FILE" ]  || { log "FATAL: $ENV_FILE missing — copy .env.example"; exit 1; }
-[ -x "$NODE_BIN" ]  || { log "FATAL: node not executable at $NODE_BIN"; exit 1; }
+[ -x "${NODE_BIN:-}" ] || { log "FATAL: no project Node 24 runtime (expected \$HOME/.local/node-v24 or runtime/node)"; exit 1; }
+[ -f "$RUNTIME_DIR/start.js" ] || { log "FATAL: $RUNTIME_DIR/start.js missing — build it first: $NODE_BIN $APP_DIR/scripts/build.js"; exit 1; }
 
 NODE_MAJOR="$("$NODE_BIN" -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
 if [ "$NODE_MAJOR" -lt 24 ]; then
@@ -87,7 +90,39 @@ while IFS= read -r line || [ -n "$line" ]; do
   export "$key=$value"
 done < "$ENV_FILE"
 
-cd "$APP_DIR" || { log "FATAL: cd $APP_DIR failed"; exit 1; }
+# ── Runtime state stays in the checkout, code comes from dist/ ──────────────
+# The build output is disposable (a rebuild replaces it), while data/models.db,
+# logs/ and .zombiecoder/ are the operator's state. Linking them keeps one
+# copy of each and makes a rebuild safe. On a machine without these paths the
+# app creates them inside dist/ on first boot.
+# skills/ is build output, not operator state; it stays inside dist/.
+for d in data logs cache locks .zombiecoder .missionbarisal; do
+  src="$APP_DIR/$d"
+  dst="$RUNTIME_DIR/$d"
+  [ -e "$src" ] || continue
+  if [ -L "$dst" ]; then
+    ln -sfn "$src" "$dst"
+  elif [ -d "$dst" ] && [ -z "$(ls -A "$dst" 2>/dev/null)" ]; then
+    # A build can leave an empty runtime directory behind; replace it so the
+    # operator's state is the only copy.
+    rmdir "$dst" 2>/dev/null && ln -s "$src" "$dst" || log "WARN could not link $dst"
+  elif [ -e "$dst" ]; then
+    log "WARN $dst exists as a real path; leaving it untouched"
+  else
+    ln -s "$src" "$dst" || log "WARN could not link $dst"
+  fi
+done
+
+# One .env: the wrapper reads the checkout copy and start.js reads the same
+# inode from dist/. A build copies it; this keeps a stale copy from surviving
+# an edit-and-restart.
+ln -sfn "$ENV_FILE" "$RUNTIME_DIR/.env"
+
+cd "$RUNTIME_DIR" || { log "FATAL: cd $RUNTIME_DIR failed"; exit 1; }
+
+if [ "$APP_DIR/api.js" -nt "$RUNTIME_DIR/api.js" ]; then
+  log "WARN dist/ is older than api.js — rebuild before trusting this boot"
+fi
 
 # ── Drop stale sockets so a restart does not hit EADDRINUSE ─────────────────
 # ONLY this service's own sockets. /tmp/local-llm.sock used to be listed here
@@ -101,5 +136,6 @@ done
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 # exec so systemd tracks this PID directly and restarts it on exit.
-log "starting: node start.js --start-all -s"
-exec "$NODE_BIN" "$APP_DIR/start.js" --start-all -s
+log "node $("$NODE_BIN" -v) · runtime $RUNTIME_DIR"
+log "starting: node dist/start.js --start-all -s"
+exec "$NODE_BIN" "$RUNTIME_DIR/start.js" --start-all -s

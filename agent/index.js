@@ -7,13 +7,12 @@
  *   1. SQLite DB (MODELS_DB) — runtime admin edits
  *   2. agent/*.js — this module (curated defaults; persona lives inline)
  *   3. .zombiecoder/agents/*.md — custom YAML frontmatter overrides
- *   4. DEFAULT_AGENTS — hardcoded minimal fallback (api.js)
  *
  * PERSONAS.md is NO LONGER read. Every agent carries its own `persona`
  * inline, so a missing or stale markdown file can never drop an agent.
  *
  * MODEL RESOLUTION (see resolveAgentModel):
- *   DB model → agent file `fallbackModel` → env AGENT_MODEL → null
+ *   DB model → agent file model → env AGENT_MODEL → null
  *   A null result is a hard stop: the caller must answer honestly instead
  *   of silently routing the request to an unrelated provider.
  *
@@ -37,16 +36,14 @@ function resolveAgentModel(agent, dbModel) {
   // 1. Runtime DB value (admin-selected) wins when it names a real model.
   if (dbModel && dbModel !== "MODELS_DB") return dbModel;
 
-  // 2. A literal model baked into the agent file.
+  // 2. A model declared in the agent file. "MODELS_DB" is a legacy sentinel
+  //    from old seeds and is never a model name.
   if (agent && agent.model && agent.model !== "MODELS_DB") return agent.model;
 
-  // 3. Agent-file fallback — present when the DB has no catalog yet.
-  if (agent && agent.fallbackModel) return agent.fallbackModel;
-
-  // 4. Global env escape hatch: one knob for every agent.
+  // 3. Global env escape hatch: one knob for every agent.
   if (process.env.AGENT_MODEL) return process.env.AGENT_MODEL;
 
-  // 5. Nothing. The caller reports this honestly — no silent substitution.
+  // 4. Nothing. The caller reports this honestly — no silent substitution.
   return null;
 }
 
@@ -103,11 +100,9 @@ function loadAgentFiles() {
           agents.push({
             id: agent.id,
             name: agent.name || agent.id,
-            // "MODELS_DB" is the sentinel meaning "resolve later via the
-            // provider ladder" — a literal here would pin the agent forever.
-            model: agent.model || "MODELS_DB",
-            // Concrete name used only when the DB catalog is unavailable.
-            fallbackModel: agent.fallbackModel || "",
+            // Empty means "resolve from the agents/models table". No model
+            // literal and no sentinel are written into the agent object.
+            model: agent.model || "",
             role: agent.role || "general",
             expertise: agent.expertise || "",
             priority: parseInt(agent.priority || "99", 10),

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>🧟 Mission Barisal v3 — Admin Panel</title>
+  <title>Mission Barisal v3 — Admin Panel</title>
   <style>
     /* ══════════════════════════════════════════
        GLOBAL
@@ -419,6 +419,452 @@
       border-radius: 50%; animation: spin 0.8s linear infinite; margin-left: 8px;
       vertical-align: middle;
     }
+
+    /* =========================================================
+       PROFESSIONAL UI LAYER — presentation only
+       Existing markup, controls, IDs and JavaScript are untouched.
+       ========================================================= */
+    :root {
+      color-scheme: dark;
+      --bg: #0b1120;
+      --bg2: #111a2b;
+      --bg3: #182438;
+      --border: #26364d;
+      --text: #e8eef8;
+      --text2: #91a2ba;
+      --blue: #65a9ff;
+      --green: #42d392;
+      --red: #ff6b78;
+      --orange: #f4b860;
+      --purple: #b69cff;
+      --sidebar-w: 258px;
+      --header-h: 68px;
+      --radius: 13px;
+    }
+
+    html { background: var(--bg); scroll-behavior: smooth; }
+    body {
+      background:
+        radial-gradient(ellipse at 78% -12%, rgba(53, 105, 180, .16), transparent 34%),
+        var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", Roboto, sans-serif;
+      font-size: 13px;
+      line-height: 1.55;
+      letter-spacing: .01em;
+    }
+
+    ::selection { background: rgba(101,169,255,.28); color: #fff; }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: rgba(7,13,24,.55); }
+    ::-webkit-scrollbar-thumb { background: #344660; border: 2px solid var(--bg); border-radius: 20px; }
+    ::-webkit-scrollbar-thumb:hover { background: #4c6687; }
+
+    .sidebar {
+      background: linear-gradient(180deg, #111c2e 0%, #0e1727 100%);
+      border-right: 1px solid rgba(130,160,200,.14);
+      box-shadow: 12px 0 40px rgba(0,0,0,.12);
+    }
+    .sidebar-brand {
+      min-height: 78px;
+      padding: 20px 20px 16px;
+      border-bottom: 1px solid rgba(130,160,200,.13);
+    }
+    .sidebar-brand h1 {
+      font-size: 17px;
+      letter-spacing: -.035em;
+      line-height: 1.35;
+      background: linear-gradient(110deg, #8fc4ff 0%, #6ee7c0 100%);
+      background-clip: text;
+      -webkit-background-clip: text;
+    }
+    .sidebar-brand small {
+      margin-top: 5px;
+      color: #8093ad;
+      letter-spacing: .055em;
+      text-transform: uppercase;
+      font-size: 9px;
+    }
+    .sidebar-nav { padding: 14px 11px; }
+    .nav-item {
+      min-height: 42px;
+      margin: 3px 0;
+      padding: 9px 12px;
+      gap: 11px;
+      border: 1px solid transparent;
+      border-left: 1px solid transparent;
+      border-radius: 9px;
+      color: #9aabc2;
+      font-size: 12.5px;
+      font-weight: 550;
+      transition: background .18s ease, color .18s ease, border-color .18s ease, transform .18s ease;
+    }
+    .nav-item:hover {
+      background: rgba(120,160,215,.09);
+      color: #eaf2ff;
+      transform: translateX(2px);
+    }
+    .nav-item.active {
+      color: #f1f7ff;
+      background: linear-gradient(100deg, rgba(68,139,229,.22), rgba(68,139,229,.07));
+      border: 1px solid rgba(101,169,255,.22);
+      border-left: 1px solid rgba(101,169,255,.22);
+      box-shadow: inset 3px 0 0 #65a9ff;
+    }
+    .nav-item .icon { width: 21px; font-size: 15px; opacity: .92; }
+    .nav-item .badge {
+      min-width: 25px;
+      text-align: center;
+      padding: 2px 7px;
+      border: 1px solid rgba(140,165,200,.14);
+      background: rgba(140,165,200,.09);
+      color: #a9bad1;
+      border-radius: 20px;
+      font-size: 10px;
+    }
+    .nav-item.active .badge {
+      background: rgba(101,169,255,.2);
+      color: #b8d9ff;
+      border-color: rgba(101,169,255,.24);
+    }
+    .sidebar-footer {
+      padding: 14px 19px;
+      background: rgba(5,10,18,.2);
+      border-top: 1px solid rgba(130,160,200,.13);
+      color: #91a2ba;
+      font-size: 11px;
+    }
+    .sidebar-footer .live-dot { box-shadow: 0 0 0 4px rgba(66,211,146,.1); }
+
+    .main { min-width: 0; }
+    .header {
+      position: relative;
+      z-index: 20;
+      min-height: var(--header-h);
+      height: auto;
+      padding: 10px 28px;
+      background: rgba(15,24,39,.88);
+      border-bottom: 1px solid rgba(130,160,200,.15);
+      box-shadow: 0 8px 28px rgba(0,0,0,.12);
+      backdrop-filter: blur(18px);
+    }
+    .header h2 {
+      font-size: 17px;
+      font-weight: 680;
+      letter-spacing: -.025em;
+    }
+    .header .header-actions { gap: 9px; }
+    .header .header-actions select,
+    .header .header-actions input[type="date"] {
+      min-height: 36px;
+      padding: 7px 11px;
+      background: #152238;
+      border: 1px solid #30435e;
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 11px;
+    }
+    .admin-auth { gap: 7px; }
+    .admin-auth input {
+      min-height: 36px;
+      width: 180px;
+      padding: 7px 11px;
+      background: #101c2e;
+      border: 1px solid #30435e;
+      border-radius: 8px;
+      font-size: 11px;
+    }
+    .admin-auth button,
+    .header .refresh-btn,
+    .refresh-btn {
+      min-height: 34px;
+      padding: 7px 12px;
+      border: 1px solid #344b69;
+      border-radius: 8px;
+      background: #1a2a41;
+      color: #d9e8fb;
+      font-size: 11px;
+      font-weight: 600;
+      transition: .18s ease;
+    }
+    .admin-auth button:hover,
+    .header .refresh-btn:hover,
+    .refresh-btn:hover {
+      background: #263d5c;
+      border-color: #5278a8;
+      color: #fff;
+      transform: translateY(-1px);
+    }
+    .admin-auth-status { min-width: 78px; font-size: 10px; }
+    .header .refresh-btn { white-space: nowrap; }
+    .content {
+      padding: 26px 28px 36px;
+      scrollbar-gutter: stable;
+    }
+
+    .stats-grid {
+      grid-template-columns: repeat(auto-fit, minmax(175px, 1fr));
+      gap: 14px;
+      margin-bottom: 22px;
+    }
+    .stat-card {
+      position: relative;
+      overflow: hidden;
+      min-height: 112px;
+      padding: 19px 20px;
+      text-align: left;
+      background: linear-gradient(145deg, rgba(24,38,59,.98), rgba(16,27,44,.98));
+      border: 1px solid rgba(125,157,199,.17);
+      border-radius: 14px;
+      box-shadow: 0 8px 24px rgba(0,0,0,.12);
+      transition: transform .2s ease, border-color .2s ease, box-shadow .2s ease;
+    }
+    .stat-card::after {
+      content: "";
+      position: absolute;
+      width: 100px;
+      height: 100px;
+      right: -44px;
+      top: -48px;
+      border-radius: 50%;
+      background: rgba(101,169,255,.07);
+      pointer-events: none;
+    }
+    .stat-card:hover {
+      transform: translateY(-2px);
+      border-color: rgba(101,169,255,.36);
+      box-shadow: 0 12px 28px rgba(0,0,0,.2);
+    }
+    .stat-card .stat-value {
+      position: relative;
+      z-index: 1;
+      font-size: clamp(25px, 2.2vw, 31px);
+      line-height: 1.2;
+      letter-spacing: -.045em;
+      color: #f2f7ff;
+    }
+    .stat-card .stat-label {
+      margin-top: 8px;
+      color: #b7c6da;
+      font-size: 11px;
+      font-weight: 650;
+      letter-spacing: .025em;
+    }
+    .stat-card .stat-sub { margin-top: 3px; color: #7f93ad; font-size: 10px; }
+
+    .card {
+      margin-bottom: 19px;
+      overflow: hidden;
+      background: linear-gradient(145deg, rgba(18,29,47,.98), rgba(15,25,41,.98));
+      border: 1px solid rgba(125,157,199,.17);
+      border-radius: 14px;
+      box-shadow: 0 9px 26px rgba(0,0,0,.13);
+    }
+    .card-header {
+      min-height: 52px;
+      padding: 13px 19px;
+      gap: 12px;
+      background: rgba(120,155,205,.035);
+      border-bottom: 1px solid rgba(125,157,199,.14);
+    }
+    .card-header h3 { color: #e4edf9; font-size: 12px; font-weight: 700; letter-spacing: .015em; }
+    .card-body { padding: 19px; }
+
+    table { font-size: 12px; }
+    th, td { padding: 11px 13px; border-bottom: 1px solid rgba(125,157,199,.12); }
+    th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: #152238;
+      color: #91a8c5;
+      font-size: 9px;
+      letter-spacing: .09em;
+    }
+    td { color: #d5e0ef; }
+    tbody tr { transition: background .15s ease; }
+    tr:hover td { background: rgba(101,169,255,.055); }
+
+    .tag { padding: 3px 9px; border-radius: 20px; font-size: 10px; font-weight: 650; }
+    .tag-green { background: rgba(66,211,146,.12); color: #63e3ad; }
+    .tag-blue { background: rgba(101,169,255,.13); color: #8fc4ff; }
+    .tag-red { background: rgba(255,107,120,.13); color: #ff8791; }
+    .tag-orange { background: rgba(244,184,96,.13); color: #ffc978; }
+    .tag-purple { background: rgba(182,156,255,.13); color: #c7b4ff; }
+
+    .agent-grid { gap: 14px; }
+    .agent-card, .agent-list-item {
+      background: linear-gradient(145deg, #18273d, #121f32);
+      border: 1px solid rgba(125,157,199,.18);
+      border-left: 3px solid #65a9ff;
+      border-radius: 12px;
+      box-shadow: 0 7px 20px rgba(0,0,0,.12);
+    }
+    .agent-card { padding: 19px; }
+    .agent-card:hover, .agent-list-item:hover {
+      border-color: rgba(101,169,255,.4);
+      transform: translateY(-1px);
+    }
+    .agent-card .agent-name, .agent-list-name { color: #edf4ff; }
+    .agent-card .agent-role, .agent-expertise { color: #9aadc6; }
+    .agent-card .agent-desc { color: #d0dced; }
+    .agent-list-item { padding: 18px; margin-bottom: 14px; }
+    .agent-list-model-section { border-top-color: rgba(125,157,199,.16); }
+    .agent-model-selector { gap: 10px; }
+
+    input:not([type="checkbox"]):not([type="radio"]),
+    select, textarea {
+      accent-color: var(--blue);
+    }
+    input:not([type="checkbox"]):not([type="radio"]),
+    select, textarea {
+      color: var(--text);
+      background-color: #101d30;
+      border: 1px solid #30435e;
+      border-radius: 8px;
+      transition: border-color .16s ease, box-shadow .16s ease, background .16s ease;
+    }
+    input:not([type="checkbox"]):not([type="radio"]):focus,
+    select:focus, textarea:focus {
+      outline: none;
+      border-color: #65a9ff !important;
+      box-shadow: 0 0 0 3px rgba(101,169,255,.13);
+      background-color: #13233a;
+    }
+    input::placeholder, textarea::placeholder { color: #71849e; opacity: 1; }
+    button { font-family: inherit; }
+    button:focus-visible, a:focus-visible, .nav-item:focus-visible {
+      outline: 2px solid #8fc4ff;
+      outline-offset: 3px;
+    }
+    button:disabled { filter: saturate(.6); }
+
+    .chat-container {
+      height: calc(100vh - var(--header-h) - 92px);
+      min-height: 420px;
+      background: #101b2c;
+      border: 1px solid rgba(125,157,199,.2);
+      border-radius: 15px;
+      box-shadow: 0 12px 32px rgba(0,0,0,.16);
+      overflow: hidden;
+    }
+    .chat-header {
+      min-height: 58px;
+      padding: 12px 18px;
+      background: #152238;
+      border-bottom-color: rgba(125,157,199,.16);
+    }
+    .chat-header select { min-height: 35px; padding: 6px 10px; border-radius: 8px; }
+    .chat-messages { padding: 22px; gap: 14px; }
+    .chat-msg {
+      max-width: min(78%, 760px);
+      padding: 12px 15px;
+      border: 1px solid rgba(125,157,199,.12);
+      border-radius: 14px;
+      line-height: 1.65;
+      box-shadow: 0 4px 12px rgba(0,0,0,.1);
+    }
+    .chat-msg.user {
+      background: linear-gradient(135deg, #2875c9, #2463ad);
+      border-color: rgba(155,205,255,.22);
+      border-bottom-right-radius: 5px;
+    }
+    .chat-msg.agent {
+      background: #1b2b42;
+      border-bottom-left-radius: 5px;
+    }
+    .chat-msg .msg-sender { color: #9db3cf; letter-spacing: .025em; }
+    .chat-msg.user .msg-sender { color: rgba(255,255,255,.78); }
+    .chat-input-area {
+      padding: 15px 18px;
+      background: #152238;
+      border-top-color: rgba(125,157,199,.16);
+    }
+    .chat-input-area input { min-height: 42px; padding: 10px 14px; }
+    .chat-input-area button {
+      min-width: 88px;
+      border-radius: 9px;
+      background: linear-gradient(135deg, #398ce5, #2672c7);
+      box-shadow: 0 5px 14px rgba(38,114,199,.22);
+    }
+
+    .log-viewer {
+      height: 440px;
+      padding: 17px;
+      background: #080e18;
+      border: 1px solid #26364d;
+      border-radius: 10px;
+      line-height: 1.7;
+    }
+    .log-line { color: #a5b4c9; }
+    .log-line .log-time { color: #62748e; }
+
+    .modal-overlay { background: rgba(3,8,16,.76); backdrop-filter: blur(5px); }
+    .modal {
+      padding: 27px;
+      background: #142238;
+      border: 1px solid #344b69;
+      border-radius: 15px;
+      box-shadow: 0 24px 80px rgba(0,0,0,.45);
+    }
+    .modal h3 { color: #edf4ff; }
+    .modal p { color: #a7b8ce; }
+    .modal .modal-close { border-radius: 8px; }
+
+    .loading { color: #91a2ba; }
+    .loading::after { border-color: #30435e; border-top-color: var(--blue); }
+
+    @media (min-width: 1500px) {
+      .content { padding-left: 34px; padding-right: 34px; }
+      .stats-grid { gap: 16px; }
+      .card-body { padding: 22px; }
+    }
+    @media (max-width: 1100px) {
+      .header { padding-left: 18px; padding-right: 18px; }
+      .content { padding: 20px 18px 30px; }
+      .header .header-actions { flex-wrap: wrap; justify-content: flex-end; }
+      .admin-auth input { width: 145px; }
+    }
+    @media (max-width: 768px) {
+      :root { --header-h: 60px; }
+      .sidebar { width: min(290px, 86vw); }
+      .header { min-height: 60px; padding: 9px 12px; gap: 8px; }
+      .header h2 { font-size: 14px; }
+      .header .header-actions { gap: 6px; }
+      .admin-auth input { width: 118px; min-width: 0; }
+      .admin-auth-status { display: none; }
+      .header .header-actions input[type="date"] { max-width: 135px; }
+      .content { padding: 16px 12px 26px; }
+      .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: 10px; }
+      .stat-card { min-height: 100px; padding: 14px; }
+      .stat-card .stat-value { font-size: 24px; }
+      .card-header { padding: 12px 14px; }
+      .card-body { padding: 14px; }
+      .chat-container { height: calc(100dvh - 145px); min-height: 390px; }
+      .chat-header { flex-wrap: wrap; }
+      .chat-header select { max-width: none; min-width: 0; }
+      .chat-msg { max-width: 94%; }
+      .chat-input-area { padding: 11px; }
+      table { min-width: 620px; }
+      .card-body:has(> table) { overflow-x: auto; }
+    }
+    @media (max-width: 420px) {
+      .header .header-actions input[type="date"] { display: none; }
+      .admin-auth input { width: 105px; }
+      .admin-auth button, .header .refresh-btn { padding: 6px 8px; }
+      .stats-grid { gap: 8px; }
+      .stat-card .stat-label { font-size: 10px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        scroll-behavior: auto !important;
+        animation-duration: .01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: .01ms !important;
+      }
+    }
+
   </style>
 </head>
 <body>
@@ -427,48 +873,48 @@
   <div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar()"></div>
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-brand">
-      <h1>🧟 Mission Barisal</h1>
+      <h1>Mission Barisal</h1>
       <small>v3.2.1 — Admin Panel</small>
     </div>
     <nav class="sidebar-nav">
       <div class="nav-item active" data-page="dashboard" onclick="switchPage('dashboard')">
-        <span class="icon">📊</span> Dashboard <span class="badge" id="dashBadge">—</span>
+        Dashboard <span class="badge" id="dashBadge">—</span>
       </div>
       <div class="nav-item" data-page="agents" onclick="switchPage('agents')">
-        <span class="icon">🤖</span> Agents <span class="badge" id="agentBadge">6</span>
+        Agents <span class="badge" id="agentBadge">6</span>
       </div>
       <div class="nav-item" data-page="agent-manager" onclick="switchPage('agent-manager')">
-        <span class="icon">🛠</span> Agent Manager <span class="badge" id="agentMgrBadge">—</span>
+        Agent Manager <span class="badge" id="agentMgrBadge">—</span>
       </div>
       <div class="nav-item" data-page="models" onclick="switchPage('models')">
-        <span class="icon">📦</span> Models <span class="badge" id="modelBadge">—</span>
+        Models <span class="badge" id="modelBadge">—</span>
       </div>
       <div class="nav-item" data-page="sessions" onclick="switchPage('sessions')">
-        <span class="icon">🔌</span> Sessions <span class="badge" id="sessionBadge">0</span>
+        Sessions <span class="badge" id="sessionBadge">0</span>
       </div>
       <div class="nav-item" data-page="logs" onclick="switchPage('logs')">
-        <span class="icon">📋</span> Runtime Logs
+        Runtime Logs
       </div>
       <div class="nav-item" data-page="providers" onclick="switchPage('providers')">
-        <span class="icon">🌐</span> Providers
+        Providers
       </div>
       <div class="nav-item" data-page="chat" onclick="switchPage('chat')">
-        <span class="icon">💬</span> Agent Chat
+        Agent Chat
       </div>
       <div class="nav-item" data-page="usage" onclick="switchPage('usage')">
-        <span class="icon">📊</span> Usage Stats
+        Usage Stats
       </div>
       <div class="nav-item" data-page="mcp" onclick="switchPage('mcp')">
-        <span class="icon">🔌</span> MCP & Tools
+        MCP & Tools
       </div>
       <div class="nav-item" data-page="ssot" onclick="switchPage('ssot')">
-        <span class="icon">📄</span> SSOT Status
+        SSOT Status
       </div>
       <div class="nav-item" data-page="config" onclick="switchPage('config')">
-        <span class="icon">⚙️</span> Config
+        Config
       </div>
       <div class="nav-item" data-page="about" onclick="switchPage('about')">
-        <span class="icon">ℹ️</span> About
+        About
       </div>
     </nav>
     <div class="sidebar-footer">
@@ -480,8 +926,8 @@
   <div class="main">
     <!-- Header -->
     <header class="header">
-      <button class="hamburger" onclick="toggleSidebar()" aria-label="Toggle menu">☰</button>
-      <h2 id="pageTitle">📊 Dashboard</h2>
+      <button class="hamburger" onclick="toggleSidebar()" aria-label="Toggle menu"></button>
+      <h2 id="pageTitle">Dashboard</h2>
       <div class="header-actions">
         <div class="admin-auth">
           <input type="password" id="adminTokenInput" placeholder="Admin token" autocomplete="current-password">
@@ -499,15 +945,15 @@
       <!-- ═══ PAGE: DASHBOARD ═══ -->
       <div class="page active" id="page-dashboard">
         <div class="stats-grid" id="dashboardStats">
-          <div class="stat-card"><div class="stat-value" id="statAgents">—</div><div class="stat-label">🤖 Agents</div><div class="stat-sub" id="statAgentsSub">loading...</div></div>
-          <div class="stat-card"><div class="stat-value" id="statModels">—</div><div class="stat-label">📦 Models</div><div class="stat-sub" id="statModelsSub">loading...</div></div>
-          <div class="stat-card"><div class="stat-value" id="statSessions">—</div><div class="stat-label">🔌 Sessions</div><div class="stat-sub" id="statSessionsSub">active</div></div>
-          <div class="stat-card"><div class="stat-value" id="statUptime">—</div><div class="stat-label">⏱ Uptime</div><div class="stat-sub" id="statUptimeSub">loading...</div></div>
-          <div class="stat-card"><div class="stat-value" id="statProviders">—</div><div class="stat-label">🌐 Providers</div><div class="stat-sub" id="statProvidersSub">loading...</div></div>
-          <div class="stat-card"><div class="stat-value" id="statHealth"><span style="color:var(--green)">✓</span></div><div class="stat-label">💚 Health</div><div class="stat-sub" id="statHealthSub">connected</div></div>
+          <div class="stat-card"><div class="stat-value" id="statAgents">—</div><div class="stat-label">Agents</div><div class="stat-sub" id="statAgentsSub">loading...</div></div>
+          <div class="stat-card"><div class="stat-value" id="statModels">—</div><div class="stat-label">Models</div><div class="stat-sub" id="statModelsSub">loading...</div></div>
+          <div class="stat-card"><div class="stat-value" id="statSessions">—</div><div class="stat-label">Sessions</div><div class="stat-sub" id="statSessionsSub">active</div></div>
+          <div class="stat-card"><div class="stat-value" id="statUptime">—</div><div class="stat-label">Uptime</div><div class="stat-sub" id="statUptimeSub">loading...</div></div>
+          <div class="stat-card"><div class="stat-value" id="statProviders">—</div><div class="stat-label">Providers</div><div class="stat-sub" id="statProvidersSub">loading...</div></div>
+          <div class="stat-card"><div class="stat-value" id="statHealth"><span style="color:var(--green)">✓</span></div><div class="stat-label">Health</div><div class="stat-sub" id="statHealthSub">connected</div></div>
         </div>
         <div class="card">
-          <div class="card-header"><h3>📈 System Overview</h3><span style="font-size:11px;color:var(--text2)" id="overviewTime">—</span></div>
+          <div class="card-header"><h3>System Overview</h3><span style="font-size:11px;color:var(--text2)" id="overviewTime">—</span></div>
           <div class="card-body" id="overviewBody">
             <div class="loading">Loading system data...</div>
           </div>
@@ -517,12 +963,12 @@
       <!-- ═══ PAGE: AGENTS ═══ -->
       <div class="page" id="page-agents">
         <div class="stats-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:16px">
-          <div class="stat-card"><div class="stat-value" id="agentOnlineCount">—</div><div class="stat-label">🟢 Online</div></div>
-          <div class="stat-card"><div class="stat-value" id="agentBusyCount">—</div><div class="stat-label">🟡 Busy</div></div>
-          <div class="stat-card"><div class="stat-value" id="agentErrorCount">—</div><div class="stat-label">🔴 Errors</div></div>
+          <div class="stat-card"><div class="stat-value" id="agentOnlineCount">—</div><div class="stat-label">Online</div></div>
+          <div class="stat-card"><div class="stat-value" id="agentBusyCount">—</div><div class="stat-label">Busy</div></div>
+          <div class="stat-card"><div class="stat-value" id="agentErrorCount">—</div><div class="stat-label">Errors</div></div>
         </div>
         <div class="card">
-          <div class="card-header"><h3>🤖 Agent Team — Mission Barisal</h3><span style="font-size:11px;color:var(--text2)" id="agentStatusLine">6 agents online</span></div>
+          <div class="card-header"><h3>Agent Team — Mission Barisal</h3><span style="font-size:11px;color:var(--text2)" id="agentStatusLine">6 agents online</span></div>
           <div class="card-body"><div class="agent-grid" id="agentGrid"><div class="loading">Loading agents...</div></div></div>
         </div>
       </div>
@@ -530,14 +976,14 @@
       <!-- ═══ PAGE: AGENT MANAGER ═══ -->
       <div class="page" id="page-agent-manager">
         <div class="stats-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px">
-          <div class="stat-card"><div class="stat-value" id="mgrTotalAgents">—</div><div class="stat-label">🤖 Total Agents</div></div>
-          <div class="stat-card"><div class="stat-value" id="mgrEnabledAgents">—</div><div class="stat-label">✅ Enabled</div></div>
-          <div class="stat-card"><div class="stat-value" id="mgrDisabledAgents">—</div><div class="stat-label">❌ Disabled</div></div>
-          <div class="stat-card"><div class="stat-value" id="mgrDbStatus"><span style="color:var(--green)">✓</span></div><div class="stat-label">🗄 DB Status</div></div>
+          <div class="stat-card"><div class="stat-value" id="mgrTotalAgents">—</div><div class="stat-label">Total Agents</div></div>
+          <div class="stat-card"><div class="stat-value" id="mgrEnabledAgents">—</div><div class="stat-label">Enabled</div></div>
+          <div class="stat-card"><div class="stat-value" id="mgrDisabledAgents">—</div><div class="stat-label">Disabled</div></div>
+          <div class="stat-card"><div class="stat-value" id="mgrDbStatus"><span style="color:var(--green)">✓</span></div><div class="stat-label">DB Status</div></div>
         </div>
         <div class="card" style="margin-bottom:16px">
           <div class="card-header">
-            <h3>➕ Add New Agent</h3>
+            <h3>Add New Agent</h3>
             <button class="refresh-btn" onclick="showNewAgentForm()">+ New Agent</button>
           </div>
           <div class="card-body" id="newAgentForm" style="display:none">
@@ -584,16 +1030,16 @@
               </div>
               <div style="grid-column:1/-1;display:flex;gap:8px;justify-content:flex-end">
                 <button class="refresh-btn" onclick="hideNewAgentForm()" style="padding:8px 16px">Cancel</button>
-                <button class="refresh-btn" onclick="createNewAgent()" style="padding:8px 16px;background:var(--green);color:#fff;border-color:var(--green)">💾 Create Agent</button>
+                <button class="refresh-btn" onclick="createNewAgent()" style="padding:8px 16px;background:var(--green);color:#fff;border-color:var(--green)">Create Agent</button>
               </div>
             </div>
           </div>
         </div>
         <div class="card">
           <div class="card-header">
-            <h3>🤖 All Agents — Database Management</h3>
+            <h3>All Agents — Database Management</h3>
             <div style="display:flex;gap:6px">
-              <input type="text" id="mgrSearch" placeholder="🔍 Search agents..." style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:4px 10px;border-radius:4px;font-size:12px;width:180px" oninput="filterManagerAgents()">
+              <input type="text" id="mgrSearch" placeholder="Search agents..." style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:4px 10px;border-radius:4px;font-size:12px;width:180px" oninput="filterManagerAgents()">
               <button class="refresh-btn" onclick="loadAgentManager()">⟳ Refresh</button>
             </div>
           </div>
@@ -606,15 +1052,15 @@
       <!-- ═══ PAGE: MODELS ═══ -->
       <div class="page" id="page-models">
         <div class="stats-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px">
-          <div class="stat-card"><div class="stat-value" id="modelTotalCount">—</div><div class="stat-label">📦 Total Models</div></div>
-          <div class="stat-card"><div class="stat-value" id="modelProviderCount">—</div><div class="stat-label">🏢 Providers</div></div>
-          <div class="stat-card"><div class="stat-value" id="modelTypeChat">—</div><div class="stat-label">💬 Chat Models</div></div>
-          <div class="stat-card"><div class="stat-value" id="modelTypeOther">—</div><div class="stat-label">🔧 Other</div></div>
+          <div class="stat-card"><div class="stat-value" id="modelTotalCount">—</div><div class="stat-label">Total Models</div></div>
+          <div class="stat-card"><div class="stat-value" id="modelProviderCount">—</div><div class="stat-label">Providers</div></div>
+          <div class="stat-card"><div class="stat-value" id="modelTypeChat">—</div><div class="stat-label">Chat Models</div></div>
+          <div class="stat-card"><div class="stat-value" id="modelTypeOther">—</div><div class="stat-label">Other</div></div>
         </div>
         <div class="card">
-          <div class="card-header"><h3>📦 Available Models</h3>
+          <div class="card-header"><h3>Available Models</h3>
             <div style="display:flex;gap:6px">
-              <input type="text" id="modelSearch" placeholder="🔍 Search model..." style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:4px 10px;border-radius:4px;font-size:12px;width:180px" oninput="filterModels()">
+              <input type="text" id="modelSearch" placeholder="Search model..." style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:4px 10px;border-radius:4px;font-size:12px;width:180px" oninput="filterModels()">
               <select id="modelProviderFilter" onchange="filterModels()" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:4px;font-size:12px">
                 <option value="">All Providers</option>
               </select>
@@ -634,7 +1080,7 @@
           <div class="stat-card"><div class="stat-value" id="totalAgents">—</div><div class="stat-label">Total Agent Calls</div></div>
         </div>
         <div class="card">
-          <div class="card-header"><h3>🔌 Session Log</h3><span id="sessionDate" style="font-size:11px;color:var(--text2)"></span></div>
+          <div class="card-header"><h3>Session Log</h3><span id="sessionDate" style="font-size:11px;color:var(--text2)"></span></div>
           <div class="card-body"><table><thead><tr><th>Time</th><th>Session ID</th><th>Editor</th><th>Status</th><th>Agent / Model</th></tr></thead><tbody id="sessionTable"><tr><td colspan="5"><div class="loading">Loading sessions...</div></td></tr></tbody></table></div>
         </div>
       </div>
@@ -642,10 +1088,10 @@
       <!-- ═══ PAGE: LOGS ═══ -->
       <div class="page" id="page-logs">
         <div class="card">
-          <div class="card-header"><h3>📋 Runtime Logs</h3>
+          <div class="card-header"><h3>Runtime Logs</h3>
             <div style="display:flex;gap:6px">
               <button class="refresh-btn" onclick="document.getElementById('logViewer').innerHTML='<div class=loading>Loading logs...</div>';fetchLogs()">⟳ Refresh</button>
-              <button class="refresh-btn" onclick="document.getElementById('logViewer').innerHTML=''">🗑 Clear</button>
+              <button class="refresh-btn" onclick="document.getElementById('logViewer').innerHTML=''">Clear</button>
             </div>
           </div>
           <div class="card-body"><div class="log-viewer" id="logViewer"><div class="loading">Fetching logs...</div></div></div>
@@ -655,17 +1101,17 @@
       <!-- ═══ PAGE: PROVIDERS ═══ -->
       <div class="page" id="page-providers">
         <div class="stats-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px">
-          <div class="stat-card"><div class="stat-value" id="provTotal">—</div><div class="stat-label">🌐 Total Providers</div></div>
-          <div class="stat-card"><div class="stat-value" id="provModels">—</div><div class="stat-label">📦 Total Models</div></div>
-          <div class="stat-card"><div class="stat-value" id="provActive">—</div><div class="stat-label">✅ Active</div></div>
-          <div class="stat-card"><div class="stat-value" id="provPriority"><span style="color:var(--green)">Active</span></div><div class="stat-label">⚡ Status</div></div>
+          <div class="stat-card"><div class="stat-value" id="provTotal">—</div><div class="stat-label">Total Providers</div></div>
+          <div class="stat-card"><div class="stat-value" id="provModels">—</div><div class="stat-label">Total Models</div></div>
+          <div class="stat-card"><div class="stat-value" id="provActive">—</div><div class="stat-label">Active</div></div>
+          <div class="stat-card"><div class="stat-value" id="provPriority"><span style="color:var(--green)">Active</span></div><div class="stat-label">Status</div></div>
         </div>
         <div class="card">
-          <div class="card-header"><h3>🌐 Provider Configuration</h3><span style="font-size:11px;color:var(--text2)" id="providerRefreshTime"></span></div>
+          <div class="card-header"><h3>Provider Configuration</h3><span style="font-size:11px;color:var(--text2)" id="providerRefreshTime"></span></div>
           <div class="card-body"><table><thead><tr><th>Provider</th><th>Name</th><th>Type</th><th>Base URL</th><th>Models</th><th>Priority</th><th>Req</th><th>Err</th><th>OK%</th><th>Status</th></tr></thead><tbody id="providerTable"><tr><td colspan="10"><div class="loading">Loading providers...</div></td></tr></tbody></table></div>
         </div>
         <div class="card">
-          <div class="card-header"><h3>📊 Provider Model Distribution</h3></div>
+          <div class="card-header"><h3>Provider Model Distribution</h3></div>
           <div class="card-body"><div id="providerChart" style="display:grid;grid-template-columns:repeat(auto-fit, minmax(180px,1fr));gap:12px"><div class="loading">Loading chart...</div></div></div>
         </div>
       </div>
@@ -674,26 +1120,26 @@
       <div class="page" id="page-chat">
         <div class="chat-container">
           <div class="chat-header">
-            <span style="font-weight:600;font-size:14px;">💬 Agent Chat</span>
+            <span style="font-weight:600;font-size:14px;">Agent Chat</span>
             <select id="chatAgentSelect" onchange="onChatAgentChange()">
-              <option value="mission">🤖 Mission (All Agents)</option>
-              <option value="code-guru">🔴 মনু — Architect</option>
-              <option value="bug-hunter">🔵 জারিন — Debugger</option>
-              <option value="security-hero">🟢 ব্রিশ্টি — Security</option>
-              <option value="perf-wizard">🟡 রাশেদ — Performance</option>
-              <option value="doc-king">📖 হালিম — Documentation</option>
-              <option value="qa-tyrant">⚫ মজনু — QA</option>
+              <option value="mission">Mission (All Agents)</option>
+              <option value="code-guru">মনু — Architect</option>
+              <option value="bug-hunter">জারিন — Debugger</option>
+              <option value="security-hero">ব্রিশ্টি — Security</option>
+              <option value="perf-wizard">রাশেদ — Performance</option>
+              <option value="doc-king">হালিম — Documentation</option>
+              <option value="qa-tyrant">মজনু — QA</option>
             </select>
             <select id="chatSessionSelect" onchange="loadChatSession(this.value)">
-              <option value="">📁 New Conversation</option>
+              <option value="">New Conversation</option>
             </select>
             <span class="chat-status" id="chatStatus">ready</span>
-            <button class="refresh-btn" onclick="clearChatHistory()" title="Clear history">🗑</button>
+            <button class="refresh-btn" onclick="clearChatHistory()" title="Clear history"></button>
           </div>
           <div class="chat-messages" id="chatMessages">
             <div class="chat-msg agent">
-              <div class="msg-sender">🤖 Mission Barisal</div>
-              নমস্কার! আমি Mission Barisal AI। কোন এজেন্টের সাথে কথা বলতে চান? উপরে সিলেক্ট করুন আর মেসেজ লিখুন। 😊
+              <div class="msg-sender">Mission Barisal</div>
+              নমস্কার! আমি Mission Barisal AI। কোন এজেন্টের সাথে কথা বলতে চান? উপরে সিলেক্ট করুন আর মেসেজ লিখুন।
               <div class="msg-time">just now</div>
             </div>
           </div>
@@ -707,27 +1153,27 @@
       <!-- ═══ PAGE: USAGE STATS ═══ -->
       <div class="page" id="page-usage">
         <div class="stats-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px">
-          <div class="stat-card"><div class="stat-value" id="usageTotalReqs">—</div><div class="stat-label">📊 Total Requests</div></div>
-          <div class="stat-card"><div class="stat-value" id="usageUptime">—</div><div class="stat-label">⏱ Uptime</div></div>
-          <div class="stat-card"><div class="stat-value" id="usageActiveModels">—</div><div class="stat-label">📦 Active Models</div></div>
-          <div class="stat-card"><div class="stat-value" id="usageActiveAgents">—</div><div class="stat-label">🤖 Active Agents</div></div>
+          <div class="stat-card"><div class="stat-value" id="usageTotalReqs">—</div><div class="stat-label">Total Requests</div></div>
+          <div class="stat-card"><div class="stat-value" id="usageUptime">—</div><div class="stat-label">Uptime</div></div>
+          <div class="stat-card"><div class="stat-value" id="usageActiveModels">—</div><div class="stat-label">Active Models</div></div>
+          <div class="stat-card"><div class="stat-value" id="usageActiveAgents">—</div><div class="stat-label">Active Agents</div></div>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
           <div class="card">
-            <div class="card-header"><h3>🤖 Agent Usage</h3></div>
+            <div class="card-header"><h3>Agent Usage</h3></div>
             <div class="card-body"><div id="agentUsageChart"><div class="loading">Loading...</div></div></div>
           </div>
           <div class="card">
-            <div class="card-header"><h3>🌐 Provider Usage</h3></div>
+            <div class="card-header"><h3>Provider Usage</h3></div>
             <div class="card-body"><div id="providerUsageChart"><div class="loading">Loading...</div></div></div>
           </div>
         </div>
         <div class="card">
-          <div class="card-header"><h3>📦 Model Usage</h3></div>
+          <div class="card-header"><h3>Model Usage</h3></div>
           <div class="card-body" style="overflow-x:auto"><table><thead><tr><th>Model</th><th>Count</th><th>Last Used</th><th>Status</th></tr></thead><tbody id="modelUsageTable"><tr><td colspan="4"><div class="loading">Loading...</div></td></tr></tbody></table></div>
         </div>
         <div class="card">
-          <div class="card-header"><h3>🌍 Domain Requests</h3></div>
+          <div class="card-header"><h3>Domain Requests</h3></div>
           <div class="card-body"><div id="domainUsageChart"><div class="loading">Loading...</div></div></div>
         </div>
       </div>
@@ -735,17 +1181,17 @@
       <!-- ═══ PAGE: MCP & TOOLS ═══ -->
       <div class="page" id="page-mcp">
         <div class="stats-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px">
-          <div class="stat-card"><div class="stat-value" id="mcpActiveConns">—</div><div class="stat-label">🔌 Active Connections</div></div>
-          <div class="stat-card"><div class="stat-value" id="mcpTotalTools">—</div><div class="stat-label">🛠 Total Tools</div></div>
-          <div class="stat-card"><div class="stat-value" id="mcpToolCalls">—</div><div class="stat-label">📊 Total Tool Calls</div></div>
-          <div class="stat-card"><div class="stat-value" id="mcpToolErrors">—</div><div class="stat-label">❌ Tool Errors</div></div>
+          <div class="stat-card"><div class="stat-value" id="mcpActiveConns">—</div><div class="stat-label">Active Connections</div></div>
+          <div class="stat-card"><div class="stat-value" id="mcpTotalTools">—</div><div class="stat-label">Total Tools</div></div>
+          <div class="stat-card"><div class="stat-value" id="mcpToolCalls">—</div><div class="stat-label">Total Tool Calls</div></div>
+          <div class="stat-card"><div class="stat-value" id="mcpToolErrors">—</div><div class="stat-label">Tool Errors</div></div>
         </div>
         <div class="card">
-          <div class="card-header"><h3>🔌 MCP Client Connections</h3></div>
+          <div class="card-header"><h3>MCP Client Connections</h3></div>
           <div class="card-body"><div id="mcpClientsList"><div class="loading">Loading...</div></div></div>
         </div>
         <div class="card">
-          <div class="card-header"><h3>🛠 Tool Usage</h3></div>
+          <div class="card-header"><h3>Tool Usage</h3></div>
           <div class="card-body" style="overflow-x:auto"><table><thead><tr><th>Tool</th><th>Calls</th><th>Errors</th><th>Last Used</th><th>Status</th></tr></thead><tbody id="toolUsageTable"><tr><td colspan="5"><div class="loading">Loading...</div></td></tr></tbody></table></div>
         </div>
       </div>
@@ -753,16 +1199,16 @@
       <!-- ═══ PAGE: SSOT STATUS ═══ -->
       <div class="page" id="page-ssot">
         <div class="stats-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:16px">
-          <div class="stat-card"><div class="stat-value" id="ssotStatus">—</div><div class="stat-label">📄 SSOT Status</div></div>
-          <div class="stat-card"><div class="stat-value" id="ssotSize">—</div><div class="stat-label">📏 Size</div></div>
-          <div class="stat-card"><div class="stat-value" id="ssotLines">—</div><div class="stat-label">📝 Lines</div></div>
+          <div class="stat-card"><div class="stat-value" id="ssotStatus">—</div><div class="stat-label">SSOT Status</div></div>
+          <div class="stat-card"><div class="stat-value" id="ssotSize">—</div><div class="stat-label">Size</div></div>
+          <div class="stat-card"><div class="stat-value" id="ssotLines">—</div><div class="stat-label">Lines</div></div>
         </div>
         <div class="card">
-          <div class="card-header"><h3>📄 SSOT Auto-Generation</h3></div>
+          <div class="card-header"><h3>SSOT Auto-Generation</h3></div>
           <div class="card-body" id="ssotDetails"><div class="loading">Loading...</div></div>
         </div>
         <div class="card">
-          <div class="card-header"><h3>🤖 Agent Status (Runtime)</h3></div>
+          <div class="card-header"><h3>Agent Status (Runtime)</h3></div>
           <div class="card-body"><div id="agentRuntimeStatus"><div class="loading">Loading...</div></div></div>
         </div>
       </div>
@@ -770,7 +1216,7 @@
       <!-- ═══ PAGE: CONFIG ═══ -->
       <div class="page" id="page-config">
         <div class="card">
-          <div class="card-header"><h3>⚙️ Runtime Configuration</h3>
+          <div class="card-header"><h3>Runtime Configuration</h3>
             <div style="display:flex;gap:6px">
               <button class="refresh-btn" onclick="loadConfig()">⟳ Reload</button>
             </div>
@@ -778,17 +1224,17 @@
           <div class="card-body"><table><thead><tr><th>Key</th><th>Value</th></tr></thead><tbody id="configTable"><tr><td colspan="2"><div class="loading">Loading config...</div></td></tr></tbody></table></div>
         </div>
         <div class="card">
-          <div class="card-header"><h3>🔗 Session Verify URL</h3></div>
+          <div class="card-header"><h3>Session Verify URL</h3></div>
           <div class="card-body">
             <div style="display:flex;gap:8px;align-items:center">
               <input type="text" id="sessionVerifyInput" value="http://zombiecoder.my.id/api/verify-session"
                 style="flex:1;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:6px;font-size:13px">
-              <button class="refresh-btn" onclick="updateSessionVerifyUrl(document.getElementById('sessionVerifyInput').value)" style="padding:8px 16px">🔄 Change Domain</button>
+              <button class="refresh-btn" onclick="updateSessionVerifyUrl(document.getElementById('sessionVerifyInput').value)" style="padding:8px 16px">Change Domain</button>
             </div>
             <p style="font-size:11px;color:var(--text2);margin-top:8px">Enter new verification URL and click "Change Domain" to update at runtime.</p>
-            <!-- 🧟 editable runtime config — saved to SQLite settings table, survives restart -->
+            <!-- editable runtime config — saved to SQLite settings table, survives restart -->
             <div style="display:grid;gap:10px;margin-top:14px;border-top:1px solid var(--border);padding-top:12px">
-              <strong style="font-size:12px">⚙️ Edit Runtime Config <span style="font-weight:400;color:var(--text2)">(persists in SQLite — no restart)</span></strong>
+              <strong style="font-size:12px">Edit Runtime Config <span style="font-weight:400;color:var(--text2)">(persists in SQLite — no restart)</span></strong>
               <label style="font-size:11px;color:var(--text2)">Log Level
                 <select id="cfgLogLevel" style="display:block;margin-top:4px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:12px;width:100%">
                   <option value="INFO">INFO</option>
@@ -803,12 +1249,12 @@
               <label style="font-size:11px;color:var(--text2);display:flex;align-items:center;gap:6px">
                 <input type="checkbox" id="cfgAntiDote"> Anti-Dote monitoring enabled
               </label>
-              <button class="refresh-btn" onclick="saveRuntimeConfig()" style="padding:8px 16px;justify-self:start">💾 Save Config</button>
+              <button class="refresh-btn" onclick="saveRuntimeConfig()" style="padding:8px 16px;justify-self:start">Save Config</button>
             </div>
           </div>
         </div>
         <div class="card">
-          <div class="card-header"><h3>📡 Pusher Status</h3></div>
+          <div class="card-header"><h3>Pusher Status</h3></div>
           <div class="card-body" id="pusherStatusBody">
             <div class="loading">Checking Pusher...</div>
           </div>
@@ -818,7 +1264,7 @@
       <!-- ═══ PAGE: ABOUT ═══ -->
       <div class="page" id="page-about">
         <div class="card">
-          <div class="card-header"><h3>ℹ️ About</h3></div>
+          <div class="card-header"><h3>About</h3></div>
           <div class="card-body" id="aboutBody"><div class="loading">Loading...</div></div>
         </div>
       </div>
@@ -841,19 +1287,19 @@
     let providerDataCache = null;
     let agentStatus = {};
     let agentModelsCache = null; // Cache for available models for agent dropdown
-    let modelDisabledSet = new Set(); // 🧟 "provider::name" disabled models
+    let modelDisabledSet = new Set(); // "provider::name" disabled models
 
     const savedAdminToken = sessionStorage.getItem(ADMIN_TOKEN_STORAGE_KEY) || '';
     if (savedAdminToken) {
       document.getElementById('adminTokenInput').value = savedAdminToken;
       document.getElementById('adminAuthStatus').textContent = 'Token saved';
-      // 🧟 Re-check the SAVED token against the server on page load. If ADMIN_TOKEN
+      // Re-check the SAVED token against the server on page load. If ADMIN_TOKEN
       // was rotated in .env, the stale sessionStorage copy is dropped right here
       // instead of being silently attached to every save → 401 loop.
       verifyAdminToken({ silent: true });
     }
 
-    // 🧟 Single reaction point for HTTP 401 — replaces the vague
+    // Single reaction point for HTTP 401 — replaces the vague
     // "Failed to save model: Unauthorized: ADMIN_TOKEN required" with a fixable
     // instruction, and clears the bad token so it can't be re-sent.
     function handleUnauthorized() {
@@ -895,10 +1341,10 @@
       document.getElementById('page-' + page).classList.add('active');
 
       // Title
-      const titles = { dashboard:'📊 Dashboard', agents:'🤖 Agents', models:'📦 Models',
-        sessions:'🔌 Sessions', logs:'📋 Runtime Logs', providers:'🌐 Providers',
-        chat:'💬 Agent Chat', usage:'📊 Usage Stats', mcp:'🔌 MCP & Tools',
-        ssot:'📄 SSOT Status', config:'⚙️ Config', about:'ℹ️ About' };
+      const titles = { dashboard:'Dashboard', agents:'Agents', models:'Models',
+        sessions:'Sessions', logs:'Runtime Logs', providers:'Providers',
+        chat:'Agent Chat', usage:'Usage Stats', mcp:'MCP & Tools',
+        ssot:'SSOT Status', config:'Config', about:'About' };
       document.getElementById('pageTitle').textContent = titles[page] || page;
 
       // Close sidebar on mobile
@@ -921,7 +1367,7 @@
       else if (page === 'chat') populateChatAgents();
     }
 
-    // 🧟 Chat dropdown is DB-driven (agents table) — no hardcoded agent list.
+    // Chat dropdown is DB-driven (agents table) — no hardcoded agent list.
     async function populateChatAgents() {
       try {
         const data = await apiFetch('/api/agents');
@@ -929,8 +1375,8 @@
         if (!list.length) return;
         const sel = document.getElementById('chatAgentSelect');
         const cur = sel.value;
-        sel.innerHTML = '<option value="mission">🤖 Mission (All Agents)</option>' +
-          list.map(a => `<option value="${a.id}">🤖 ${a.name || a.id}</option>`).join('');
+        sel.innerHTML = '<option value="mission">Mission (All Agents)</option>' +
+          list.map(a => `<option value="${a.id}">${a.name || a.id}</option>`).join('');
         if (cur) sel.value = cur;
         document.getElementById('chatStatus').textContent = 'ready';
       } catch (_) {}
@@ -946,7 +1392,7 @@
     function applyDateFilter() {
       const date = document.getElementById('dateFilter').value;
       if (date) {
-        document.getElementById('sessionDate').textContent = '📅 ' + date;
+        document.getElementById('sessionDate').textContent = '' + date;
         loadSessions(date);
       }
     }
@@ -1083,8 +1529,8 @@
       document.getElementById('overviewBody').innerHTML = `
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;font-size:13px;">
           <div><strong>Version:</strong> ${health.version || '—'}</div>
-          <div><strong>Pusher:</strong> ${health.pusher ? '✅ Enabled' : '❌ Disabled'}</div>
-          <div><strong>Rate Limited:</strong> ${health.rate_limit && health.rate_limit.limited ? '⚠️ Yes' : '✅ No'}</div>
+          <div><strong>Pusher:</strong> ${health.pusher ? 'Enabled' : 'Disabled'}</div>
+          <div><strong>Rate Limited:</strong> ${health.rate_limit && health.rate_limit.limited ? 'Yes' : 'No'}</div>
           <div><strong>Log Level:</strong> ${logLevel}</div>
           <div><strong>Owner:</strong> ${identity.system_identity?.branding?.owner || '—'}</div>
           <div><strong>Location:</strong> ${identity.system_identity?.branding?.location || '—'}</div>
@@ -1141,9 +1587,9 @@
       const colors = { 'code-guru':'var(--blue)', 'bug-hunter':'var(--red)', 'security-hero':'var(--green)',
         'perf-wizard':'var(--orange)', 'doc-king':'var(--purple)', 'qa-tyrant':'var(--text)',
         'team-heart':'var(--pink)', 'customer-experience-specialist':'var(--cyan)', 'ecommerce-operations-analyst':'var(--teal)' };
-      const icons = { 'code-guru':'🔴', 'bug-hunter':'🔵', 'security-hero':'🟢',
-        'perf-wizard':'🟡', 'doc-king':'📖', 'qa-tyrant':'⚫',
-        'team-heart':'❤️', 'customer-experience-specialist':'👥', 'ecommerce-operations-analyst':'📊' };
+      const icons = { 'code-guru':'', 'bug-hunter':'', 'security-hero':'',
+        'perf-wizard':'', 'doc-king':'', 'qa-tyrant':'',
+        'team-heart':'', 'customer-experience-specialist':'', 'ecommerce-operations-analyst':'' };
       
       // Initialize status for any new agents
       adminData.agents.forEach(a => { if (!AGENT_STATUS[a.id]) AGENT_STATUS[a.id] = 'idle'; });
@@ -1162,9 +1608,9 @@
       // Render as list items (not cards)
       document.getElementById('agentGrid').innerHTML = adminData.agents.map(a => {
         const status = AGENT_STATUS[a.id] || 'idle';
-        const statusHtml = status === 'idle' ? '<span class="tag tag-green">🟢 Idle</span>' :
-          status === 'busy' ? '<span class="tag tag-orange">🟡 Busy</span>' :
-          '<span class="tag tag-red">🔴 Error</span>';
+        const statusHtml = status === 'idle' ? '<span class="tag tag-green">Idle</span>' :
+          status === 'busy' ? '<span class="tag tag-orange">Busy</span>' :
+          '<span class="tag tag-red">Error</span>';
         
         // Use expertise as persona for the API call (backend requires persona field)
         const personaForSave = a.expertise || a.role || 'Agent';
@@ -1184,7 +1630,7 @@
         return `<div class="agent-list-item" style="border-left-color:${colors[a.id] || 'var(--blue)'}" data-agent-id="${a.id}">
           <div class="agent-list-header">
             <div class="agent-list-info">
-              <div class="agent-list-name">${icons[a.id] || '🤖'} ${a.name || a.id}</div>
+              <div class="agent-list-name">${icons[a.id] || ''} ${a.name || a.id}</div>
               <div class="agent-list-meta">
                 <span class="agent-role-badge" style="background:${colors[a.id] || 'var(--blue)'};color:white;padding:2px 8px;border-radius:3px;font-size:11px;">${a.role || 'general'}</span>
                 <span class="agent-id">ID: ${a.id}</span>
@@ -1309,7 +1755,7 @@
       }
       const models = data.models || [];
       const providers = data.providers || [];
-      // 🧟 disabled list from server (POST /api/admin/models toggles it)
+      // disabled list from server (POST /api/admin/models toggles it)
       modelDisabledSet = new Set(
         (data.disabledModels || []).map(d => (d.provider || '') + '::' + (d.name || ''))
       );
@@ -1340,9 +1786,13 @@
       const filtered = models.filter(m => {
         if (search) {
           const q = search.toLowerCase();
-          const id = (m.id || m.name || '').toLowerCase();
+          // Normalized rows carry model/apiModel/providerName; id/name alone
+          // made name search miss every provider row.
+          const id = (m.model || m.id || m.name || '').toLowerCase();
+          const api = (m.apiModel || '').toLowerCase();
           const prov = (m.provider || '').toLowerCase();
-          if (!id.includes(q) && !prov.includes(q)) return false;
+          const provName = (m.providerName || '').toLowerCase();
+          if (!id.includes(q) && !api.includes(q) && !prov.includes(q) && !provName.includes(q)) return false;
         }
         const provFilter = document.getElementById('modelProviderFilter')?.value;
         if (provFilter && m.provider !== provFilter) return false;
@@ -1361,15 +1811,15 @@
             <td style="font-size:11px;color:var(--text2)">${m.apiModel || m.model || m.name || '—'}</td>
             <td><span class="tag tag-blue">${m.type || 'chat'}</span></td>
             <td>
-              ${off ? '<span class="tag tag-red">⛔ Off</span>' : '<span class="tag tag-green">🟢 On</span>'}
-              <button class="refresh-btn" onclick="toggleModelEnabled('${(m.provider || '').replace(/'/g, "\\'")}', '${String(name).replace(/'/g, "\\'")}', ${off ? 1 : 0})" style="padding:2px 6px;font-size:10px;margin-left:4px;">${off ? '🔔 Enable' : '🔕 Disable'}</button>
+              ${off ? '<span class="tag tag-red">Off</span>' : '<span class="tag tag-green">On</span>'}
+              <button class="refresh-btn" onclick="toggleModelEnabled('${(m.provider || '').replace(/'/g, "\\'")}', '${String(name).replace(/'/g, "\\'")}', ${off ? 1 : 0})" style="padding:2px 6px;font-size:10px;margin-left:4px;">${off ? 'Enable' : 'Disable'}</button>
             </td>
           </tr>`;
           }).join('')
         : '<tr><td colspan="6" style="text-align:center;color:var(--text2)">No matching models</td></tr>';
     }
 
-    // 🧟 Toggle a single model on/off — POST /api/admin/models (persisted in SQLite)
+    // Toggle a single model on/off — POST /api/admin/models (persisted in SQLite)
     async function toggleModelEnabled(provider, name, enable) {
       if (!enable && !confirm('Disable model "' + name + '" (' + provider + ')? It will be skipped in all requests.')) return;
       try {
@@ -1403,7 +1853,7 @@
         (logRes && logRes.agent_calls != null ? logRes.agent_calls : null) ??
         stats.totalAgents ?? stats.agents ?? '—';
 
-      // 🧟 SQLite-backed session history (session_log table — survives restart)
+      // SQLite-backed session history (session_log table — survives restart)
       const sessions = (logRes && logRes.sessions) || [];
       document.getElementById('sessionTable').innerHTML = sessions.length
         ? sessions.map(s => `
@@ -1417,7 +1867,7 @@
           </tr>
         `).join('')
         : '<tr><td colspan="5" style="text-align:center;color:var(--text2)">No sessions recorded yet — send one chat message and it will appear here.</td></tr>';
-      if (!dateFilter) document.getElementById('sessionDate').textContent = '📅 ' + new Date().toISOString().slice(0,10);
+      if (!dateFilter) document.getElementById('sessionDate').textContent = '' + new Date().toISOString().slice(0,10);
     }
 
     // ═══════════════════════════════════════════════
@@ -1456,7 +1906,7 @@
       }
       const providers = data.providers || [];
       const allModels = data.models || [];
-      // 🧟 live on/off state from GET /api/admin/providers (fallback: normalize-list)
+      // live on/off state from GET /api/admin/providers (fallback: normalize-list)
       let provState = {};
       try {
         const adm = await apiFetch('/api/admin/providers');
@@ -1479,16 +1929,16 @@
           <td><strong>${p.id || p.name || '—'}</strong></td>
           <td>${p.name || '—'}</td>
           <td><span class="tag tag-blue">${p.type || 'openai'}</span></td>
-          <td style="font-size:11px;font-family:monospace">${p.baseUrl ? p.baseUrl.slice(0, 40) + (p.baseUrl.length > 40 ? '...' : '') : '—'}${st.hasKey ? ' 🔑' : ''}</td>
+          <td style="font-size:11px;font-family:monospace">${p.baseUrl ? p.baseUrl.slice(0, 40) + (p.baseUrl.length > 40 ? '...' : '') : '—'}${st.hasKey ? ' ' : ''}</td>
           <td>${(p.models && p.models.length) || st.models || '—'}</td>
           <td><span class="tag ${p.priority > 1 ? 'tag-green' : 'tag-orange'}">${p.priority || '—'}</span></td>
           <td><strong>${st.requests || 0}</strong></td>
           <td><span class="tag ${st.errors > 0 ? 'tag-red' : 'tag-green'}">${st.errors || 0}</span></td>
           <td>${st.success_pct == null ? '<span style="color:var(--text2)">—</span>' : '<strong style="color:' + (st.success_pct >= 90 ? 'var(--green)' : (st.success_pct >= 60 ? 'var(--orange)' : 'var(--red)')) + '">' + st.success_pct + '%</strong>'}<div style="font-size:10px;color:var(--text2)">${st.last_used ? ago(st.last_used) : 'never used'}</div></td>
           <td>
-            ${on ? (st.healthy === false ? '<span class="tag tag-red">🔴 Failing</span>' : '<span class="tag tag-green">🟢 Online</span>') : '<span class="tag tag-red">⛔ Off</span>'}
-            ${st.last_error ? '<div style="font-size:10px;color:var(--red);max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + String(st.last_error).replace(/"/g, "'") + '">⚠ ' + String(st.last_error).slice(0, 40) + '</div>' : ''}
-            <button class="refresh-btn" onclick="toggleProvider('${(p.id || '').replace(/'/g, "\\'")}', ${on ? 0 : 1})" style="padding:2px 6px;font-size:10px;margin-left:4px;">${on ? '🔕 Disable' : '🔔 Enable'}</button>
+            ${on ? (st.healthy === false ? '<span class="tag tag-red">Failing</span>' : '<span class="tag tag-green">Online</span>') : '<span class="tag tag-red">Off</span>'}
+            ${st.last_error ? '<div style="font-size:10px;color:var(--red);max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + String(st.last_error).replace(/"/g, "'") + '">' + String(st.last_error).slice(0, 40) + '</div>' : ''}
+            <button class="refresh-btn" onclick="toggleProvider('${(p.id || '').replace(/'/g, "\\'")}', ${on ? 0 : 1})" style="padding:2px 6px;font-size:10px;margin-left:4px;">${on ? 'Disable' : 'Enable'}</button>
           </td>
         </tr>`;
       }).join('');
@@ -1508,7 +1958,7 @@
       }).join('');
     }
 
-    // 🧟 Toggle provider on/off at RUNTIME — persisted to SQLite settings,
+    // Toggle provider on/off at RUNTIME — persisted to SQLite settings,
     // enforced by resolveProvider/findNextProvider/AUTO_SYNC (no restart).
     async function toggleProvider(id, enable) {
       if (!enable && !confirm('Disable provider "' + id + '"? Its models will be skipped (fallback continues on others).')) return;
@@ -1554,9 +2004,9 @@
       // Pusher status
       const pusherEnabled = health.pusher;
       document.getElementById('pusherStatusBody').innerHTML = pusherEnabled
-        ? '<p style="color:var(--green)">✅ <strong>Pusher Enabled</strong> — Real-time events active</p>' +
+        ? '<p style="color:var(--green)"><strong>Pusher Enabled</strong> — Real-time events active</p>' +
           '<p style="font-size:12px;color:var(--text2)">Pusher real-time streaming is configured and running. Events: agent-status, mission-event</p>'
-        : '<p style="color:var(--orange)">⚠️ <strong>Pusher Disabled</strong></p>' +
+        : '<p style="color:var(--orange)"><strong>Pusher Disabled</strong></p>' +
           '<p style="font-size:12px;color:var(--text2)">To enable Pusher real-time, add Pusher credentials to .env file:<br>' +
           '<code style="display:block;margin-top:6px;padding:8px;background:var(--bg3);border-radius:4px">' +
           'PUSHER_APP_ID=your_app_id<br>PUSHER_KEY=your_key<br>PUSHER_SECRET=your_secret</code></p>';
@@ -1619,7 +2069,7 @@
     function refreshChatSessionList() {
       const sel = document.getElementById('chatSessionSelect');
       const currentVal = sel.value;
-      sel.innerHTML = '<option value="">📁 New Conversation</option>';
+      sel.innerHTML = '<option value="">New Conversation</option>';
       const keys = Object.keys(chatSessions).filter(k => k !== 'default' || (chatSessions[k]?.messages?.length > 1));
       keys.sort((a,b) => new Date(chatSessions[b]?.updatedAt || 0) - new Date(chatSessions[a]?.updatedAt || 0));
       keys.forEach(k => {
@@ -1628,7 +2078,7 @@
         const date = s?.updatedAt ? new Date(s.updatedAt).toLocaleDateString() : '';
         const opt = document.createElement('option');
         opt.value = k;
-        opt.textContent = '💬 ' + title + ' — ' + date;
+        opt.textContent = '' + title + ' — ' + date;
         sel.appendChild(opt);
       });
       sel.value = currentVal || '';
@@ -1638,7 +2088,7 @@
       if (!sessionId) {
         currentChatSessionId = 'session_' + Date.now();
         document.getElementById('chatMessages').innerHTML =
-          '<div class="chat-msg agent"><div class="msg-sender">🤖 Mission Barisal</div>নতুন কথা শুরু করুন! 😊<div class="msg-time">just now</div></div>';
+          '<div class="chat-msg agent"><div class="msg-sender">Mission Barisal</div>নতুন কথা শুরু করুন! <div class="msg-time">just now</div></div>';
         return;
       }
       currentChatSessionId = sessionId;
@@ -1663,7 +2113,7 @@
       localStorage.removeItem(CHAT_STORAGE_KEY);
       currentChatSessionId = 'session_' + Date.now();
       document.getElementById('chatMessages').innerHTML =
-        '<div class="chat-msg agent"><div class="msg-sender">🤖 Mission Barisal</div>হিস্টোরি ক্লিয়ার! নতুন কথা শুরু করুন।<div class="msg-time">just now</div></div>';
+        '<div class="chat-msg agent"><div class="msg-sender">Mission Barisal</div>হিস্টোরি ক্লিয়ার! নতুন কথা শুরু করুন।<div class="msg-time">just now</div></div>';
       refreshChatSessionList();
     }
 
@@ -1700,13 +2150,13 @@
       updateAgentStatusUI();
       chatBusy = true;
       document.getElementById('chatSendBtn').disabled = true;
-      document.getElementById('chatStatus').textContent = '⏳ ' + (agentId === 'mission' ? 'All agents' : agentId) + ' thinking...';
+      document.getElementById('chatStatus').textContent = '' + (agentId === 'mission' ? 'All agents' : agentId) + ' thinking...';
 
       // Show typing indicator
       const typingEl = document.createElement('div');
       typingEl.className = 'chat-msg typing';
       typingEl.id = 'chatTyping';
-      typingEl.textContent = agentId === 'mission' ? '🤖 Mission Barisal processing...' : '🤖 ' + agentId + ' thinking...';
+      typingEl.textContent = agentId === 'mission' ? 'Mission Barisal processing...' : '' + agentId + ' thinking...';
       document.getElementById('chatMessages').appendChild(typingEl);
       document.getElementById('chatMessages').scrollTop = document.getElementById('chatMessages').scrollHeight;
 
@@ -1724,7 +2174,7 @@
             body: JSON.stringify({
               model: agentId,
               messages: [{ role: 'user', content: msg }],
-              // 🧟 server-side tool catalog (web_search, read_file, ...) so
+              // server-side tool catalog (web_search, read_file, ...) so
               // the agent can actually USE tools, not just chat.
               tools: 'mcp',
               session_id: currentChatSessionId || undefined,
@@ -1739,22 +2189,22 @@
 
         let responseText = '';
         if (result.error) {
-          responseText = '❌ Error: ' + (result.error.message || JSON.stringify(result.error));
+          responseText = 'Error: ' + (result.error.message || JSON.stringify(result.error));
           addChatMessage('agent', responseText, 'System');
         } else if (result.combined) {
           responseText = result.combined;
-          addChatMessage('agent', responseText, '🤖 Mission Barisal');
+          addChatMessage('agent', responseText, 'Mission Barisal');
         } else if (result.choices && result.choices[0]) {
           responseText = result.choices[0].message?.content || result.choices[0].delta?.content || JSON.stringify(result.choices[0]);
-          addChatMessage('agent', responseText, '🤖 ' + agentId);
+          addChatMessage('agent', responseText, '' + agentId);
         } else {
           responseText = JSON.stringify(result, null, 2).slice(0, 1000);
-          addChatMessage('agent', '✅ Response:\n' + responseText, '🤖 System');
+          addChatMessage('agent', 'Response:\n' + responseText, 'System');
         }
       } catch (e) {
         const typing = document.getElementById('chatTyping');
         if (typing) typing.remove();
-        addChatMessage('agent', '❌ Connection error: ' + e.message, 'System');
+        addChatMessage('agent', 'Connection error: ' + e.message, 'System');
       }
 
       // Set agent idle
@@ -1807,9 +2257,9 @@
           const statusEl = card.querySelector('.agent-status');
           if (statusEl) {
             const s = AGENT_STATUS[id];
-            statusEl.innerHTML = s === 'idle' ? '<span class="tag tag-green">🟢 Idle</span>' :
-              s === 'busy' ? '<span class="tag tag-orange">🟡 Busy</span>' :
-              '<span class="tag tag-red">🔴 Error</span>';
+            statusEl.innerHTML = s === 'idle' ? '<span class="tag tag-green">Idle</span>' :
+              s === 'busy' ? '<span class="tag tag-orange">Busy</span>' :
+              '<span class="tag tag-red">Error</span>';
           }
         }
       });
@@ -1882,15 +2332,15 @@
         body: JSON.stringify({ sessionVerifyUrl: newUrl })
       }).then(r => r.json()).then(res => {
         if (res.success) {
-          alert('✅ sessionVerifyUrl updated to: ' + newUrl);
+          alert('sessionVerifyUrl updated to: ' + newUrl);
           loadConfig();
         } else {
-          alert('❌ Failed: ' + JSON.stringify(res));
+          alert('Failed: ' + JSON.stringify(res));
         }
-      }).catch(e => alert('❌ Error: ' + e.message));
+      }).catch(e => alert('Error: ' + e.message));
     }
 
-    // 🧟 Save logLevel + allowedOrigins + antiDoteEnabled → settings KV (SQLite)
+    // Save logLevel + allowedOrigins + antiDoteEnabled → settings KV (SQLite)
     function saveRuntimeConfig() {
       const origins = (document.getElementById('cfgOrigins').value || '')
         .split('\n').map(s => s.trim()).filter(Boolean);
@@ -1905,12 +2355,12 @@
         })
       }).then(r => r.json()).then(res => {
         if (res.success) {
-          alert('✅ Config saved to SQLite — survives restart!');
+          alert('Config saved to SQLite — survives restart!');
           loadConfig();
         } else {
-          alert('❌ Failed: ' + JSON.stringify(res));
+          alert('Failed: ' + JSON.stringify(res));
         }
-      }).catch(e => alert('❌ Error: ' + e.message));
+      }).catch(e => alert('Error: ' + e.message));
     }
 
     // ═══════════════════════════════════════════════
@@ -2008,7 +2458,7 @@
         return;
       }
 
-      // 🧟 tools now come from the SQLite tool_stats table (calls/errors/
+      // tools now come from the SQLite tool_stats table (calls/errors/
       // last_used persist across restarts) + admin on/off state.
       const tools = (toolsRes && toolsRes.tools) || [];
 
@@ -2046,15 +2496,15 @@
             <td><span class="tag ${(t.errors || 0) > 0 ? 'tag-red' : 'tag-green'}">${t.errors || 0}</span></td>
             <td style="font-size:11px;color:var(--text2)">${t.last_used ? ago(t.last_used) : 'never'}</td>
             <td>
-              <span class="tag ${t.enabled ? 'tag-green' : 'tag-red'}">${t.enabled ? '✅ On' : '⛔ Off'}</span>
-              <button class="refresh-btn" onclick="toggleTool('${t.name.replace(/'/g, "\\'")}', ${t.enabled ? 0 : 1})" style="padding:2px 6px;font-size:10px;margin-left:4px;">${t.enabled ? '🔕 Disable' : '🔔 Enable'}</button>
+              <span class="tag ${t.enabled ? 'tag-green' : 'tag-red'}">${t.enabled ? 'On' : 'Off'}</span>
+              <button class="refresh-btn" onclick="toggleTool('${t.name.replace(/'/g, "\\'")}', ${t.enabled ? 0 : 1})" style="padding:2px 6px;font-size:10px;margin-left:4px;">${t.enabled ? 'Disable' : 'Enable'}</button>
             </td>
           </tr>
         `).join('')
         : '<tr><td colspan="5" style="text-align:center;color:var(--text2)">No tools available</td></tr>';
     }
 
-    // 🧟 Turn a tool on/off — persisted in tool_stats.enabled (SQLite).
+    // Turn a tool on/off — persisted in tool_stats.enabled (SQLite).
     function toggleTool(tool, enable) {
       fetch(API + '/api/admin/tools', {
         method: 'POST',
@@ -2062,9 +2512,9 @@
         body: JSON.stringify({ tool, enabled: !!enable })
       }).then(r => r.json()).then(res => {
         if (res.ok) loadMcpTools();
-        else if (res.error && /Unauthorized|ADMIN_TOKEN/i.test(res.error)) alert('❌ ' + handleUnauthorized());
-        else alert('❌ ' + JSON.stringify(res));
-      }).catch(e => alert('❌ ' + e.message));
+        else if (res.error && /Unauthorized|ADMIN_TOKEN/i.test(res.error)) alert('' + handleUnauthorized());
+        else alert('' + JSON.stringify(res));
+      }).catch(e => alert('' + e.message));
     }
 
     // ═══════════════════════════════════════════════
@@ -2080,21 +2530,21 @@
       if (ssotRes.ssot) {
         const ssot = ssotRes.ssot;
         document.getElementById('ssotStatus').innerHTML = ssot.exists
-          ? '<span style="color:var(--green)">✅ Active</span>'
-          : '<span style="color:var(--red)">❌ Missing</span>';
+          ? '<span style="color:var(--green)">Active</span>'
+          : '<span style="color:var(--red)">Missing</span>';
         document.getElementById('ssotSize').textContent = ssot.size ? (ssot.size / 1024).toFixed(1) + ' KB' : '—';
         document.getElementById('ssotLines').textContent = ssot.lines || '—';
 
         document.getElementById('ssotDetails').innerHTML = `
           <div style="display:grid;gap:12px;font-size:13px">
             <div><strong>Path:</strong> <code>${ssot.path || '—'}</code></div>
-            <div><strong>Exists:</strong> ${ssot.exists ? '✅ Yes' : '❌ No'}</div>
-            <div><strong>Auto-Generate:</strong> ${ssotRes.autoGenerate ? '✅ Enabled' : '❌ Disabled'}</div>
+            <div><strong>Exists:</strong> ${ssot.exists ? 'Yes' : 'No'}</div>
+            <div><strong>Auto-Generate:</strong> ${ssotRes.autoGenerate ? 'Enabled' : 'Disabled'}</div>
             <div><strong>Scan Directory:</strong> <code>${ssotRes.scanDir || '—'}</code></div>
             ${ssot.exists ? `
               <div><strong>Last Modified:</strong> ${ssot.modified ? new Date(ssot.modified).toLocaleString() : '—'}</div>
-              <div><strong>Has Project Name:</strong> ${ssot.hasProjectName ? '✅ Yes' : '❌ No'}</div>
-              <div><strong>Has Structure:</strong> ${ssot.hasStructure ? '✅ Yes' : '❌ No'}</div>
+              <div><strong>Has Project Name:</strong> ${ssot.hasProjectName ? 'Yes' : 'No'}</div>
+              <div><strong>Has Structure:</strong> ${ssot.hasStructure ? 'Yes' : 'No'}</div>
             ` : ''}
           </div>
         `;
@@ -2109,7 +2559,7 @@
               <span style="font-size:11px;color:var(--text2);margin-left:8px">${a.role || ''}</span>
             </div>
             <div style="display:flex;gap:8px;align-items:center">
-              <span class="tag ${a.status === 'active' ? 'tag-green' : 'tag-blue'}">${a.status === 'active' ? '🟢 Active' : '💤 Idle'}</span>
+              <span class="tag ${a.status === 'active' ? 'tag-green' : 'tag-blue'}">${a.status === 'active' ? 'Active' : 'Idle'}</span>
               <span style="font-size:11px;color:var(--text2)">${a.usage?.count || 0} calls</span>
               <span class="tag ${(a.usage?.errors || 0) > 0 ? 'tag-red' : 'tag-green'}">${a.usage?.errors || 0} errors</span>
             </div>
@@ -2169,8 +2619,8 @@
       document.getElementById('agentManagerList').innerHTML = agents.map(a => {
         const color = colors[a.role] || 'var(--blue)';
         const statusTag = a.enabled
-          ? '<span class="tag tag-green">✅ Enabled</span>'
-          : '<span class="tag tag-red">❌ Disabled</span>';
+          ? '<span class="tag tag-green">Enabled</span>'
+          : '<span class="tag tag-red">Disabled</span>';
 
         return `<div class="agent-list-item" style="border-left-color:${color}" data-agent-id="${a.id}" data-agent-name="${(a.name||'').toLowerCase()}" data-agent-role="${(a.role||'').toLowerCase()}">
           <div class="agent-list-header">
@@ -2186,9 +2636,9 @@
             </div>
             <div class="agent-list-status" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
               ${statusTag}
-              <button class="refresh-btn" onclick="editAgent('${a.id}')" style="padding:4px 8px;font-size:11px;">✏️ Edit</button>
-              <button class="refresh-btn" onclick="toggleAgentEnabled('${a.id}', ${a.enabled ? 0 : 1})" style="padding:4px 8px;font-size:11px;">${a.enabled ? '🔕 Disable' : '🔔 Enable'}</button>
-              <button class="refresh-btn" onclick="deleteAgent('${a.id}')" style="padding:4px 8px;font-size:11px;color:var(--red);border-color:var(--red);">🗑 Delete</button>
+              <button class="refresh-btn" onclick="editAgent('${a.id}')" style="padding:4px 8px;font-size:11px;">Edit</button>
+              <button class="refresh-btn" onclick="toggleAgentEnabled('${a.id}', ${a.enabled ? 0 : 1})" style="padding:4px 8px;font-size:11px;">${a.enabled ? 'Disable' : 'Enable'}</button>
+              <button class="refresh-btn" onclick="deleteAgent('${a.id}')" style="padding:4px 8px;font-size:11px;color:var(--red);border-color:var(--red);">Delete</button>
             </div>
           </div>
           <div class="agent-list-model-section">
@@ -2212,7 +2662,7 @@
       }).join('');
     }
 
-    // 🧟 Agent↔Model mapping: save model to agents table (runtime, no restart)
+    // Agent↔Model mapping: save model to agents table (runtime, no restart)
     async function mapAgentModel(agentId, model) {
       const agent = agentManagerData.find(a => a.id === agentId);
       if (!agent) return;
@@ -2234,7 +2684,7 @@
         });
         if (r.error) { alert('Map failed: ' + r.error); return; }
         agent.model = model;
-        alert('✅ ' + agentId + ' → ' + model);
+        alert('' + agentId + ' → ' + model);
       } catch (e) { alert('Error: ' + e.message); }
     }
 
@@ -2318,7 +2768,7 @@
       }
 
       overlay.innerHTML = `<div class="modal" style="max-width:650px">
-        <h3>✏️ Edit Agent: ${agent.name || agent.id}</h3>
+        <h3>Edit Agent: ${agent.name || agent.id}</h3>
         <div style="display:grid;gap:12px;margin-top:16px">
           <div>
             <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px">Agent ID</label>
@@ -2352,7 +2802,7 @@
           </div>
           <div style="display:flex;gap:8px;justify-content:flex-end">
             <button class="modal-close" onclick="document.getElementById('agentEditModal').remove()">Cancel</button>
-            <button onclick="saveAgentEdit('${agent.id}')" style="background:var(--green);color:#fff;border:none;padding:8px 20px;border-radius:6px;cursor:pointer;font-weight:600;font-size:13px;">💾 Save Changes</button>
+            <button onclick="saveAgentEdit('${agent.id}')" style="background:var(--green);color:#fff;border:none;padding:8px 20px;border-radius:6px;cursor:pointer;font-weight:600;font-size:13px;">Save Changes</button>
           </div>
         </div>
       </div>`;

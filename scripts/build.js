@@ -10,10 +10,40 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const { spawnSync } = require("child_process");
+const { spawnSync, execSync } = require("child_process");
 
 const ROOT = path.resolve(__dirname, "..");
-const DIST = path.join(ROOT, "dist");
+const DIST = process.env.BUILD_OUT
+  ? path.resolve(process.env.BUILD_OUT)
+  : path.join(ROOT, "dist");
+
+// Replacing dist/ under a running gateway deletes the live runtime: the
+// process keeps its loaded modules but recreates dist/logs, public assets and
+// lazy requires point at files that no longer exist. Refuse instead of
+// producing a half-dead deployment.
+function liveRuntimePids() {
+  if (process.platform === "win32") return [];
+  try {
+    const out = execSync("ps -eo pid=,args=", { encoding: "utf8" });
+    return out
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.includes(DIST) && /(start|api)\.js/.test(line))
+      .map((line) => parseInt(line, 10))
+      .filter((pid) => Number.isFinite(pid) && pid !== process.pid);
+  } catch (_) {
+    return [];
+  }
+}
+
+const live = liveRuntimePids();
+if (live.length) {
+  console.error(
+    "BUILD_REFUSED dist is the live runtime (pid=" + live.join(",") +
+    "). Stop the gateway, rebuild, then start it again.",
+  );
+  process.exit(1);
+}
 
 const VERSION = fs.existsSync(path.join(ROOT, "package.json"))
   ? (() => {

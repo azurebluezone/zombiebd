@@ -56,7 +56,7 @@ StartLimitIntervalSec=300
 
 [Service]
 Type=simple
-WorkingDirectory=$ROOT
+WorkingDirectory=$ROOT/dist
 # The wrapper pre-flights (node version, .env, ports), loads .env, clears
 # stale UDS sockets, then exec's node outside the capability sandbox. Running
 # node directly under this unit aborted with status=218/CAPABILITIES because
@@ -74,7 +74,9 @@ StandardError=append:$LOG_DIR/systemd-err.log
 # Hardening — the server reads its own tree and writes data/, logs/, cache/.
 ProtectSystem=full
 ProtectHome=read-only
-ReadWritePaths=$ROOT/data $ROOT/logs $ROOT/cache $ROOT/.zombiecoder $ROOT/.missionbarisal $ROOT/skills
+# dist/ is the runtime; the mutable operator state lives in the checkout and
+# is linked into dist/ by the launcher. Both locations must stay writable.
+ReadWritePaths=$ROOT/dist $ROOT/data $ROOT/logs $ROOT/cache $ROOT/.zombiecoder $ROOT/.missionbarisal $ROOT/skills
 # ProtectKernelModules=true is deliberately absent: in a *user* unit it makes
 # systemd abort the exec (status=218/CAPABILITIES). Verified 2026-09-30.
 ProtectControlGroups=true
@@ -99,7 +101,8 @@ fi
 
 echo "unit written → $UNIT_FILE"
 echo "  paths: root=$ROOT"
-echo "  node : $(ls -d "$HOME"/.nvm/versions/node/v2[4-9]*.*/bin/node 2>/dev/null | sort -V | tail -1 || echo '/usr/bin/node (wrapper will warn)')"
+echo "  node : $(ls -d "$HOME"/.local/node-v24/bin/node 2>/dev/null | tail -1 || echo 'missing — run scripts/install.sh')"
+echo "  dist : $ROOT/dist (built by scripts/build.js)"
 echo "  logs : $LOG_DIR (unified: logs/zc.jsonl)"
 
 if [ "$MODE" = "--start" ]; then

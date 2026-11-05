@@ -7,8 +7,6 @@
 module.exports = {
   id: "perf-wizard",
   name: "পারফরম্যান্স উইজার্ড - রাশেদ",
-  model: "MODELS_DB",
-  fallbackModel: "llama-local",
   role: "performance",
   expertise: "performance optimization, caching, database tuning, profiling, memory management, latency reduction, resource utilization",
   priority: 4,

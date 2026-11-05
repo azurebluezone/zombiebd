@@ -1,4 +1,4 @@
-# 🔌 ZombieCoder Universal Transport Adapter
+# ZombieCoder Universal Transport Adapter
 
 **একটি প্রসেস · তিনটি ট্রান্সপোর্ট · একটাই MCP টুল রেজিস্ট্রি**
 
@@ -160,8 +160,8 @@ universal-adapter/
 
 | ক্লায়েন্ট | ফাইল | অবস্থা |
 |----------|------|--------|
-| OpenCode (MCP) | `~/.opencode/opencode.json` → `mcp` | ✅ `zombie-universal` (HTTPS, ১৫২ টুল) |
-| VS Code | `~/.config/Code/User/mcp.json` | ✅ `zombie-universal` (stdio) |
+| OpenCode (MCP) | `~/.opencode/opencode.json` → `mcp` | `zombie-universal` (HTTPS, ১৫২ টুল) |
+| VS Code | `~/.config/Code/User/mcp.json` | `zombie-universal` (stdio) |
 | Claude Desktop | — | ফাইল নেই |
 | Cursor | — | ফাইল নেই |
 | Zed / Windsurf / Continue | — | ফাইল নেই |

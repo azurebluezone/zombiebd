@@ -94,12 +94,17 @@ function toContents(messages) {
     if (Array.isArray(m.tool_calls)) {
       for (const t of m.tool_calls) {
         const fn = t.function || {};
-        parts.push({
-          functionCall: {
-            name: fn.name || "",
-            args: safeArgs(fn.arguments),
-          },
-        });
+        const call = {
+          name: fn.name || "",
+          args: safeArgs(fn.arguments),
+        };
+        if (t.id) call.id = t.id;
+        const part = { functionCall: call };
+        // Gemini 3.x returns an opaque thoughtSignature on the model's
+        // functionCall part and rejects the next turn if it is missing.
+        const signature = t.thought_signature || t.thoughtSignature;
+        if (signature) part.thoughtSignature = signature;
+        parts.push(part);
       }
     }
 
@@ -328,6 +333,7 @@ async function chatStream(cfg, params, onDelta) {
               calls[i] = { id: "", type: "function", function: { name: "", arguments: "" } };
             }
             if (tc.id) calls[i].id = tc.id;
+            if (tc.thought_signature) calls[i].thought_signature = tc.thought_signature;
             if (tc.function) {
               if (tc.function.name) calls[i].function.name = tc.function.name;
               if (tc.function.arguments) calls[i].function.arguments += tc.function.arguments;

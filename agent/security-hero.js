@@ -7,8 +7,6 @@
 module.exports = {
   id: "security-hero",
   name: "সিকিউরিটি হিরো - বাবলু",
-  model: "MODELS_DB",
-  fallbackModel: "llama-local",
   role: "security",
   expertise: "security audit, vulnerability detection, secure coding, OWASP, SQL injection, XSS, CSRF, authentication, data protection",
   priority: 3,

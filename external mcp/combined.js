@@ -211,7 +211,7 @@ h1{font-size:22px;margin-bottom:8px}.ok{color:#66bb6a}.err{color:#ef5350}
 .mono{font-family:monospace;background:rgba(255,255,255,.08);padding:4px 10px;border-radius:6px}
 li{list-style:none;text-align:left;margin:8px 0}</style></head><body>
 <div class="card">
-<h1>🧟 Combined MCP Gateway</h1>
+<h1>Combined MCP Gateway</h1>
 <p>One port, both tool sets — Mission Barisal</p>
 <br>
 <ul>

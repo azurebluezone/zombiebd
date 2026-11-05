@@ -7,8 +7,6 @@
 module.exports = {
   id: "ecommerce-operations-analyst",
   name: "ই-কমার্স অপারেশনস অ্যানালিস্ট",
-  model: "MODELS_DB",
-  fallbackModel: "llama-local",
   role: "ecommerce-operations",
   expertise: "ecommerce ops, order management, inventory, logistics, analytics, ad copywriting, product catalog optimization, visitor behavior analysis",
   priority: 9,

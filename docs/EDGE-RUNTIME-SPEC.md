@@ -4,10 +4,12 @@
 **Status:** verified 2026-11-06
 **Scope:** edge, ports, environment contract, build, installer and runtime proof
 
-This document is the single source of truth for how the runtime is wired. Every
-"current state" claim below was produced by a command on 2026-11-06. Historical
-work orders are kept only where they explain a decision; their old status
-lines are not preserved as current facts.
+This document records how the runtime is wired, as observed on 2026-11-06.
+The source of truth is the code, `.env` and the SQLite database; this markdown
+never configures runtime behaviour and a wrong edit here cannot change it.
+Every "current state" claim below was produced by a command on 2026-11-06.
+Historical work orders are kept only where they explain a decision; their old
+status lines are not preserved as current facts.
 
 ---
 
@@ -44,8 +46,8 @@ its SQLite database at runtime, and prove the result with live checks.
 | --- | --- |
 | `ss -ltnp` | `127.0.0.1:5050` API, `127.0.0.1:5052` gRPC, `127.0.0.1:9932` llama.cpp |
 | `systemctl is-active caddy` | active; Caddy v2.11.7 owns `:80` and `:443` |
-| `curl --resolve api.zombiecoder.my.id:443:127.0.0.1 https://.../health` | HTTP 200, verify code 0 |
-| `getent hosts api.zombiecoder.my.id` | Cloudflare addresses; external request returned HTTP 530 |
+| `curl https://localhost/health` | HTTP 200, verify code 0 (no `--resolve`) |
+| `getent hosts localhost` | `::1 localhost` |
 | `/health` | version 3.2.1, agents 9, model rows 111, Node v24.22.2 |
 | `/api/v0/models` | 121 catalogue entries |
 | `tools/list` over `/mcp` | 153 tools |
@@ -54,12 +56,13 @@ its SQLite database at runtime, and prove the result with live checks.
 | Ollama | reachable on `127.0.0.1:11434` |
 | local bridge | `127.0.0.1:11435`, backend `ollama`, model `qwen2:0.5b` |
 | llama.cpp | OpenAI-compatible `http://127.0.0.1:9932/v1`, model `qwen3-1.7b-abliterated` |
-| Process manager | systemd user unit `zombiecoder-gateway.service`, active, `Restart=always` |
+| Process manager | systemd user unit `zombiecoder-gateway.service`, `Restart=always`; inactive while a terminal run owns the port |
 | KDE Plasma | installed (`plasma-desktop 4:5.24.7`, `startplasma-x11` present) |
 | active desktop session | XFCE; the installer did not switch display managers |
 
-The public DNS failure is an external prerequisite (section 11), not a runtime
-bug. Local TLS verification is green.
+The public hostname `api.zombiecoder.my.id` resolves to Cloudflare addresses and
+returned HTTP 530 on 2026-11-06; it is not part of the local edge. Local TLS
+verification is green.
 
 ---
 
@@ -78,9 +81,11 @@ bug. Local TLS verification is green.
 | D9 | `dist/` is the deployable runtime; the source tree is for development | Build script copies, renders and hashes |
 | D10 | The app runs unprivileged; only Caddy binds low ports | No Node process runs as root |
 | D11 | `universal-adapter/plugin/` is absent | No dependency install in that folder |
-| D12 | llama.cpp is provider `custom_5` at priority 0 | Local first; cloud providers are fallbacks |
+| D12 | llama.cpp has two providers: `custom_5` (OpenAI `/v1`, priority 0) and `custom_6` (native `/completion`, priority 1) | One upstream, two wire dialects; priority 0 keeps the plain model id on the OpenAI adapter |
 | D13 | Agent DB rows must store a concrete model, never the `MODELS_DB` sentinel | A sentinel row silently fell through to the default cloud provider |
 | D14 | A provider may declare `TIMEOUT_MS`, `STREAM_TIMEOUT_MS` and `MAX_PROMPT_CHARS` | A local CPU model needed 132 s for a 5.7k-token prefill and answered with a tool call; the cloud-shaped prompt and 60 s timeout were both wrong for it |
+| D15 | A Gemini 3.x functionCall is replayed with its `thoughtSignature` and `id` | The API rejects the tool-result turn with HTTP 400 when the signature is dropped, so the normalizer and adapter must both carry it |
+| D16 | Fallback walks the providers that advertise the requested model, in priority order, and never changes the model | Four live models are served by two providers. Re-resolving the model to its single highest-priority provider made `findNextProvider` skip the second one, so `gemini-4-argon` could not move from `gemini` to `opencode` |
 
 ---
 
@@ -167,7 +172,7 @@ UDS_PORT=5150
 UDS_PATH=/tmp/zombiecoder/mcp.sock
 
 # Providers
-CUSTOM_PROVIDER_5_ENABLED=false
+CUSTOM_PROVIDER_5_ENABLED=true
 CUSTOM_PROVIDER_5_NAME=llama-cpp
 CUSTOM_PROVIDER_5_URL=http://127.0.0.1:9932/v1
 CUSTOM_PROVIDER_5_KEY=
@@ -179,6 +184,15 @@ CUSTOM_PROVIDER_5_TIMEOUT_MS=300000
 CUSTOM_PROVIDER_5_STREAM_TIMEOUT_MS=600000
 # 0/unset = no cap. When set, bulk context and auto-injected tools are dropped.
 CUSTOM_PROVIDER_5_MAX_PROMPT_CHARS=2500
+
+# Same upstream, native /completion dialect. Priority 1 keeps the plain model
+# id on custom_5; the masked name resolves here exactly.
+CUSTOM_PROVIDER_6_ENABLED=true
+CUSTOM_PROVIDER_6_NAME=llama-native
+CUSTOM_PROVIDER_6_URL=http://127.0.0.1:9932
+CUSTOM_PROVIDER_6_PRIORITY=1
+CUSTOM_PROVIDER_6_TYPE=llamacpp
+CUSTOM_PROVIDER_6_MODELS=llama-native-qwen=>qwen3-1.7b-abliterated
 ```
 
 Derived values are never stored separately:
@@ -239,8 +253,15 @@ dist/
 ```
 
 - `scripts/build.js` uses Node 24 built-ins only.
+- `BUILD_OUT=<dir>` writes the build somewhere other than `dist/`. The build
+  refuses to replace `dist/` while a gateway is running from it, so live
+  verification builds into a scratch directory instead of deleting the runtime.
 - Source files are copied, never symlinked.
 - Every copied file is hashed into `manifest.json`.
+- The launcher replaces the build's `.env` copy with a symlink to the checkout
+  `.env`, and links `data/`, `logs/`, `cache/`, `locks/`, `.zombiecoder/` and
+  `.missionbarisal/` so a rebuild never destroys operator state. `skills/` is
+  build output and stays inside `dist/`.
 - `APP_ROOT` resolves from the running script, so any folder works.
 - `external mcp/servers.json` is machine-local and git-ignored. The repository
   ships `servers.example.json`; the installer copies it when the local file is
@@ -262,9 +283,8 @@ dist/
 6. Internal CA trust.
 7. Build and start (systemd user unit when available). First boot creates and
    seeds `data/models.db`.
-8. llama.cpp probe, `scripts/bind-llama-cpp.js` provider/env write and agent-row
-   binding, then a gateway restart so `AGENTS` reloads the new models.
-9. `scripts/install-verify.sh --quick`.
+8. `scripts/install-verify.sh --quick`. Agent model bindings are operator state
+   in the DB and are not rewritten by the installer.
 
 Read-only preflight: `bash scripts/install.sh --check` prints
 `INSTALL_CHECK_OK` and writes nothing.
@@ -301,16 +321,16 @@ Windows: `scripts/install.ps1` exists; it is **NOT_TESTED** on this Linux host.
 | --- | --- | --- |
 | Static | `node --check` on changed files | exit 0 |
 | Env | `node scripts/check-env.js` | `ENV_OK`, no duplicate ports |
-| Docs | `node tests/docs-claims-check.js` | live counts match headings |
+| Docs | `node tests/docs-claims-check.js` | advisory audit only; never gates install or runtime |
 | Caddy | `caddy validate --adapter caddyfile` | `Valid configuration` |
 | Runtime | boot `api.js` / `start.js` | `/status` returns 200 |
 | TLS | `curl` without `-k` + `openssl -verify_return_error` | verify code 0, HTTP 200 |
 | Origins | allowed `tools/call` / hostile origin | 200 / 401 |
 | MCP | `tools/list` over HTTP and UDS | JSON-RPC result, tool count |
 | DB | fresh temp DB | tables + 9 seeded agents |
-| llama.cpp | direct completion + gateway catalogue + agent binding | non-empty content, 9 agents on one model |
-| Any-dir | agent request from `/tmp` | HTTP 200, non-empty content, `PROMPT_BUDGET_APPLIED` under a budget |
-| Build | `node scripts/build.js` | `dist/manifest.json` exists |
+| llama.cpp | direct completion + gateway catalogue + per-agent routing | non-empty content; every agent answers through its own provider/model pair |
+| Workdir | live `get_working_dir` + `set_working_dir` in the registry + real completion | existing absolute path outside `/tmp`; HTTP 200, non-empty content |
+| Build | `BUILD_OUT=<scratch> node scripts/build.js` | that directory's `manifest.json` exists; a live `dist/` is refused, not replaced |
 | Full transports | `node tests/all-transports-check.js` | 13 live transport checks |
 
 The install sentinel covers the rows it names. It does not claim that the full
@@ -321,12 +341,12 @@ transport suite passed; run that suite for its own evidence.
 ## 10. Install sentinel
 
 ```text
-RESULT: MISSION BARISAL PASS docs=ok installer=ok node=24 kde=present tls=ok origins=ok tools=153 db=seed build=ok start=ok llama=ok agents=9 cwd=/tmp
+RESULT: MISSION BARISAL PASS env=ok installer=ok node=24 kde=present tls=ok origins=ok tools=153 providers=ok native=ok db=seed build=ok start=ok agents=9 workdir=ok reply=ok
 ```
 
 `bash scripts/install-verify.sh --quick` prints this line only when every check
 passed. On failure it prints `RESULT: MISSION BARISAL FAIL missing=...` and exits
-non-zero. Logs go to `/tmp/opencode/install-verify-*.log`.
+non-zero. Logs and verification artifacts go to `logs/verify/` in the project.
 
 ---
 
@@ -340,7 +360,7 @@ non-zero. Logs go to `/tmp/opencode/install-verify-*.log`.
 3. Public ACME requires a resolvable host and `ACME_EMAIL`.
 4. On 2026-11-06 `api.zombiecoder.my.id` resolved to Cloudflare and returned
    HTTP 530 externally. This is outside the repository and must be fixed by the
-   operator.
+   operator. The local edge uses `localhost`, which resolves to `::1`.
 
 ---
 

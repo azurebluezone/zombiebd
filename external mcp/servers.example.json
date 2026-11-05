@@ -1,6 +1,6 @@
 {
   "_comment": "External MCP servers for Mission Barisal. Every entry is loopback-bound. Ports are ${VAR} placeholders resolved from .env by lib/expand-env.js — change the port in .env, never here, or the spawner will pin a stale value.",
-  "_security": "2026-10-08: removed hardcoded remote DNS entry https://api.zombiecoder.my.id/mcp (was name:zombiecoder, autoConnect:true). All remaining servers are loopback-bound (127.0.0.1).",
+  "_security": "2026-10-08: removed hardcoded remote DNS entry https://localhost/mcp (was name:zombiecoder, autoConnect:true). All remaining servers are loopback-bound (127.0.0.1).",
   "servers": [
     {
       "name": "ocr",

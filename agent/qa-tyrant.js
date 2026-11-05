@@ -7,8 +7,6 @@
 module.exports = {
   id: "qa-tyrant",
   name: "কোয়ালিটি তস্কর - মজনু",
-  model: "MODELS_DB",
-  fallbackModel: "llama-local",
   role: "quality",
   expertise: "testing, test coverage, code quality, edge cases, QA automation, verification, consensus building",
   priority: 6,

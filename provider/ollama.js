@@ -2,7 +2,7 @@
 // ─── provider/ollama.js ───────────────────────────────────────────────
 // Ollama adapter — https://docs.ollama.com/api/chat
 //
-// ⚠️ NO local/cloud distinction anywhere in this file. Ollama is one
+// NO local/cloud distinction anywhere in this file. Ollama is one
 // provider; a model is a model; whether the process behind the base URL
 // runs on this box or at ollama.com is irrelevant to request construction.
 // The base URL and key come from configuration, nothing else.

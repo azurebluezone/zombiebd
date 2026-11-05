@@ -27,6 +27,8 @@ const { spawn, spawnSync } = require("child_process");
 const { loadEnv } = require("../lib/env.js");
 
 const ROOT = path.resolve(__dirname, "..");
+const SCRATCH = path.join(ROOT, ".verify");
+fs.mkdirSync(SCRATCH, { recursive: true });
 const ENV = loadEnv({ root: ROOT });
 const API_PORT = ENV.ports.api || 5050;
 const BRIDGE_PORT = ENV.ports.bridge || 11435;
@@ -279,7 +281,7 @@ function check(name, fn) {
 
 async function bridgeAutoSelect() {
   const port = await freePort();
-  const socket = path.join("/tmp/opencode", "readiness-bridge-" + process.pid + ".sock");
+  const socket = path.join(SCRATCH, "readiness-bridge-" + process.pid + ".sock");
   const child = spawn(process.execPath, [path.join(ROOT, "local-llm-bridge.js")], {
     cwd: ROOT,
     env: Object.assign({}, process.env, {
@@ -545,7 +547,7 @@ async function edgeReady() {
   if (caddy.status !== 0) throw new Error("caddy binary missing");
   const version = (caddy.stdout || caddy.stderr || "").split("\n")[0];
 
-  const out = path.join("/tmp/opencode", "Caddyfile.readiness." + process.pid);
+  const out = path.join(SCRATCH, "Caddyfile.readiness." + process.pid);
   const render = run(process.execPath, [path.join(ROOT, "scripts", "caddy-render.js"), "--out", out]);
   if (render.status !== 0) {
     throw new Error("caddy-render exit=" + render.status + " " + (render.stderr || "").slice(-200));

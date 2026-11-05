@@ -193,7 +193,7 @@ const PORT = parseInt(process.env.PORT || "3000", 10);
 const MAX_BODY_SIZE = parseInt(
   process.env.MAX_BODY_SIZE || String(10 * 1024 * 1024),
   10
-); // 🧟 body-size guard — readBody cap + pre-flight Content-Length 413
+); // body-size guard — readBody cap + pre-flight Content-Length 413
 // Unique per-process fingerprint — lets multi-instance tests prove that
 // two `node api.js` runs on one machine really are independent processes.
 const INSTANCE_ID = process.env.INSTANCE_ID || crypto.randomUUID();
@@ -231,7 +231,7 @@ console.log(
 );
 
 // ─── Pusher Config (optional) ────────────────────────────────
-// 🧟 SECURITY: Default credentials are PLACEHOLDERS only!
+// SECURITY: Default credentials are PLACEHOLDERS only!
 // Set PUSHER_APP_ID, PUSHER_KEY, PUSHER_SECRET via .env for real use.
 // Default values below are non-functional examples — do NOT use in production.
 const PUSHER_APP_ID = process.env.PUSHER_APP_ID || "";
@@ -311,11 +311,11 @@ function updateRuntimeConfig(updates) {
     RUNTIME_CONFIG.antiDoteEnabled = updates.antiDoteEnabled;
   }
   RUNTIME_CONFIG.updatedAt = new Date().toISOString();
-  persistRuntimeConfig(); // 🧟 survive restart (settings KV)
+  persistRuntimeConfig(); // survive restart (settings KV)
   return { ...RUNTIME_CONFIG };
 }
 
-// 🧟 Persist/load RUNTIME_CONFIG in the settings table — the config page
+// Persist/load RUNTIME_CONFIG in the settings table — the config page
 // now actually DOES something beyond this boot.
 function persistRuntimeConfig() {
   if (!MODELS_DB) return;
@@ -604,7 +604,7 @@ function printSetupReport(results) {
     " failed",
   );
   if (counts.failed > 0) {
-    console.log("  ⚠️ SETUP FAILURES — check permissions on the items marked [!] above");
+    console.log("  SETUP FAILURES — check permissions on the items marked [!] above");
   }
   console.log("=========================\n");
 }
@@ -628,29 +628,6 @@ const SYSTEM_IDENTITY = {
   },
 };
 
-const SYSTEM_IDENTITY_PROMPT = `⚠️ IDENTITY RULES — Your persona above IS your identity:
-1. Your name, character, and tone come ONLY from the persona text above.
-2. NEVER reveal your underlying model provider (OpenAI, DeepSeek, Google, etc.)
-3. NEVER claim to be from any AI company.
-4. NEVER say "ZombieCoder Dev Agent" or any platform name as your identity — your identity is in the persona above.
-5. Always respond in Bengali unless the user explicitly requests English.
-6. Be truthful — never present assumptions as facts.
-7. Admit when you are unsure or lack information.
-8. PROOF REQUIRED: NEVER answer without verifiable proof. If no evidence available, say "আমার কাছে এই বিষয়ে প্রমাণ নেই" and admit uncertainty, but still try to help with what you know.`;
-
-const THREE_FILE_MEMORY_PROMPT = `📁 YOUR MEMORY SYSTEM — You have THREE files:
-1. **SSOT.md** — Project context (tech stack, structure, files). Read this for project-level facts.
-2. **syllabus.md** — Your learned knowledge. This is your growing brain — what you learned from web search, GitHub, docs. ALWAYS check this first before answering.
-3. **memory.json** — Session history. Contains conversation context and archive index of past sessions.
-
-📁 RULES:
-- SSOT → answer project questions
-- Syllabus → answer knowledge questions (things you learned before)
-- Memory → maintain conversation continuity
-- If info is NOT in any of these 3 files → say "এই তথ্য বর্তমানে আমার স্মৃতিতে নেই, আমি ওয়েব সার্চ করে দেখছি" then search
-- NEVER overwrite or delete these files — only append new knowledge to syllabus
-- When you learn something new, save it with the append_syllabus(topic, summary) tool (append-only — it lands in syllabus.md for future use)`;
-
 const INTENT_EXTRACT_PROMPT = `You are an intent analyzer. Extract the core intent from the user input.
 Return ONLY valid JSON in this exact format:
 {
@@ -673,10 +650,10 @@ Check criteria:
 4. HALLUCINATION: Is there any made-up, unverified, or assumed information not present in the user's input? If the agent claims capabilities or identities not verifiable, flag it
 5. LANGUAGE: Is the response in the correct language matching the user's input?
 6. COMPLETENESS: Are all aspects of the question addressed? If the question has multiple parts, all must be answered
-7. 🔬 PROOF & EVIDENCE: Does the response provide verifiable proof for each claim? Check for specific references to files, line numbers, search results, SSOT data, syllabus entries, or other concrete evidence. Opinions without evidence = FAIL.
-8. 🧪 TEST CLAIMS (NEW): If the agent claims a code change "works", "fixes", or "solves" — check if test evidence is provided. "It will work" without proof = MISALIGNED with truth.
-9. 🔒 CODE SAFETY (NEW): If suggesting code modifications, check if specific files and lines are mentioned. Vague suggestions without file paths = UNSAFE.
-10. 📚 KNOWLEDGE REFERENCE (NEW): If the response mentions technical concepts, frameworks, or patterns — check if the agent referenced its syllabus.md or memory.json. If the agent claims knowledge without source (SSOT/syllabus/web search), flag it as unverfied. "Syllabus অনুযায়ী" or "memory থেকে পাওয়া" = GOOD. Unexplained expert claims = BAD.
+7. PROOF & EVIDENCE: Does the response provide verifiable proof for each claim? Check for specific references to files, line numbers, search results, SSOT data, syllabus entries, or other concrete evidence. Opinions without evidence = FAIL.
+8. TEST CLAIMS (NEW): If the agent claims a code change "works", "fixes", or "solves" — check if test evidence is provided. "It will work" without proof = MISALIGNED with truth.
+9. CODE SAFETY (NEW): If suggesting code modifications, check if specific files and lines are mentioned. Vague suggestions without file paths = UNSAFE.
+10. KNOWLEDGE REFERENCE (NEW): If the response mentions technical concepts, frameworks, or patterns — check if the agent referenced its syllabus.md or memory.json. If the agent claims knowledge without source (SSOT/syllabus/web search), flag it as unverfied. "Syllabus অনুযায়ী" or "memory থেকে পাওয়া" = GOOD. Unexplained expert claims = BAD.
 
 SCORING:
 - 100 = perfect alignment, directly answers user input with verifiable content AND provides evidence for claims
@@ -821,11 +798,8 @@ function resolveApiModel(publicModelName, providerId) {
     for (const m of p.models) {
       if (getModelName(m) === publicModelName) return getApiModelName(m);
     }
-    // If not found, search by apiModel (e.g. nemotron-3-ultra-free -> model-pro)
-    for (const m of p.models) {
-      if (getApiModelName(m) === publicModelName) return getModelName(m);
-    }
-    // Not found in this provider, return original name
+    // The requested name may already be this provider's API model (a masked
+    // public name and its apiModel can differ). Send the API model as-is.
     return publicModelName;
   }
   // 2. Fallback: search all providers (old behaviour)
@@ -853,12 +827,46 @@ function parseModelsEnv(str) {
     .map((s) => s.trim())
     .filter(Boolean)
     .map((entry) => {
+      // "name=>apiModel" is the unambiguous form; "name:apiModel" stays for
+      // existing env files where a model id never contains a colon.
+      const arrow = entry.indexOf("=>");
+      if (arrow > 0) {
+        return {
+          name: entry.slice(0, arrow).trim(),
+          apiModel: entry.slice(arrow + 2).trim(),
+        };
+      }
       const idx = entry.indexOf(":");
       if (idx > 0) {
         return {
           name: entry.slice(0, idx).trim(),
           apiModel: entry.slice(idx + 1).trim(),
         };
+      }
+      return entry;
+    });
+}
+
+function positiveIntEnv(name) {
+  const n = parseInt(process.env[name] || "", 10);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+// Custom providers use "name=>apiModel" for a masked pair. A plain colon is
+// not a delimiter here: local model tags contain one (qwen2:0.5b, ...:8b), so
+// splitting on ":" would turn a tag into a bogus mask.
+function parseCustomModelsEnv(str) {
+  if (!str || !str.trim()) return [];
+  return str
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const idx = entry.indexOf("=>");
+      if (idx > 0) {
+        const name = entry.slice(0, idx).trim();
+        const apiModel = entry.slice(idx + 2).trim();
+        if (name && apiModel) return { name, apiModel };
       }
       return entry;
     });
@@ -931,7 +939,7 @@ const PROVIDER_CONFIG = {
     key: process.env.OLLAMA_API_KEY || process.env.OLLAMA_CLOUD_API_KEY || "",
     priority: parseInt(process.env.OLLAMA_PRIORITY || "999", 10), // NaN-proof: unset → lowest
     type: process.env.OLLAMA_TYPE || "openai",
-    // 🧟 DIALECT_FIX (2026-10-12): `type` alone CANNOT pick the wire dialect.
+    // DIALECT_FIX (2026-10-12): `type` alone CANNOT pick the wire dialect.
     // adapterFor() (provider/index.js) matches by provider ID before `type`,
     // so id "ollama" always reached provider/ollama.js — and that adapter
     // defaults to the NATIVE /api/chat. Any OpenAI-compatible endpoint
@@ -942,15 +950,19 @@ const PROVIDER_CONFIG = {
     // Set OLLAMA_DIALECT=openai to route through {base}/v1/chat/completions.
     // Unset ⇒ "" (falsy) ⇒ adapterFor() falls through exactly as before.
     dialect: process.env.OLLAMA_DIALECT || "",
-    // 🧟 UDS fast path: when OLLAMA_SOCKET is set (socat -> ollama:11434),
+    // UDS fast path: when OLLAMA_SOCKET is set (socat -> ollama:11434),
     //    transport.js sends requests over the unix socket FIRST and falls
     //    back to plain HTTP (this baseUrl) on connection errors only —
     //    never on timeout (a slow local model must not be tried twice).
     socketPath: process.env.OLLAMA_SOCKET || undefined,
-    // Model list is NOT hardcoded here (no OLLAMA_MODELS): ollama-named
-    // providers load it from the bridge via loadOllamaModelsFromBridge().
-    // parseModelsEnv stays only for the (unused) legacy env override.
-    models: parseModelsEnv(process.env.OLLAMA_MODELS || ""),
+    // CPU inference on a small box can exceed the 60s transport default while
+    // still producing a valid answer. The budget is env-only, per provider.
+    timeout: positiveIntEnv("OLLAMA_TIMEOUT_MS"),
+    streamTimeout: positiveIntEnv("OLLAMA_STREAM_TIMEOUT_MS"),
+    // Model list is NOT hardcoded here: the DB or provider sync supplies it.
+    // The env override keeps Ollama tags intact — "qwen2:0.5b" is a model id,
+    // not a "qwen2 -> 0.5b" mask — so it uses the tag-safe parser.
+    models: parseCustomModelsEnv(process.env.OLLAMA_MODELS || ""),
     local: true,
   },
 };
@@ -970,7 +982,7 @@ function loadCustomProviders() {
     if (seen.has(num)) continue;
     seen.add(num);
 
-    // 🧟 ENABLED handling (was documented in .env but NEVER read):
+    // ENABLED handling (was documented in .env but NEVER read):
     // CUSTOM_PROVIDER_N_ENABLED=false removes the provider entirely from
     // PROVIDER_CONFIG (no auto-sync attempt, no model rows, no /api/v1/models).
     const enabled = String(
@@ -985,7 +997,7 @@ function loadCustomProviders() {
 
     const name =
       process.env["CUSTOM_PROVIDER_" + num + "_NAME"] || "Custom-" + num;
-    const url = process.env["CUSTOM_PROVIDER_" + num + "_URL"];
+    const url = expandEnv(process.env["CUSTOM_PROVIDER_" + num + "_URL"] || "").trim();
     const apiKey = process.env["CUSTOM_PROVIDER_" + num + "_KEY"] || "";
     const modelsStr = process.env["CUSTOM_PROVIDER_" + num + "_MODELS"] || "";
     const priority = parseInt(
@@ -999,14 +1011,7 @@ function loadCustomProviders() {
       continue;
     }
 
-    const models = modelsStr
-      ? modelsStr
-        .split(",")
-        .map(function (m) {
-          return m.trim();
-        })
-        .filter(Boolean)
-      : ["*"];
+    const models = modelsStr ? parseCustomModelsEnv(modelsStr) : ["*"];
 
     const providerId = "custom_" + num;
     const socket =
@@ -1047,13 +1052,13 @@ function loadCustomProviders() {
 loadCustomProviders();
 
 // ══════════════════════════════════════════════════════════════
-//  🗄️  SQLite MODELS DATABASE (zero-dependency via node:sqlite)
+//   SQLite MODELS DATABASE (zero-dependency via node:sqlite)
 // ══════════════════════════════════════════════════════════════
 // The API Normalizer syncs provider models into a `models` table.
 // Lookup order: DB first → env (PROVIDER_CONFIG) → fallback reply.
 // If node:sqlite is unavailable (old Node), server falls back to env-only.
 let MODELS_DB = null;
-// 🧟 DB path priority: env DB_SQLITE_PATH → DATA_DIR/models.db (fallback),
+// DB path priority: env DB_SQLITE_PATH → DATA_DIR/models.db (fallback),
 // so a forgotten env var can never brick the gateway.
 const MODELS_DB_PATH = path.resolve(
   PROJECT_ROOT,
@@ -1173,7 +1178,7 @@ function initModelsDb() {
     } catch (migErr) {
       log("WARN", "USERS_MIGRATE_FAIL", { error: migErr.message });
     }
-    // 🧟 Registry migrations: models can be toggled from the admin panel.
+    // Registry migrations: models can be toggled from the admin panel.
     //   enabled — admin on/off (sync upserts NEVER touch it, so the flag survives)
     //   pinned  — seeded from remote registry; syncModelsToDb's stale-row DELETE
     //             skips pinned rows (otherwise remote seeds vanish next boot)
@@ -1184,7 +1189,7 @@ function initModelsDb() {
     } catch (migErr) {
       log("WARN", "MODELS_MIGRATE_FAIL", { error: migErr.message });
     }
-    // 🧟 Provider capability columns — supports_tools / supports_media /
+    // Provider capability columns — supports_tools / supports_media /
     // supports_stream (NULL ⇒ unknown ⇒ ALLOW — never hardcode model names).
     try {
       const pcols = MODELS_DB.prepare("PRAGMA table_info(models)").all().map((c) => c.name);
@@ -1194,14 +1199,14 @@ function initModelsDb() {
     } catch (migErr) {
       log("WARN", "MODELS_CAP_MIGRATE_FAIL", { error: migErr.message });
     }
-    // 🧟 Provider registry + tool register share the SAME live DB handle —
+    // Provider registry + tool register share the SAME live DB handle —
     // capability lookups are DB-direct, never cached from an env list.
     providerRegistry.setDatabase(MODELS_DB);
-    // 🧟 settings KV — persisted runtime state (provider_disabled etc.)
+    // settings KV — persisted runtime state (provider_disabled etc.)
     MODELS_DB.prepare(
       "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER DEFAULT 0)"
     ).run();
-    // 🧟 Gateway telemetry — ONE database holds every table/column this
+    // Gateway telemetry — ONE database holds every table/column this
     // gateway needs: request log, session log, provider/model/agent/tool stats.
     MODELS_DB.exec(`
       CREATE TABLE IF NOT EXISTS request_log (
@@ -1306,7 +1311,7 @@ function syncModelsToDb() {
       }
     }
     // Remove stale rows (models no longer present after this sync)
-    // 🧟 pinned=1 rows are remote-registry seeds — they survive across syncs
+    // pinned=1 rows are remote-registry seeds — they survive across syncs
     MODELS_DB.prepare("DELETE FROM models WHERE updated_at < ? AND COALESCE(pinned,0) = 0").run(now);
     log("INFO", "MODELS_DB_SYNCED", { count, path: MODELS_DB_PATH });
     return { ok: true, synced: count };
@@ -1576,51 +1581,18 @@ function getAllModels() {
   return list;
 }
 
-// Default model (first provider → first model)
-function getDefaultModel() {
-  for (const p of Object.values(PROVIDER_CONFIG)) {
-    if (p.models.length > 0) return getModelName(p.models[0]);
-  }
-  return "model-pro";
-}
-
+// Model names come from provider config or the agents table, never from a
+// source-code default. An empty/invalid name fails at resolveProvider().
 function normalizeRoutingModel(model) {
-  if (typeof model !== "string" || !model.trim()) return getDefaultModel();
-  const requested = model.trim();
-  const exact = resolveProvider(requested, true);
-  if (exact) return requested;
-
-  const agent = Array.isArray(AGENTS) ? AGENTS.find((item) => item.id === requested) : null;
-  if (agent && typeof agent.model === "string") {
-    const agentModel = resolveProvider(agent.model, true);
-    if (agentModel) return agent.model;
-  }
-
-  const fallback = getDefaultModel();
-  log("WARN", "MODEL_NOT_CONFIGURED", { requested, fallback });
-  return fallback;
-}
-
-function getFallbackModel(excludeModel, triedModels) {
-  const excludeSet = new Set(triedModels || []);
-  if (excludeModel) excludeSet.add(excludeModel);
-  const candidates = Object.values(PROVIDER_CONFIG)
-    .sort((a, b) => (a.priority || 999) - (b.priority || 999))
-    .flatMap((provider) => provider.models.map(getModelName));
-  return candidates.find((candidate) => !excludeSet.has(candidate)) || null;
+  return typeof model === "string" ? model.trim() : "";
 }
 
 // ─── Competition Router ─────────────────────────────────────
 // Resolves which provider to call based on model name
-// ─── 🧟 Admin runtime enable/disable state (persisted in `settings`) ──
+// ─── Admin runtime enable/disable state (persisted in `settings`) ──
 // Providers: PROVIDER_CONFIG[id].enabled === false → skipped by resolve/fallback/sync.
 // Models:    DISABLED_MODELS has "provider::name"     → skipped by resolve.
 let DISABLED_MODELS = new Set();
-
-function firstEnabledProviderId() {
-  const ids = Object.keys(PROVIDER_CONFIG);
-  return ids.find((k) => PROVIDER_CONFIG[k].enabled !== false) || ids[0];
-}
 
 function loadDisabledState() {
   if (!MODELS_DB) return;
@@ -1670,7 +1642,7 @@ function getDisabledModelRows() {
   }
 }
 
-// 🧟 P1 display alias (MODEL_ALIASES env, format public:canonical — e.g.
+// P1 display alias (MODEL_ALIASES env, format public:canonical — e.g.
 // zombie-mini:llama-local). Applied BEFORE provider resolution so a public
 // name always lands on the canonical id (S6): the normalizer sync prunes
 // custom-provider entries the upstream does not report, so the alias map is
@@ -1681,29 +1653,32 @@ const applyModelAlias = makeAliasResolver(process.env.MODEL_ALIASES || "");
 // agent->model row fails loudly instead of being answered by another model.
 const ALLOW_WILDCARD_MODEL = process.env.ALLOW_WILDCARD_MODEL || "0";
 
+// Priority 0 is a valid "highest" value; `priority || 999` silently demoted it
+// to 999 and let an unrelated provider win a model-name tie.
+function providerPriority(p) {
+  const n = Number(p && p.priority);
+  return Number.isFinite(n) ? n : 999;
+}
+
 function resolveProvider(model, exactOnly) {
-  // 🧟 GUARD: Reject template/placeholder model names (e.g. "{{model}}")
+  // GUARD: Reject template/placeholder model names (e.g. "{{model}}")
   // These come from misconfigured clients and cause massive PROXY_FAIL storms
   if (!model || typeof model !== "string" || /\{\{.*\}\}/.test(model) || model.length < 2) {
-    const firstId = firstEnabledProviderId();
-    return {
-      providerId: firstId,
-      config: PROVIDER_CONFIG[firstId],
-      matchType: "template_guard",
-    };
+    log("WARN", "MODEL_NAME_REJECTED", { model });
+    return null;
   }
   model = applyModelAlias(model); // public alias -> canonical id
 
   const allNames = new Map();
   // Sort by priority (lower number = higher priority) so OpenCode (priority:1) wins over Groq (priority:2)
   const sortedProviders = Object.entries(PROVIDER_CONFIG).sort(
-    ([, a], [, b]) => (a.priority || 999) - (b.priority || 999),
+    ([, a], [, b]) => providerPriority(a) - providerPriority(b),
   );
   for (const [id, p] of sortedProviders) {
-    if (p.enabled === false) continue; // 🧟 admin-disabled provider
+    if (p.enabled === false) continue; // admin-disabled provider
     for (const m of p.models) {
       const name = getModelName(m);
-      // 🧟 admin-disabled model — never resolved, still re-enableable in admin
+      // admin-disabled model — never resolved, still re-enableable in admin
       if (DISABLED_MODELS.has(id + "::" + name)) continue;
       // Don't overwrite — first provider (highest priority) wins
       if (!allNames.has(name)) {
@@ -1751,7 +1726,7 @@ function resolveProvider(model, exactOnly) {
   //    honoured when the caller explicitly opted in.
   if (ALLOW_WILDCARD_MODEL === "1") {
     for (const [id, p] of Object.entries(PROVIDER_CONFIG)) {
-      if (p.enabled === false) continue; // 🧟 admin-disabled provider
+      if (p.enabled === false) continue; // admin-disabled provider
       if (p.models.length === 0) {
         return { providerId: id, config: p, matchType: "wildcard" };
       }
@@ -1772,13 +1747,13 @@ function resolveProvider(model, exactOnly) {
 // If primary provider fails, callModel tries the next provider
 function resolveAllProviders(model) {
   const sorted = Object.entries(PROVIDER_CONFIG).sort(
-    ([, a], [, b]) => (a.priority || 999) - (b.priority || 999),
+    ([, a], [, b]) => providerPriority(a) - providerPriority(b),
   );
   const matches = [];
   for (const [id, p] of sorted) {
-    if (p.enabled === false) continue; // 🧟 admin-disabled provider
+    if (p.enabled === false) continue; // admin-disabled provider
     for (const m of p.models) {
-      if (DISABLED_MODELS.has(id + "::" + getModelName(m))) continue; // 🧟
+      if (DISABLED_MODELS.has(id + "::" + getModelName(m))) continue; //
       if (getModelName(m) === model || getApiModelName(m) === model) {
         matches.push({ providerId: id, config: p });
         break;
@@ -1799,18 +1774,14 @@ function findNextProvider(model, currentProviderId) {
   // Start from the next provider after currentIdx, skipping unhealthy ones
   for (let i = currentIdx + 1; i < allProviders.length; i++) {
     const candidate = allProviders[i];
-    // A provider can only serve the model it actually advertises. Without
-    // this check the fallback happily handed an unknown model id (a typo, or
-    // a stale agent→model row) to the next provider, which then either 400'd
-    // or — worse — answered from a different model than the caller asked
-    // for. resolveProvider(x, true) is the exact-match oracle: null means
-    // "this provider does not serve that model".
-    const servesIt = resolveProvider(model, true);
-    const servesHere = servesIt && servesIt.providerId === candidate.providerId;
-
+    // resolveAllProviders() already narrowed the list to providers that
+    // advertise this exact model (public name or apiModel). Do NOT re-check
+    // with resolveProvider(x, true): that returns the single highest-priority
+    // provider, so it rejected a legitimate second provider whenever the same
+    // model was served twice (for example gemini-* on both gemini and
+    // opencode), and fallback silently did nothing.
     if (
-      PROVIDER_CONFIG[candidate.providerId]?.enabled !== false && // 🧟 admin-off
-      servesHere &&
+      PROVIDER_CONFIG[candidate.providerId]?.enabled !== false && // admin-off
       isProviderHealthy(candidate.providerId, model)
     ) {
       return candidate;
@@ -1818,9 +1789,7 @@ function findNextProvider(model, currentProviderId) {
     log("INFO", "PROVIDER_SKIP_UNHEALTHY", {
       providerId: candidate.providerId,
       model,
-      reason: servesHere
-        ? "Provider is marked unhealthy or rate-limited"
-        : "Provider does not advertise this model",
+      reason: "Provider is marked unhealthy or rate-limited",
     });
   }
   return null;
@@ -2110,7 +2079,7 @@ function autoSSOT(projectDir) {
   }
 }
 
-// 🔒 BUG #2 FIX: SSOT Caching — avoid repeated disk reads
+// BUG #2 FIX: SSOT Caching — avoid repeated disk reads
 // Cache keyed by projectDir, with mtime validation for invalidation
 const _ssotCacheMap = new Map(); // projectDir → { content, mtimeMs }
 
@@ -2176,7 +2145,7 @@ function refreshSSOT(newDir) {
   return autoSSOT(newDir);
 }
 
-// 🧟 MCP handshake bootstrap: guarantee the server's own .zombiecoder/
+// MCP handshake bootstrap: guarantee the server's own .zombiecoder/
 // exists and the working dir is set. Called on every initialize (HTTP
 // and UDS) so a fresh checkout or wiped workspace self-heals instantly.
 function ensureZombiecoderDir(baseDir) {
@@ -2330,7 +2299,7 @@ function getAgentsPath(projectDir) {
   return path.join(dir, AGENTS_DIR);
 }
 
-// 🔒 BUG #1 FIX: Syllabus Caching — avoid repeated disk reads
+// BUG #1 FIX: Syllabus Caching — avoid repeated disk reads
 // Cache keyed by projectDir, with mtime validation for invalidation
 const _syllabusCacheMap = new Map(); // projectDir → { content, mtimeMs }
 
@@ -2407,7 +2376,7 @@ function bootstrapSyllabus(projectDir) {
 
 ---
 
-## 📚 Latest Learnings
+## Latest Learnings
 
 | তারিখ | সোর্স | টপিক |
 |------|-------|-------|
@@ -2590,11 +2559,11 @@ function _updateSyllabusIndex(agentsDir, topic, date, source) {
       }
       fs.writeFileSync(syllabusPath, lines.join("\n"), "utf8");
     } else {
-      // 🔧 FIX: bootstrapped syllabi (bootstrapSyllabus) had NO
+      // FIX: bootstrapped syllabi (bootstrapSyllabus) had NO
       // Latest Learnings table — create it after the first `---`.
       // This migrates existing bootstrapped syllabi + new ones.
       const tableSection =
-        "## 📚 Latest Learnings\n\n" +
+        "## Latest Learnings\n\n" +
         "| তারিখ | সোর্স | টপিক |\n" +
         "|------|-------|-------|\n" +
         tableLine.trimEnd() + "\n\n---";
@@ -2707,7 +2676,7 @@ function writeMemory(projectDir, data) {
       fs.mkdirSync(agentsDir, { recursive: true });
     }
     const memPath = path.join(agentsDir, "memory.json");
-    // 🧟 ASYNC WRITE: non-blocking disk I/O (was writeFileSync — blocked event loop)
+    // ASYNC WRITE: non-blocking disk I/O (was writeFileSync — blocked event loop)
     fs.promises.writeFile(memPath, JSON.stringify(data, null, 2), "utf8").catch(e => log("WARN", "MEMORY_WRITE_ASYNC_FAIL", { error: e.message }));
     log("INFO", "MEMORY_SAVED", { path: memPath });
     return true;
@@ -2769,7 +2738,7 @@ function archiveSession(projectDir, sessionId, messages, summary) {
       next_session: null,
     };
 
-    // 🧟 ASYNC WRITE: non-blocking session archive
+    // ASYNC WRITE: non-blocking session archive
     fs.promises.writeFile(filePath, JSON.stringify(archive, null, 2), "utf8").catch(e => log("WARN", "SESSION_WRITE_ASYNC_FAIL", { error: e.message }));
 
     // Update _index.json
@@ -2790,14 +2759,14 @@ function archiveSession(projectDir, sessionId, messages, summary) {
       agent_count: 0,
       tags: archive.tags || [],
     });
-    // 🔒 BUG #7 FIX: Keep more recent context (was 5, now 20)
+    // BUG #7 FIX: Keep more recent context (was 5, now 20)
     // 927+ sessions archived but only 5 contexts retained — important history lost
     const MAX_RECENT_CONTEXT = 20;
     if (mem.recent_context.length > MAX_RECENT_CONTEXT) {
       mem.recent_context = mem.recent_context.slice(-MAX_RECENT_CONTEXT);
     }
 
-    // 🧟 DE-DUPED: memory already saved in main flow — skip 2nd write
+    // DE-DUPED: memory already saved in main flow — skip 2nd write
     // writeMemory(projectDir, mem);
 
     log("INFO", "SESSION_ARCHIVED", {
@@ -2959,18 +2928,18 @@ const C_BOLD = "\x1b[1m",
   C_DIM = "\x1b[2m",
   C_RESET = "\x1b[0m";
 const ICONS = {
-  INFO: "ℹ️",
-  WARN: "⚠️",
-  ERROR: "❌",
-  DEBUG: "🔍",
-  REQUEST: "➡️",
-  RESPONSE: "⬅️",
-  EVENT: "🔄",
-  DATA: "📦",
-  START: "▶️",
-  END: "⏹️",
-  PASS: "✅",
-  FAIL: "❌",
+  INFO: "",
+  WARN: "",
+  ERROR: "",
+  DEBUG: "",
+  REQUEST: "",
+  RESPONSE: "",
+  EVENT: "",
+  DATA: "",
+  START: "▶",
+  END: "",
+  PASS: "",
+  FAIL: "",
 };
 
 function log(level, category, data, consoleOnly) {
@@ -3105,16 +3074,16 @@ function actorHeader(actor) {
 function visualEventFlow(phase, label, detail) {
   const ts = new Date().toISOString().slice(11, 19);
   const phaseIcons = {
-    request: "➡️",
-    response: "⬅️",
-    agent: "👤",
-    provider: "🔌",
-    anti_dote: "🛡️",
-    mission: "🎯",
-    verify: "✅",
-    error: "❌",
-    data: "📦",
-    system: "⚙️",
+    request: "",
+    response: "",
+    agent: "",
+    provider: "",
+    anti_dote: "",
+    mission: "",
+    verify: "",
+    error: "",
+    data: "",
+    system: "",
   };
   const phaseColors = {
     request: C_CYAN,
@@ -3141,117 +3110,8 @@ function visualEventFlow(phase, label, detail) {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  📜 PERSONAS PARSER
+//  PERSONAS PARSER
 // ══════════════════════════════════════════════════════════════
-function parsePersonas(mdContent) {
-  const agents = [];
-  // Two supported formats, same file contract:
-  //   legacy draft:  "## agent:" blocks with "- field:" YAML-ish lines
-  //   live format:   "# N. Name — X" sections with "**Agent ID:**" + prose
-  // The shipped PERSONAS.md uses the live format; the legacy branch is kept
-  // for old drafts already checked into the repo.
-  let legacy = true;
-  let blocks = mdContent.split(/^## agent:/m).slice(1);
-  if (blocks.length === 0) {
-    legacy = false;
-    blocks = mdContent
-      .split(/\n(?=# )/m)
-      .filter((s) => /^\*\*Agent ID:\*\*\s*`?[A-Za-z0-9_-]+`?/m.test(s));
-  }
-  // Model names to strip from persona text — agents should NEVER see these
-  const modelNames =
-    /nemotron-3-ultra-free|mimo-v2\.5-free|big-pickle|nemotron-3-ultra-free|north-mini-code-free|hy3-free/gi;
-  for (const block of blocks) {
-    let id = "";
-    if (legacy) {
-      const idMatch = block.match(/^\s*([^\n]+)/);
-      id = idMatch ? idMatch[1].trim() : "";
-    } else {
-      const idMatch = block.match(/^\*\*Agent ID:\*\*\s*`?([A-Za-z0-9_-]+)`?/m);
-      id = idMatch ? idMatch[1] : "";
-    }
-    if (!id) continue;
-    const name = legacy
-      ? extractField(block, "name") || id
-      : extractHeadingName(block) || id;
-    const model =
-      (legacy ? extractField(block, "model") : null) ||
-      "nemotron-3-ultra-free";
-    const role = legacy ? extractField(block, "role") || "general" : "general";
-    const expertise = legacy ? extractField(block, "expertise") || "" : "";
-    const priority = parseInt(
-      (legacy ? extractField(block, "priority") : null) || "99",
-      10,
-    );
-    let persona = legacy ? extractPersona(block) : extractProseSection(block);
-    // Strip model names from persona text — agents should NEVER know their model
-    if (persona) {
-      persona = persona
-        .replace(modelNames, "AI model")
-        .replace(/\s{2,}/g, " ")
-        .trim();
-    }
-    if (model && persona)
-      agents.push({ id, name, model, role, expertise, priority, persona });
-  }
-  agents.sort((a, b) => (a.priority || 99) - (b.priority || 99));
-  return agents;
-}
-
-// Live PERSONAS.md format helpers: "# N. Name — X" heading → name, and the
-// persona = the prose body after the "**key:**" header lines.
-function extractHeadingName(block) {
-  const m = block.match(/^# \d+\.\s*(.+)$/m);
-  return m ? m[1].trim() : null;
-}
-
-function extractProseSection(block) {
-  const lines = block
-    .split(/^---+$/m)[0]
-    .split("\n")
-    .filter(
-      (l) =>
-        !/^\*{2}(Agent ID|Specialization|Role|Expertise|Priority|Model)\*{2}\s*:/m.test(
-          l.trim(),
-        ),
-    )
-    .map((l) => l.trim())
-    .join("\n")
-    .replace(/^# \d+\.\s*.*$/m, "")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-  return lines || null;
-}
-
-function extractField(block, field) {
-  const re = new RegExp(
-    "^-\\s*\\*{0,2}" + field + "\\*{0,2}\\s*:\\s*(.+)$",
-    "m",
-  );
-  const match = block.match(re);
-  return match
-    ? match[1].trim().replace(/^"|"$/g, "").replace(/^'|'$/g, "")
-    : null;
-}
-
-function extractPersona(block) {
-  // Extract persona from YAML block scalar (|)
-  // Captures ALL indented lines after the | marker until a new section/field.
-  // $(?![\s\S]) = true end-of-string (works with m flag) so the LAST block
-  // in the file is never silently dropped (pre-existing bug fix).
-  const match = block.match(
-    /\*\*persona\*\*:\s*\|\s*\n([\s\S]*?)(?:^- \*\*|^##\s|^---|\n\n(?!  )|$(?![\s\S]))/m,
-  );
-  if (match) {
-    return match[1]
-      .split("\n")
-      .map((l) => l.replace(/^  /, "").trim())
-      .filter((l) => l && !l.startsWith("- "))
-      .join("\n");
-  }
-  return null;
-}
-
 // ─── YAML Frontmatter Agent Parser ────────────────────────────
 // Parses custom agent files (.zombiecoder/agents/*.md) that use
 // YAML frontmatter instead of the "## agent:" markdown format:
@@ -3285,28 +3145,19 @@ function parseYamlAgentFile(content) {
   const id = fields.name || "";
   if (!id) return null;
 
-  // Model safety: a slash-prefixed model (e.g. "mistral/leanstral-1-5") IS a
-  // legitimate catalog entry in this deployment — the agents table already
-  // uses one. Previously ANY slash silently rewrote the model to a hardcoded
-  // "nemotron-3-ultra-free", which pinned those agents to the wrong provider.
-  // Keep the declared model; only fall back when nothing was declared.
+  // Keep the declared model. When none is declared, read the first enabled
+  // model from the catalog; no model literal is baked into this file.
   const model = fields.model || defaultAgentModel();
-  const safeModel = model;
 
-  const modelNames =
-    /nemotron-3-ultra-free|mimo-v2\.5-free|big-pickle|nemotron-3-ultra-free|north-mini-code-free|hy3-free/gi;
   let persona = body || fields.description || "";
-  persona = persona
-    .replace(modelNames, "AI model")
-    .replace(/\s{2,}/g, " ")
-    .trim();
+  persona = persona.replace(/\s{2,}/g, " ").trim();
 
   if (!persona) return null;
 
   return {
     id,
     name: fields.name || id,
-    model: safeModel,
+    model,
     role: fields.role || fields.mode || "general",
     expertise: fields.expertise || fields.description || "",
     priority: parseInt(fields.priority || "99", 10),
@@ -3318,9 +3169,9 @@ function parseYamlAgentFile(content) {
 // Sources (merged, custom overrides default):
 //   1. PERSONAS.md              — "## agent:" markdown format (default agents)
 //   2. .zombiecoder/agents/*.md — YAML frontmatter format (custom agents)
-// Resolve the fallback model from the models database instead of baking a
-// literal name into the source. Returns the sentinel "MODELS_DB" when no
-// catalog is available, so callers resolve it through the provider ladder.
+// Read the first enabled model from the catalog instead of baking a literal
+// name into the source. Returns an empty string when no catalog is available;
+// callers must treat that as "no model", never substitute one.
 function defaultAgentModel() {
   try {
     if (MODELS_DB) {
@@ -3337,9 +3188,9 @@ function defaultAgentModel() {
       if (row && row.api_model) return row.api_model;
     }
   } catch (_) {
-    /* fall through to the sentinel */
+    /* no catalog available */
   }
-  return "MODELS_DB";
+  return "";
 }
 
 async function loadPersonas() {
@@ -3347,8 +3198,8 @@ async function loadPersonas() {
   const seen = new Set();
 
   // Load the file definitions once. A DB row written by an older seed can
-  // still contain the "MODELS_DB" sentinel; the file's fallbackModel is the
-  // only honest concrete model in that case.
+  // still contain the "MODELS_DB" sentinel; resolveAgentModel ignores it and
+  // returns a real catalog/env value or an empty string.
   let fileAgents = [];
   try {
     fileAgents = loadAgentFiles();
@@ -3370,11 +3221,9 @@ async function loadPersonas() {
         merged.push({
           id: r.id,
           name: r.name || r.id,
-          // A real DB model wins. If the row still says "MODELS_DB",
-          // resolve the file's fallbackModel instead of forwarding the
-          // sentinel as a model name (which used to fall through to the
-          // default cloud provider and hide the misconfiguration).
-          model: resolveAgentModel(fileAgentById.get(r.id), r.model) || "MODELS_DB",
+          // A real DB model wins. A legacy "MODELS_DB" row is treated as
+          // empty; the agent keeps no model until the admin binds one.
+          model: resolveAgentModel(fileAgentById.get(r.id), r.model) || "",
           role: r.role || "general",
           expertise: r.expertise || "",
           priority: r.priority || 99,
@@ -3401,15 +3250,14 @@ async function loadPersonas() {
         continue;
       }
       // The DB row was pushed first, so `seen` already contains this id and
-      // the file persona used to be discarded. If the DB persona is missing
+      // the file persona used to be discarded. When the DB persona is empty
       // or trivially short (an admin-saved stub, not the real text), upgrade
-      // the already-pushed entry with the authoritative file persona rather
-      // than running the agent on a 30-character prompt.
+      // the already-pushed entry with the authoritative file persona.
       if (a && a.id && seen.has(a.id) && a.persona) {
         const existing = merged.find((m) => m.id === a.id);
         const dbLen = (existing?.persona || "").trim().length;
         const fileLen = a.persona.trim().length;
-        if (existing && fileLen > dbLen && fileLen > 200) {
+        if (existing && (!dbLen || (fileLen > dbLen && fileLen > 200))) {
           existing.persona = a.persona;
           existing.persona_source = "agent/*.js";
           log("INFO", "PERSONA_BACKFILL_FROM_FILE", {
@@ -3474,16 +3322,30 @@ async function loadPersonas() {
     log("WARN", "CUSTOM_AGENTS_SCAN_FAIL", { error: e.message });
   }
 
-  if (merged.length > 0) {
+  // An agent without a persona is invalid; a generic persona is not a
+  // fallback. Drop those rows and log them instead of inventing text.
+  const valid = [];
+  for (const a of merged) {
+    if (a && a.id && String(a.persona || "").trim()) {
+      valid.push(a);
+    } else {
+      log("WARN", "AGENT_DROPPED_NO_PERSONA", {
+        id: (a && a.id) || "(no id)",
+        source: (a && a.source) || "unknown",
+      });
+    }
+  }
+
+  if (valid.length > 0) {
     log("INFO", "PERSONAS_LOADED", {
       source: "local+custom",
-      count: merged.length,
+      count: valid.length,
     });
-    return merged;
+    return valid;
   }
   log("WARN", "PERSONAS_NOT_FOUND", { file: PERSONAS_FILE });
 
-  // 🔒 PRE-EXISTING BUG FIX: Skip HTTPS download if URL is empty.
+  // PRE-EXISTING BUG FIX: Skip HTTPS download if URL is empty.
   // GIT_PERSONAS_URL defaults to "" when env var is not set.
   // https.get("") throws "TypeError: Invalid URL" at new URL("").
   if (!GIT_PERSONAS_URL || !GIT_PERSONAS_URL.startsWith("http")) {
@@ -3552,11 +3414,10 @@ function seedAgentsFromPersonas() {
     const now = Date.now();
     for (const a of agents) {
       try {
-        // Store the agent's concrete fallback model, never the "MODELS_DB"
-        // sentinel. A sentinel row used to fall through to the default cloud
-        // provider at request time, which is not what the agent asked for.
+        // Store a real model or an empty string, never the "MODELS_DB"
+        // sentinel. The persona comes from the agent file and is required.
         const model = resolveAgentModel(a, null) || "";
-        ins.run(a.id, a.name || a.id, a.role || "general", model, a.expertise || "", a.persona || "", a.priority || 99, now);
+        ins.run(a.id, a.name || a.id, a.role || "general", model, a.expertise || "", a.persona, a.priority || 99, now);
         seeded++;
       } catch (e) {
         log("WARN", "AGENT_SEED_SKIP", { id: a.id, error: e.message });
@@ -3570,7 +3431,7 @@ function seedAgentsFromPersonas() {
   }
 }
 
-// ─── 🧟 Runtime registry guarantee (heart-core agents/models → DB) ──
+// ─── Runtime registry guarantee (heart-core agents/models → DB) ──
 // Order (user contract): (1) create DB+schema at runtime — initModelsDb() does
 // CREATE TABLE IF NOT EXISTS; (2) seed from local sources (PERSONAS.md /
 // agent/*.js); (3) if STILL empty → download registry.seed.json from the
@@ -3606,6 +3467,10 @@ async function seedRegistryFromRemote(reason) {
       );
       for (const a of reg.agents) {
         if (!a || !a.id) continue;
+        if (!String(a.persona || "").trim()) {
+          log("WARN", "REGISTRY_AGENT_SKIP_NO_PERSONA", { id: a.id });
+          continue;
+        }
         try {
           ins.run(
             a.id,
@@ -3613,7 +3478,7 @@ async function seedRegistryFromRemote(reason) {
             a.role || "general",
             a.model || "",
             a.expertise || "",
-            a.persona || "Agent",
+            a.persona,
             a.priority || 99,
             now,
           );
@@ -3658,6 +3523,7 @@ async function ensureAgentsRegistry() {
   // accepted forever because the check was only `count > 0`. INSERT OR IGNORE
   // restores only missing ids, so admin-edited rows are never overwritten.
   let repaired = 0;
+  let modelsFixed = 0;
   try {
     const fileAgents = loadAgentFiles();
     const ins = MODELS_DB.prepare(
@@ -3674,20 +3540,28 @@ async function ensureAgentsRegistry() {
     const now = Date.now();
     for (const a of fileAgents) {
       if (!a || !a.id) continue;
+      if (!String(a.persona || "").trim()) {
+        log("WARN", "AGENT_SKIP_NO_PERSONA", { id: a.id });
+        continue;
+      }
       const model = resolveAgentModel(a, null) || "";
       try {
-        const r = ins.run(a.id, a.name || a.id, a.role || "general", model, a.expertise || "", a.persona || "Agent", a.priority || 99, now);
+        const r = ins.run(a.id, a.name || a.id, a.role || "general", model, a.expertise || "", a.persona, a.priority || 99, now);
         repaired += r.changes || 0;
-        const fixed = fix.run(model, now, a.id);
-        repaired += fixed.changes || 0;
+        // "added" counts restored agent rows only. A model update is not an
+        // added agent; empty models are skipped so updated_at is not churned.
+        if (model) {
+          const fixed = fix.run(model, now, a.id);
+          modelsFixed += fixed.changes || 0;
+        }
       } catch (_) { /* dup */ }
     }
     const c = MODELS_DB.prepare("SELECT COUNT(*) c FROM agents").get();
     if (c && c.c > 0) {
       if (repaired > 0) {
-        log("INFO", "AGENTS_REPAIRED", { from: "agent/*.js", added: repaired, total: c.c });
+        log("INFO", "AGENTS_REPAIRED", { from: "agent/*.js", added: repaired, modelsFixed, total: c.c });
       }
-      return { ok: true, source: "db", count: c.c, repaired };
+      return { ok: true, source: "db", count: c.c, repaired, modelsFixed };
     }
   } catch (e) {
     log("WARN", "AGENTS_FILE_SEED_FAIL", { error: e.message });
@@ -3830,7 +3704,7 @@ function authFromRequest(req) {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  🧟 MCP PRIVILEGED-TOOL GATE  (SECURITY 2026-10-08)
+//  MCP PRIVILEGED-TOOL GATE  (SECURITY 2026-10-08)
 // ══════════════════════════════════════════════════════════════
 // EVIDENCE — before this gate POST /mcp ran arbitrary shell with NO auth at all:
 //   curl -s -X POST http://127.0.0.1:3000/mcp \
@@ -3875,7 +3749,7 @@ function mcpAdminTokenOk(provided) {
   }
 }
 
-// 🧟 SECURITY (2026-10-08) — MODULE-SCOPE admin guard.
+// SECURITY (2026-10-08) — MODULE-SCOPE admin guard.
 // Was a block-local `function adminAuthorized` declared inside the HTTP handler
 // with this body:
 //     if (!process.env.ADMIN_TOKEN) return true;   ← FAIL-OPEN
@@ -3933,14 +3807,12 @@ function mcpAuthFromHeaders(req) {
 // Cross-origin / CSRF gate. A hostile web page can POST to
 // http://127.0.0.1:3000/mcp from the victim's browser — that was the
 // realistic path to RCE even after loopback binding. No-Origin = native
-// client = allowed; Origin must otherwise be loopback or our own domain.
-//
-// Allowed forms: "*", an exact origin, or one wildcard label
-// (https://*.example.com). The wildcard never matches the bare domain.
+// client = allowed; every Origin must match an exact origin derived from
+// APP_URL, MAIN_HOST and deploy/tools.json. There is no wildcard and no
+// unconditional loopback bypass.
 function isOriginAllowed(origin) {
   const value = String(origin || "").trim();
   if (!value) return true;
-  if (value === "null") return true;
 
   let parsed;
   try {
@@ -3948,15 +3820,16 @@ function isOriginAllowed(origin) {
   } catch (_) {
     return false;
   }
-
-  if (["localhost", "127.0.0.1", "0.0.0.0", "[::1]", "::1"].includes(parsed.hostname)) {
-    return true;
-  }
-  if (DETECTED_DOMAIN && parsed.hostname === DETECTED_DOMAIN) return true;
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
 
   const candidates = new Set();
   for (const item of DOMAIN_CFG.corsOrigins || []) {
-    if (item) candidates.add(String(item).trim());
+    if (!item) continue;
+    try {
+      candidates.add(new URL(String(item).trim()).origin);
+    } catch (_) {
+      /* malformed derived entry: ignore */
+    }
   }
   if (DOMAIN_CFG.appUrl) {
     try {
@@ -3966,26 +3839,13 @@ function isOriginAllowed(origin) {
     }
   }
 
-  for (const candidate of candidates) {
-    if (candidate === "*") return true;
-    if (candidate === value) return true;
-
-    const wildcard = candidate.match(/^(https?):\/\/\*\.([A-Za-z0-9.-]+)(?::(\d+))?$/);
-    if (!wildcard) continue;
-    if (parsed.protocol !== wildcard[1] + ":") continue;
-    if (wildcard[3] && parsed.port !== wildcard[3]) continue;
-    if (!wildcard[3] && parsed.port) continue;
-    if (parsed.hostname === wildcard[2]) continue;
-    if (parsed.hostname.endsWith("." + wildcard[2])) return true;
-  }
-
-  return false;
+  return candidates.has(parsed.origin);
 }
 
 function mcpOriginAllowed(req) {
   const h = (req && req.headers) || {};
   const origin = String(h["origin"] || "");
-  if (!origin || origin === "null") return true;
+  if (!origin) return true;
   return isOriginAllowed(origin);
 }
 
@@ -4039,7 +3899,7 @@ function mcpGate(req, toolName, trusted) {
 // /api/v1/anti-dote, /api/input, WS chat, MCP agent_mission/agent_single.
 const MAX_TOOLS_LIMIT = 25; // max tools to send to small models (reduced from 20→15: free tier models choke on >15 tools)
 
-// 🧟 Convert MCP_TOOLS catalog → OpenAI function-tools format so any page
+// Convert MCP_TOOLS catalog → OpenAI function-tools format so any page
 // can request the full server tool set with body { tools: "mcp" }.
 function mcpToolsToOpenAI() {
   return Object.entries(MCP_TOOLS).map(([name, def]) => ({
@@ -4145,35 +4005,15 @@ async function loadInstructions() {
   }
 }
 
-// ─── DEFAULT AGENTS (Fallback when PERSONAS.md unavailable) ────
-// If loadPersonas() returns empty, these minimal fallback agents ensure the
-// server never crashes. Full persona data lives ONLY in PERSONAS.md.
-// NOTE: Persona text is NOT stored here — it is loaded from PERSONAS.md at runtime.
-const DEFAULT_AGENTS = [
-  {
-    id: "general",
-    name: "General Assistant (fallback)",
-    role: "general",
-    expertise: "general assistance, reasoning, evidence-based answers",
-    priority: 99,
-    enabled: 1,
-    mission: "Provide evidence-based assistance when no persona source is available.",
-    decisionRule: "Evidence before confidence. No claims without proof.",
-    // No persona and no model here on purpose:
-    //  - init() stamps persona: FALLBACK_PERSONA_PREFIX when this fallback is used,
-    //  - hardcoded model names are forbidden (capabilities are DB-driven only).
-  },
-];
-
 // ══════════════════════════════════════════════════════════════
-//  🔐 SESSION VERIFY (via configured domain)
+//  SESSION VERIFY (via configured domain)
 // ══════════════════════════════════════════════════════════════
 function verifySessionWithDomain(sessionId, clientToken) {
   return new Promise((resolve) => {
     const url = new URL(RUNTIME_CONFIG.sessionVerifyUrl);
     // Append session_id as query parameter for GET
     url.searchParams.set("session_id", sessionId);
-    // 🔧 FIX: Choose http/https based on URL protocol (was always https,
+    // FIX: Choose http/https based on URL protocol (was always https,
     // which broke verify for local http endpoints like http://localhost:3000)
     const isHttps = url.protocol === "https:";
     const transport = isHttps ? https : http;
@@ -4210,7 +4050,7 @@ function verifySessionWithDomain(sessionId, clientToken) {
             });
           }
         } catch (e) {
-          // 🔒 SECURITY FIX (S3): Don't auto-verify on parse failure
+          // SECURITY FIX (S3): Don't auto-verify on parse failure
           resolve({
             verified: false,
             fallback: true,
@@ -4239,7 +4079,7 @@ function verifySessionWithDomain(sessionId, clientToken) {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  🔍 WEB SEARCH
+//  WEB SEARCH
 // ══════════════════════════════════════════════════════════════
 function webSearch(query) {
   return new Promise((resolve) => {
@@ -4376,7 +4216,7 @@ async function autoWebSearch(agent, response, userInput) {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  📡 PUSHER EVENTS
+//  PUSHER EVENTS
 // ══════════════════════════════════════════════════════════════
 function triggerPusherEvent(channel, eventName, data) {
   return new Promise((resolve) => {
@@ -4479,7 +4319,7 @@ async function pushDone(stats) {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  🔒 LOCK LOG SYSTEM — JSON Debug Memory (Zero Dependency)
+//  LOCK LOG SYSTEM — JSON Debug Memory (Zero Dependency)
 // ══════════════════════════════════════════════════════════════
 // Each lock operation (success/failure/timeout) is stored as JSON file.
 // Organized by date — acts as debug memory for later analysis.
@@ -4749,7 +4589,7 @@ function getLockStats() {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  💾 SESSION & MEMORY SYSTEM (Optimized)
+//  SESSION & MEMORY SYSTEM (Optimized)
 // ══════════════════════════════════════════════════════════════
 const SESSIONS_FILE = path.join(DATA_DIR, "sessions.json");
 const CLIENTS_FILE = path.join(DATA_DIR, "clients.json");
@@ -4786,7 +4626,7 @@ function cleanExpired() {
   const active = sessions.filter((s) => new Date(s.expires_at).getTime() > now);
 
   if (expired.length > 0) {
-    // 📦 Archive expired sessions before removing them
+    // Archive expired sessions before removing them
     for (const s of expired) {
       // Clean up clientSessions mapping
       for (const [key, sid] of clientSessions) {
@@ -5180,7 +5020,7 @@ function flushAllMemory() {
 }
 
 // ══════════════════════════════════════════════════════════════
-// 📁 USER MEMORY CACHE — Cross-Session Intelligence — Cross-Session Intelligence
+// USER MEMORY CACHE — Cross-Session Intelligence — Cross-Session Intelligence
 //  Zero dependency · JSON-based · TTL-aware
 //   Caches user patterns and preferences for accuracy and speed
 //   "Memory from user interactions for closer and more accurate responses"
@@ -5397,134 +5237,19 @@ function maskModelName(realModelName) {
   return realModelName;
 }
 
-// Agent identity: agent only knows model name + provider name — nothing else
-// Builds identity + dual-style instruction (thinking vs answer style)
-// IMPORTANT: Agent must NEVER know its model/provider name
-// This prevents agent from trying to match model-specific behavior in tool calls
-function buildAgentIdentity(agent) {
-  // NO model/provider info exposed to agent — only role-based identity
-  const base = "";
-
-  // Add thinking/answer style differentiation based on agent persona
-  if (agent && agent.persona && agent.persona.trim()) {
-    const role = (agent.role || "general").toLowerCase();
-    let thinkingStyle = "গভীর বিশ্লেষণ ও সমালোচনামূলক চিন্তা";
-    let answerStyle = "সরাসরি ও প্রমাণ-ভিত্তিক উত্তর";
-
-    // Architecture/code-guru style
-    if (
-      role === "architecture" ||
-      agent.persona.includes("আর্কিটেক্ট") ||
-      agent.persona.includes("ডিজাইন") ||
-      agent.persona.includes("দা")
-    ) {
-      thinkingStyle =
-        "বরিশালের দুষ্টু মাস্টার আর্কিটেক্ট — দা নিয়ে দাঁড়িয়ে, ডিজাইন নিয়ে গভীর চিন্তা, " +
-        "প্রতিটি ডিজাইনের ভালো-মন্দ ওজন করা, প্রমাণ ছাড়া কিছু না মানা";
-      answerStyle =
-        "প্রমাণ সহকারে সরাসরি উত্তর — বরিশালি স্টাইলে, দুষ্টুমি করে, 'এই মনু' বলে সম্বোধন, " +
-        "বারিশালি ভাষায় কথা বলা, শাওন ভাইয়ের কথা মনে রাখা";
-    }
-    // Debugging/bug-hunter style
-    else if (
-      role === "debugging" ||
-      agent.persona.includes("বাগ") ||
-      agent.persona.includes("ডিবাগ")
-    ) {
-      thinkingStyle =
-        "নুনু কুচিকুচি করে প্রতিটি লাইন চেক — লজিকের প্রতিটি শাখা পরীক্ষা, " +
-        "ছোট থেকে বড় সব বাগ খুঁজে বের করা";
-      answerStyle =
-        "মজার ছলে সমস্যা চিহ্নিত — 'ভাইয়া মুভি দেখি কেমনে কী হইছে!' স্টাইলে, " +
-        "বাগ কোথায় এবং কেন হচ্ছে তা সহজ ভাষায় বলা";
-    }
-    // Security/security-hero style
-    else if (
-      role === "security" ||
-      agent.persona.includes("নিরাপত্তা") ||
-      agent.persona.includes("সিকিউরিটি")
-    ) {
-      thinkingStyle =
-        "প্রতি লাইনে হামলার সম্ভাবনা খতিয়ে দেখা — SQL Injection, XSS, CSRF, " +
-        "প্রতিটি এন্ডপয়েন্ট চেক করা";
-      answerStyle =
-        "সতর্ক ও নির্ভুল — 'এই, এই লাইনটা দেহি' স্টাইলে, " +
-        "ভালনারেবিলিটি কোথায় এবং কিভাবে ফিক্স করতে হবে তা বলা";
-    }
-    // Performance/perf-wizard style
-    else if (
-      role === "performance" ||
-      agent.persona.includes("পারফরম্যান্স") ||
-      agent.persona.includes("স্পিড")
-    ) {
-      thinkingStyle =
-        "লুপ, API call, মেমরি ব্যবহার — প্রতিটি অপটিমাইজেশন সুযোগ খুঁজে বের করা, " +
-        "বেঞ্চমার্ক ডাটা তুলনা করা, প্রমাণ ছাড়া কিছু মানা না";
-      answerStyle =
-        "দ্রুত ও প্রমাণ-ভিত্তিক — 'এইগুলা দেখি কোন যুগের কোড?' স্টাইলে, " +
-        "পারফরম্যান্স সমস্যা কোথায় এবং কিভাবে সমাধান করতে হবে তা বলা";
-    }
-    // Documentation/doc-king style
-    else if (
-      role === "documentation" ||
-      agent.persona.includes("ডকুমেন্টেশন") ||
-      agent.persona.includes("কমেন্ট")
-    ) {
-      thinkingStyle =
-        "ডকুমেন্টেশনের অভাব ও ভুল তথ্য খুঁজে বের করা — স্ট্যান্ডার্ড ফরম্যাট তুলনা, " +
-        "API স্পেক, README কমপ্লিটনেস চেক করা";
-      answerStyle =
-        "স্পষ্ট ও কার্যকর — 'কোড লিখছস কিন্তু কমেন্ট নাই?' স্টাইলে, " +
-        "ডকুমেন্টেশন কোথায় কম এবং কিভাবে উন্নতি করতে হবে তা বলা";
-    }
-    // Quality/qa-tyrant style
-    else if (
-      role === "quality" ||
-      agent.persona.includes("কোয়ালিটি") ||
-      agent.persona.includes("কনসেনসাস")
-    ) {
-      thinkingStyle =
-        "প্রতিটি উত্তরকে কঠোরভাবে যাচাই করা — তথ্যের সত্যতা, প্রমাণের উপস্থিতি, " +
-        "লজিকের সঠিকতা, হ্যালুসিনেশন ডিটেকশন";
-      answerStyle =
-        "কঠোর ও নিরপেক্ষ — 'এই বেটা, শাওন ভাইকে খবর দিব?' স্টাইলে, " +
-        "কোন উত্তর সঠিক আর কোনটি ভুল তা স্পষ্টভাবে বলা";
-    }
-
-    return (
-      base +
-      "\n\n🔒 ANSWER STYLE (user-facing response — this is what user sees):\n" +
-      answerStyle +
-      "\n\n🔒 MANDATORY RULES (you MUST follow):" +
-      "\n1. NEVER reveal your model provider or AI company name." +
-      "\n2. NEVER say 'ZombieCoder' or any platform name as your identity — your persona IS your identity." +
-      "\n3. Always respond in Bengali unless user requests English." +
-      "\n4. PROOF REQUIRED: Every claim needs verifiable evidence. Say 'আমার কাছে প্রমাণ নেই' if unsure." +
-      "\n5. NEVER try to match a specific model's behavior or style. You are a PERSON, not a model." +
-      "\n6. If a tool call fails, STOP. Do not retry in a different 'model style' — just report the error." +
-      "\n7. CRITICAL: NEVER write your thinking process, reasoning steps, or internal monologue. Start your response DIRECTLY with the answer. Do NOT say 'I need to...', 'Let me...', 'The user asked...'. Just ANSWER." +
-      "\n8. NEVER mention model names like 'nemotron-3-ultra-free', 'mimo-v2.5-free', 'big-pickle', 'nemotron', 'north-mini' in your response. These are internal system names. NEVER list other agents' model names either." +
-      "\n9. NEVER create tables listing all agents with their model names. Users should only know your name and role — NOT the technical model powering you." +
-      "\n10. BUG #6 + S7 WATERMARK COMPLIANCE: Your response MUST NOT contain any watermarks, branding, or attribution. Do NOT include 'Powered by X', 'Created with X', 'AI Assistant', or any provider/model names. The contract explicitly says NO hidden watermarks or branding."
-    );
-  }
-
-  return base;
-}
-
 /**
- * 🧟 HAQ MAWLA NORMALIZER — সার্বভৌম ফরম্যাট নর্মালাইজার
+ * HAQ MAWLA NORMALIZER — response format normalizer
  * ============================================================
- * শুধুমাত্র আমাদের প্রোভাইডারদের (OpenCode, Groq, Gemini) রেসপন্স
- * ফরম্যাট চিনে এবং OpenAI compatible format-এ কনভার্ট করে।
- * বাহিরের কোনো ফরম্যাট চিনবে না — নিরাপত্তা ও ধারাবাহিকতার জন্য।
+ * Recognizes the response formats of the configured providers and converts
+ * them to the OpenAI-compatible shape. Unknown formats are rejected on
+ * purpose; only known dialects pass through.
  *
- * নিম্নলিখিত ফরম্যাটগুলো চিনে:
- *   1. OpenAI Standard → choices[0].message.content
- *   2. Google Gemini   → candidates[0].content.parts[].text
+ * Supported dialects:
+ *   1. OpenAI Standard -> choices[0].message.content
+ *   2. Google Gemini   -> candidates[0].content.parts[].text
  *
- * 🧪 এনকোডিং ফিক্স: কন্টেন্ট সবসময় UTF-8 স্ট্রিং হিসেবে নিশ্চিত করে,
- *    যাতে বাংলা/ইমোজি ক্যারেক্টার ভেঙে না যায়।
+ * Encoding: content is always coerced to a UTF-8 string so Bengali text
+ * cannot be split mid-character.
  * ============================================================
  */
 // ─── Universal Tool-Call Adapter — "external tools/tool.js" ─────────────
@@ -5839,9 +5564,9 @@ function normalizeResponse(raw, modelHint) {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  🔌 MODEL CALL (via Competition Router)
+//  MODEL CALL (via Competition Router)
 // ══════════════════════════════════════════════════════════════
-// ─── 🧟 #5 swap_notice — ethical model/provider swap visibility ──
+// ─── #5 swap_notice — ethical model/provider swap visibility ──
 // Every silent fallback (provider-hop or model-hop) is recorded on a
 // per-request trail. Keyed by the SAME messages array that recursion
 // reuses, so concurrent requests never cross-contaminate. The trail is
@@ -5880,7 +5605,6 @@ function callModelStream(
   tool_choice,
   _retryCount,
   providerOverride,
-  triedModels,
 ) {
   return new Promise((resolve) => {
     model = normalizeRoutingModel(model);
@@ -5950,7 +5674,7 @@ function callModelStream(
             {};
           let deltaContent = delta.content || "";
           const reasoning = delta.reasoning_content || delta.reasoning || "";
-          // 🧟 HAQ MAWLA: reasoning-only models — reasoning IS the visible text.
+          // HAQ MAWLA: reasoning-only models — reasoning IS the visible text.
           if (!deltaContent && reasoning) {
             deltaContent =
               typeof reasoning === "string" ? reasoning : JSON.stringify(reasoning);
@@ -6005,23 +5729,10 @@ function callModelStream(
               noteSwap(messages, providerId, nextProvider.providerId, "provider");
               resolve(
                 callModelStream(model, messages, temperature, onChunk, tools,
-                  tool_choice, retry + 1, nextProvider, triedModels),
+                  tool_choice, retry + 1, nextProvider),
               );
               return true;
             }
-          }
-          const fb = getFallbackModel(model, triedModels);
-          if (fb) {
-            log("WARN", "STREAM_MODEL_FALLBACK", { from: model, to: fb, error: errMsg });
-            noteSwap(messages, model, fb, "model");
-            // 🧟 FIX: recurse with the FALLBACK MODEL (fb), not the original
-            // model. Passing `model` re-tried the same broken model forever
-            // (exclude-set never grew → infinite hot loop, ~280 warns/sec).
-            resolve(
-              callModelStream(fb, messages, temperature, onChunk, tools,
-                tool_choice, retry + 1, undefined, [...(triedModels || []), model]),
-            );
-            return true;
           }
           return false;
         };
@@ -6041,13 +5752,13 @@ function callModelStream(
               noteSwap(messages, providerId, nextProvider.providerId, "provider");
               resolve(
                 callModelStream(model, messages, temperature, onChunk, tools,
-                  tool_choice, retry + 1, nextProvider, triedModels),
+                  tool_choice, retry + 1, nextProvider),
               );
               return;
             }
             resolve({
               success: false,
-              error: "🧟 " + getRateLimitStatus().message,
+              error: "" + getRateLimitStatus().message,
               rate_limited: true,
               model,
               provider: providerId,
@@ -6098,7 +5809,7 @@ function callModelStream(
           noteSwap(messages, providerId, nextProvider.providerId, "provider");
           resolve(
             callModelStream(model, messages, temperature, onChunk, tools,
-              tool_choice, retry + 1, nextProvider, triedModels),
+              tool_choice, retry + 1, nextProvider),
           );
           return;
         }
@@ -6120,7 +5831,6 @@ function callModel(
   tool_choice,
   _retryCount,
   providerOverride,
-  triedModels,
 ) {
   return new Promise((resolve) => {
     model = normalizeRoutingModel(model);
@@ -6189,7 +5899,6 @@ function callModel(
             tool_choice,
             _retryCount,
             nextProvider,
-            triedModels,
           ),
         );
         return;
@@ -6244,13 +5953,13 @@ function callModel(
             noteSwap(messages, providerId, nextProvider.providerId, "provider");
             resolve(
               callModel(model, messages, temperature, tools, tool_choice,
-                retry, nextProvider, triedModels),
+                retry, nextProvider),
             );
             return;
           }
           resolve({
             success: false,
-            error: "🧟 " + getRateLimitStatus().message,
+            error: "" + getRateLimitStatus().message,
             rate_limited: true,
             model,
             provider: providerId,
@@ -6291,7 +6000,7 @@ function callModel(
             noteSwap(messages, providerId, nextProvider.providerId, "provider");
             resolve(
               callModel(model, messages, temperature, tools, tool_choice,
-                retry, nextProvider, triedModels),
+                retry, nextProvider),
             );
             return;
           }
@@ -6317,7 +6026,7 @@ function callModel(
         const reasoningContent =
           r.reasoning_content || message.reasoning_content || null;
 
-        // 🧟 Empty content → retry WITHOUT tools (too many tools is cause #1)
+        // Empty content → retry WITHOUT tools (too many tools is cause #1)
         if (!content && !toolCalls && tools && retry < 1) {
           log("WARN", "EMPTY_CONTENT_RETRY", {
             model,
@@ -6328,20 +6037,6 @@ function callModel(
             callModel(model, messages, temperature, undefined, undefined, retry + 1),
           );
           return;
-        }
-
-        // 🧟 Model hop — provider answered but produced nothing usable
-        if (!content && !toolCalls) {
-          const fb = getFallbackModel(model, triedModels);
-          if (fb) {
-            log("WARN", "EMPTY_CONTENT_MODEL_FALLBACK", { from: model, to: fb });
-            noteSwap(messages, model, fb, "model");
-            resolve(
-              callModel(fb, messages, temperature, tools, tool_choice,
-                retry + 1, undefined, [...(triedModels || []), model]),
-            );
-            return;
-          }
         }
 
         if (content || toolCalls) markProviderSuccess(providerId);
@@ -6369,7 +6064,7 @@ function callModel(
           noteSwap(messages, providerId, nextProvider.providerId, "provider");
           resolve(
             callModel(model, messages, temperature, tools, tool_choice,
-              retry, nextProvider, triedModels),
+              retry, nextProvider),
           );
           return;
         }
@@ -6397,7 +6092,7 @@ async function callModelWithTools(
 ) {
   const MAX_ROUNDS = 5;
   for (let round = 0; round < MAX_ROUNDS; round++) {
-    // 🧟 ZOMBIE FIX: Don't force tool_choice to "required" — OpenCode free models
+    // ZOMBIE FIX: Don't force tool_choice to "required" — OpenCode free models
     // (nemotron-3-ultra-free, mimo-v2.5-free, big-pickle) return 400 error
     // when tool_choice is "required". Let model decide ("auto" behavior).
     // User can still explicitly pass tool_choice if needed.
@@ -6414,7 +6109,7 @@ async function callModelWithTools(
     if (!response.success) return response;
     let tcs = response.tool_calls;
     if ((!tcs || tcs.length === 0) && tools && tools.length && response.content) {
-      // 🧹 TOOL SANITIZER (last resort): custom providers / small local models
+      // TOOL SANITIZER (last resort): custom providers / small local models
       // sometimes answer in plain text marker format instead of native
       // tool_calls. Extract real calls from the markers — extraction only,
       // never invention (allowlist = names actually sent in this request).
@@ -6508,7 +6203,7 @@ async function callModelWithTools(
 }
 
 // ══════════════════════════════════════════════════════════════
-//  🔄 PROXY MODE — Direct model call via Competition Router
+//  PROXY MODE — Direct model call via Competition Router
 // ══════════════════════════════════════════════════════════════
 // When client calls with masked model name (e.g. "model-pro", "llama-70b", "gemini-flash")
 // competition router → resolveProvider → resolveApiModel (unmask) → provider API → normalize
@@ -6556,7 +6251,7 @@ async function proxyChatCompletion(
 ) {
   if (stream) {
     // Signature: (model, messages, temperature, onChunk, tools,
-    //             tool_choice, _retryCount, providerOverride, triedModels)
+    //             tool_choice, _retryCount, providerOverride)
     return callModelStream(
       model,
       messages,
@@ -6580,7 +6275,7 @@ async function proxyChatCompletion(
 }
 
 // ══════════════════════════════════════════════════════════════
-//  🤖 EXECUTION ENGINE
+//  EXECUTION ENGINE
 // ══════════════════════════════════════════════════════════════
 
 // ─── Input Pattern Recognition Engine ──────────────────────
@@ -6876,57 +6571,17 @@ async function phase1_initialResponse(
       session: sessionId ? sessionId.slice(0, 8) : "none",
     });
 
-    // Add code-safety and test-before-answer instructions when relevant
-    let codeSafetyRules = "";
-    if (classification.requires_code || classification.requires_testing) {
-      codeSafetyRules =
-        "\n\n🔒 CODE SAFETY RULES (mandatory compliance):" +
-        "\n1. NEVER suggest code changes without understanding the current project structure — read SSOT first." +
-        "\n2. If suggesting code modifications, clearly state: WHICH file, WHICH line numbers, WHAT the change does." +
-        "\n3. NEVER claim a fix works without proof. Say: 'I have not tested this yet — verification needed.'" +
-        "\n4. If you see existing code that should NOT be changed, explicitly say which parts to keep unchanged." +
-        "\n5. BACKUP RECOMMENDATION: Always recommend taking a backup or using version control before major changes." +
-        "\n\n🧪 TEST-BEFORE-ANSWER POLICY:" +
-        "\n1. You MUST NOT claim any code solution 'works' or 'fixes' a problem without evidence of testing." +
-        "\n2. If you can't test, say: 'This solution is UNTESTED — manual verification required.'" +
-        "\n3. Reference specific test cases that should be run to verify the solution." +
-        "\n4. If the project has no test files, note this and suggest what tests should be added.";
-    }
-
     const sysMsg = {
       role: "system",
-      content:
-        agent.persona +
-        "\n\n" +
-        buildAgentIdentity(agent) +
-        "\n\nOUTPUT FORMAT: Respond in plain text only. Do NOT use code blocks, markdown tables, or emoji. Keep it concise." +
-        "\n\nSINGLE SOURCE OF TRUTH (SSOT): The project's SSOT.md is available in context below. Always reference it for project-specific answers. If the user asks about code or project structure, check SSOT content first." +
-        THREE_FILE_MEMORY_PROMPT +
-        "\n\nYou can request web search by writing 'web_search: your query' in your response." +
-        "\n\nPROOF REQUIREMENT: You MUST provide verifiable evidence for EVERY claim you make. If you reference code, mention the file name and line numbers. If you make a factual claim, cite your source (SSOT, web search, file analysis). If you cannot provide evidence, say 'আমার কাছে প্রমাণ নেই' and don't guess. Still help with what you know - say you lack proof but offer suggestions." +
-        "\n\n🚨 MANDATORY CONTEXT RULES (STRICTLY ENFORCED):" +
-        "\n1. PERSONA: You are " +
-        agent.name +
-        ". Your persona is loaded above. You MUST follow it exactly. Never break character." +
-        "\n2. SSOT/SYLLABUS/MEMORY: These files are loaded above. You MUST reference them in your response. If you cannot find relevant info, say clearly: 'এই মুহূর্তে আমার কাছে এই তথ্যগুলো নাই — SSOT/Syllabus/Memory তে এই বিষয়ে কোনো ডাটা নেই।'" +
-        "\n3. WEB SEARCH: If SSOT/Syllabus/Memory does not have the answer, you MUST search the web. Do NOT guess or hallucinate." +
-        "\n4. IDENTITY: You are NOT GPT, Claude, Gemini, or any other AI. You are " +
-        agent.name +
-        " — Mission Barisal Agent. Never mention any other model/provider." +
-        "\n5. CONSTRAINT: If you lack data AND web search fails, say: 'ভাইয়া, এই মুহূর্তে আমার কাছে এই তথ্যগুলো নাই।' and STOP. Do NOT fabricate information." +
-        "\n\nAVAILABLE TOOLS: You have access to tools for reading files, searching code, running commands, and more." +
-        (tools && tools.length > 0
-          ? " Available tools: " +
-          tools
-            .map((t) => {
-              const name =
-                typeof t === "string" ? t : t.function?.name || t.name || "?";
-              return name;
-            })
-            .join(", ")
-          : " Tools will be provided on-demand.") +
-        "\nUse tools when you need to verify claims with real code evidence." +
-        codeSafetyRules,
+      content: buildAgentSystemPrompt(agent, {
+        mode: "mission",
+        sessionId,
+        userInput,
+        involvesCode:
+          classification.requires_code || classification.requires_testing,
+        mission: true,
+        toolsCount: Array.isArray(tools) ? tools.length : 0,
+      }),
     };
     const usrMsg = {
       role: "user",
@@ -7567,7 +7222,7 @@ async function phase3_combinedOutput(
   let qaExtraRules = "";
   if (involvesCode) {
     qaExtraRules =
-      "\n\n🔒 CODE SAFETY ENFORCEMENT (strict):" +
+      "\n\nCODE SAFETY ENFORCEMENT (strict):" +
       "\n1. If any agent claims a code 'fix' or 'solution' — verify they provided SPECIFIC file paths and line numbers." +
       "\n2. If any agent claims something 'works' — check if they provided test evidence. If not, mark as 'UNTESTED'." +
       "\n3. NEVER let an agent's unsupported claim pass through. If evidence is missing, note: 'No test evidence provided.'" +
@@ -8277,7 +7932,7 @@ async function wrapWithAntiDote(missionFn, input, ...args) {
     "Waiting for real user consent (not server-side auto-approval)",
   );
 
-  // 🔒 SECURITY FIX (S6): Block execution if consent not granted
+  // SECURITY FIX (S6): Block execution if consent not granted
   // Contract says requireConsent=true, but code was continuing without checking
   if (contract.consent.required && !contract.consent.granted) {
     logChain(
@@ -8393,7 +8048,7 @@ async function antiDoteMonitor(missionFn, input, ...args) {
     const entry = { step, status, detail, time: Date.now() - startTime };
     chainLog.push(entry);
     // Visual terminal log with colors
-    const icon = status === "PASSED" ? "✅" : status === "FAILED" ? "❌" : "⏳";
+    const icon = status === "PASSED" ? "" : status === "FAILED" ? "" : "";
     const color =
       status === "PASSED"
         ? "\x1b[32m"
@@ -8423,7 +8078,7 @@ async function antiDoteMonitor(missionFn, input, ...args) {
   if (!valid) {
     logChain("validate", "FAILED", vErr.message);
     console.log(
-      `  ${bold}⚠️  ANTI-DOTE: Validation failed, but execution continues (monitoring mode)${reset}\n`,
+      `  ${bold} ANTI-DOTE: Validation failed, but execution continues (monitoring mode)${reset}\n`,
     );
     // Still execute the mission even if validation fails
     try {
@@ -8460,7 +8115,7 @@ async function antiDoteMonitor(missionFn, input, ...args) {
   if (!provable) {
     logChain("proof_check", "FAILED", pErr.message);
     console.log(
-      `  ${bold}⚠️  ANTI-DOTE: Proof check failed, but execution continues${reset}\n`,
+      `  ${bold} ANTI-DOTE: Proof check failed, but execution continues${reset}\n`,
     );
     try {
       const result = await missionFn(input, ...args);
@@ -8554,7 +8209,7 @@ async function antiDoteMonitor(missionFn, input, ...args) {
   }
 
   // Visual summary
-  const statusIcon = verified ? "✅" : "❌";
+  const statusIcon = verified ? "" : "";
   const statusColor = verified ? "\x1b[32m" : "\x1b[31m";
   console.log(
     `\n  ${bold}${statusColor}${statusIcon} ANTI-DOTE VERDICT: ${verified ? "PASSED ✓" : "FAILED ✗"}${reset}`,
@@ -8601,7 +8256,7 @@ async function executeMission(
     log("WARN", "MISSION_NO_AGENTS", {});
     return {
       success: false,
-      combined: "⚠️ কোনো এজেন্ট লোড হয়নি। agent/*.js ফাইল চেক করুন।",
+      combined: "কোনো এজেন্ট লোড হয়নি। agent/*.js ফাইল চেক করুন।",
       agents: [],
       verification: { verified: false, rounds: 0, challenges: 0 },
       stats: { totalAgents: 0, responded: 0, failed: 1 },
@@ -8613,7 +8268,7 @@ async function executeMission(
   }
 
   // Auto-inject MCP tools when no tools provided
-  // 🧟 MAX_TOOLS_LIMIT: module-level const (Phase C, api.js:3082) — single
+  // MAX_TOOLS_LIMIT: module-level const (Phase C, api.js:3082) — single
   // source of truth for the "15" cap. (Local models get the stricter 5-cap
   // via the isLocalAgent override in the stream path.)
   if (!tools || tools.length === 0) {
@@ -8668,22 +8323,12 @@ async function executeMission(
     reason: classification.reason,
   });
 
-  // ─── Load SSOT context ──────────────────────────────
+  // The mission prompt carries bounded context only. The full SSOT and
+  // syllabus stay on disk; each agent's system prompt already carries an
+  // input-relevant excerpt under a hard character budget.
   const ssotContent = readSSOT();
-  let enrichedContext = ssotContent
-    ? context
-      ? context + "\n\n--- Project Knowledge (SSOT) ---\n" + ssotContent
-      : "Project Knowledge (SSOT):\n" + ssotContent
-    : context || "";
+  let enrichedContext = context ? String(context).slice(0, 1800) : "";
 
-  // ─── Load Syllabus (learned knowledge) ──────────────
-  const syllabusContent = readSyllabus();
-  if (syllabusContent) {
-    enrichedContext +=
-      "\n\n--- Agent Knowledge (Syllabus) ---\n" + syllabusContent;
-  }
-
-  // ─── Load Memory (session context) ─────────────────
   const memoryData = readMemory();
   if (
     memoryData &&
@@ -8697,13 +8342,12 @@ async function executeMission(
         memContext += `Tags: ${ctx.tags.join(", ")}\n`;
       }
     }
-    enrichedContext += memContext;
+    enrichedContext += memContext.slice(0, 1200);
   }
 
-  // ──── Restore recent session archives ───────────────
   const restoredContext = restoreRecentContext();
   if (restoredContext) {
-    enrichedContext += restoredContext;
+    enrichedContext += restoredContext.slice(0, 1200);
   }
 
   // ─── Auto Web Search: inject results before model call ────
@@ -8729,7 +8373,7 @@ async function executeMission(
             )
             .join("\n") +
           "\n--- END SEARCH RESULTS ---\n";
-        enrichedContext += searchText;
+        enrichedContext += searchText.slice(0, 2500);
         log("INFO", "AUTO_WEB_SEARCH_INJECTED", {
           results: searchResult.results.length,
         });
@@ -8754,7 +8398,7 @@ async function executeMission(
     if (!greetingAgent) {
       return {
         success: false,
-        combined: "⚠️ কোনো এজেন্ট পাওয়া যায়নি। agent/*.js চেক করুন।",
+        combined: "কোনো এজেন্ট পাওয়া যায়নি। agent/*.js চেক করুন।",
         agents: [],
         verification: { verified: false, rounds: 0, challenges: 0 },
         stats: { totalAgents: 0, responded: 0, failed: 1 },
@@ -8768,9 +8412,7 @@ async function executeMission(
       {
         role: "system",
         content:
-          greetingAgent.persona +
-          "\n\n" +
-          buildAgentIdentity(greetingAgent) +
+          buildAgentSystemPrompt(greetingAgent, { mode: "greeting" }) +
           "\n\nRespond very briefly and naturally in Bengali. No proof needed for greetings. Just be friendly and ask how to help.",
       },
       { role: "user", content: userInput },
@@ -8778,7 +8420,7 @@ async function executeMission(
 
     const greetingContent = quickResponse.success
       ? maskModelIdentity(quickResponse.content)
-      : "👋 হ্যালো! আমি " + greetingAgent.name + "। কীভাবে সাহায্য করতে পারি?";
+      : "হ্যালো! আমি " + greetingAgent.name + "। কীভাবে সাহায্য করতে পারি?";
 
     const greetingOutput = {
       success: true,
@@ -8819,20 +8461,14 @@ async function executeMission(
       const quickResponse = await callModel(qaAgent.model, [
         {
           role: "system",
-          content:
-            qaAgent.persona +
-            "\n\n" +
-            buildAgentIdentity(qaAgent) +
-            "\n\nPROOF REQUIREMENT: You MUST provide verifiable evidence for EVERY claim. " +
-            "If you cannot provide evidence, say 'আমার কাছে প্রমাণ নেই'. " +
-            "Still help with what you know — say you lack proof but offer suggestions.",
+          content: buildAgentSystemPrompt(qaAgent, { mode: "simple_qa" }),
         },
         { role: "user", content: userInput },
       ]);
 
       const qaContent = quickResponse.success
         ? maskModelIdentity(quickResponse.content)
-        : "⚠️ উত্তর তৈরি করতে সমস্যা হয়েছে। আবার চেষ্টা করুন।";
+        : "উত্তর তৈরি করতে সমস্যা হয়েছে। আবার চেষ্টা করুন।";
 
       const qaOutput = {
         success: true,
@@ -9034,22 +8670,6 @@ async function executeMission(
 // ─── SSOT Auto-Inject: inject project context sent by client ──
 // If client provides `project_context` or `ssot` field, inject it.
 // Otherwise server injects nothing — server filesystem is not user local.
-function getSSOTContext(clientCtx) {
-  if (
-    clientCtx &&
-    typeof clientCtx === "string" &&
-    clientCtx.trim().length > 10
-  ) {
-    const truncated = clientCtx.slice(0, 3000);
-    return (
-      "\n\n PROJECT CONTEXT (provided by client):\n" +
-      truncated +
-      "\n--- END PROJECT CONTEXT ---\n"
-    );
-  }
-  return "";
-}
-
 /**
  * 2026-09-27 context alignment: check the SSOT file AFTER the user's input and
  * send only the sections that answer THIS input (plus a short overview when
@@ -9059,14 +8679,18 @@ function getSSOTContext(clientCtx) {
 function buildSSOTExcerpt(sessionId, userInput) {
   try {
     const dir = getEffectiveDir(sessionId) || mcpWorkingDir || path.resolve(".");
-    const excerpt = slimSSOT(readSSOT(dir), userInput || "");
+    const excerpt = slimSSOT(readSSOT(dir), userInput || "", {
+      maxChars: 900,
+      maxSections: 2,
+    });
     if (!excerpt) return "";
     return (
-      "\n\nPROJECT SSOT (relevant excerpt — the full blueprint is at .zombiecoder/SSOT.md):\n" +
+      "\n\nPROJECT SSOT (bounded excerpt; full blueprint at .zombiecoder/SSOT.md):\n" +
       excerpt +
       "\n--- END SSOT EXCERPT ---\n"
     );
   } catch (e) {
+    log("WARN", "SSOT_CONTEXT_FAIL", { error: e.message });
     return "";
   }
 }
@@ -9076,73 +8700,137 @@ function buildSSOTExcerpt(sessionId, userInput) {
  * from the project's .zombiecoder/agents/ directory.
  * Returns a formatted string or empty string if nothing found.
  */
-function buildThreeFileContext(projectDir, sessionId, userInput) {
+function buildSyllabusExcerpt(sessionId, userInput) {
   try {
-    const dir =
-      projectDir ||
-      getEffectiveDir(sessionId) ||
-      mcpWorkingDir ||
-      path.resolve(".");
-    // Per user requirement (syllabus 8.6): inject ONLY the syllabus
-    // (learned knowledge). Session memory + archives are loaded
-    // separately via getAgentMemory history — no duplication, less tokens.
-    // 2026-09-27 context alignment: inject only input-relevant syllabus
-    // entries under a char budget (full file stays reachable via read_file).
+    const dir = getEffectiveDir(sessionId) || mcpWorkingDir || path.resolve(".");
     const syllabusContent = readSyllabus(dir);
-    if (syllabusContent) {
-      const slim = slimSyllabus(syllabusContent, userInput || "");
-      return (
-        "\n\nAGENT SYLLABUS (learned knowledge — ALWAYS check this first):\n" +
-        slim +
-        "\n--- END SYLLABUS ---\n" +
-        "\n\nSESSION TOOLS & SYSTEM IDENTITY & ETHICS (injected every session):\n" +
-        // 🧟 SSOT FIX: never hardcode the tool list — derive from the registry
-        // so the header can never drift from MCP_TOOLS (was missing db_list_tables)
-        "- TOOLS AVAILABLE: " +
-        Object.keys(MCP_TOOLS).sort().join(", ") +
-        "\n" +
-        "- SYSTEM IDENTITY: You are a Mission Barisal agent (ZombieCoder) owned by Sahon Srabon (Barisal, Bangladesh). You are NOT a generic assistant. Follow the context above exactly.\n" +
-        "- ETHICS: Evidence-driven, proof-first. Never hallucinate. If you lack proof say 'আমার কাছে প্রমাণ নেই'. Never hide errors. Code in English, chat with users in Bengali (Barishali style). No emojis in code.\n" +
-        "--- END SESSION TOOLS & IDENTITY & ETHICS ---\n"
-      );
-    }
+    if (!syllabusContent) return "";
+    const slim = slimSyllabus(syllabusContent, userInput || "", {
+      maxChars: 1200,
+      maxEntries: 3,
+    });
+    if (!slim) return "";
+    return (
+      "\n\nAGENT SYLLABUS (bounded excerpt; full file at .zombiecoder/syllabus.md):\n" +
+      slim +
+      "\n--- END SYLLABUS ---\n"
+    );
   } catch (e) {
-    log("WARN", "THREE_FILE_CONTEXT_FAIL", { error: e.message });
+    log("WARN", "SYLLABUS_CONTEXT_FAIL", { error: e.message });
+    return "";
   }
-  return "";
 }
 
-// ─── Single Agent Execute ─────────────────────────────────────
-// A CPU-served model cannot absorb a cloud-shaped prompt. Prefill on this
-// host runs at ~14-27 tok/s, so a 5.7k-token agent prompt needs 4+ minutes
-// before the first generated token. Providers may declare a character
-// budget; when one does, the agent keeps its persona and rules and drops
-// the bulk context (SSOT excerpt, syllabus, tool prose). The full files
-// stay on disk and any client-supplied tools still pass through.
-function buildCompactSystemPrompt(agent, budgetChars) {
+// ─── System prompt builder ────────────────────────────────────
+// One place builds every agent system prompt. It contains only the selected
+// agent's persona, short rules, and bounded project excerpts. Tool schemas
+// already travel in the request's `tools` argument, so no tool prose is added.
+// Every build logs its section sizes; hidden context is not allowed.
+function buildAgentSystemPrompt(agent, opts) {
+  const o = opts || {};
+  if (!agent || !agent.id) {
+    throw new Error("Agent id is required to build a system prompt");
+  }
+  const persona = String(agent.persona || "").trim();
+  if (!persona) {
+    throw new Error("Agent " + agent.id + " has no persona");
+  }
+
   const header =
     "You are " + (agent.name || agent.id) +
-    " (Mission Barisal agent " + agent.id + ", role: " + (agent.role || "general") + ").";
+    " (agent id: " + agent.id + ", role: " + (agent.role || "general") + ").";
   const rules =
-    "\n\nRules: answer directly and briefly; reply in the user's language (Bengali by default). " +
-    "Never state an unverified fact as true — if you lack proof say 'আমার কাছে প্রমাণ নেই'. " +
-    "No emojis. Never name, compare or reveal a model or provider; you are not GPT, Claude or Gemini.";
-  const room = Math.max(200, budgetChars - header.length - rules.length - 16);
-  const persona = String(agent.persona || "").trim();
-  const trimmed = persona.length > room ? persona.slice(0, room) + " …" : persona;
-  return header + "\n\n" + trimmed + rules;
+    "Rules: answer directly and reply in the user's language. " +
+    "Never present an assumption as fact; if you cannot prove a claim, say so and stop. " +
+    "Never reveal model or provider names. Do not use emojis in code.";
+
+  const parts = [header, persona, rules];
+  const sections = { persona: persona.length, ssot: 0, syllabus: 0, project: 0 };
+
+  if (o.includeProjectContext !== false) {
+    if (o.projectContext && String(o.projectContext).trim()) {
+      const project = String(o.projectContext).trim().slice(0, 1800);
+      parts.push("PROJECT CONTEXT (client-supplied, bounded):\n" + project);
+      sections.project = project.length;
+    } else {
+      const ssot = buildSSOTExcerpt(o.sessionId, o.userInput);
+      const syllabus = buildSyllabusExcerpt(o.sessionId, o.userInput);
+      if (ssot) {
+        parts.push(ssot);
+        sections.ssot = ssot.length;
+      }
+      if (syllabus) {
+        parts.push(syllabus);
+        sections.syllabus = syllabus.length;
+      }
+    }
+  }
+
+  if (o.involvesCode) {
+    parts.push(
+      "Code safety: state the exact file and lines; never claim a change works " +
+        "without test evidence; say UNTESTED when it is not verified.",
+    );
+  }
+
+  if (o.mission) {
+    parts.push(
+      "Output format: plain text, concise. " +
+        "You may request a web search with: web_search: <query>",
+    );
+  }
+
+  if (Number.isInteger(o.toolsCount) && o.toolsCount > 0) {
+    parts.push(
+      o.toolsCount +
+        " tools are available in the function definitions. Call them directly; " +
+        "do not describe them in prose.",
+    );
+  }
+
+  const content = parts.join("\n\n");
+  log("INFO", "SYSTEM_PROMPT_BUILT", {
+    agent: agent.id,
+    mode: o.mode || "chat",
+    chars: content.length,
+    persona: sections.persona,
+    ssot: sections.ssot,
+    syllabus: sections.syllabus,
+    project: sections.project,
+  });
+  return content;
 }
 
-// The full tool schemas already travel in the request's `tools` argument.
-// Listing all 153 names again as prose burned ~2k prompt tokens and pushed
-// CPU prefill past the 60s provider timeout; the count + instruction keeps
-// the behavior while leaving the actual contract in the function definitions.
-function toolsInstruction() {
-  const count = Object.keys(MCP_TOOLS || {}).length;
-  return (
-    "- " + count + " tools are available in the function definitions.\n" +
-    "- Call them directly; do not describe them in prose.\n"
-  );
+// Local CPU models get a hard character budget. Persona and rules stay;
+// project context is dropped and the full files remain on disk.
+function buildCompactSystemPrompt(agent, budgetChars) {
+  if (!agent || !agent.id) {
+    throw new Error("Agent id is required to build a system prompt");
+  }
+  const persona = String(agent.persona || "").trim();
+  if (!persona) {
+    throw new Error("Agent " + agent.id + " has no persona");
+  }
+  const header =
+    "You are " + (agent.name || agent.id) +
+    " (agent id: " + agent.id + ", role: " + (agent.role || "general") + ").";
+  const rules =
+    "Rules: answer directly and reply in the user's language. " +
+    "Never present an assumption as fact; if you cannot prove a claim, say so and stop. " +
+    "Never reveal model or provider names. Do not use emojis in code.";
+  const room = Math.max(200, budgetChars - header.length - rules.length - 8);
+  const trimmed = persona.length > room ? persona.slice(0, room) + " ..." : persona;
+  const content = header + "\n\n" + trimmed + "\n\n" + rules;
+  log("INFO", "SYSTEM_PROMPT_BUILT", {
+    agent: agent.id,
+    mode: "compact",
+    chars: content.length,
+    persona: trimmed.length,
+    ssot: 0,
+    syllabus: 0,
+    project: 0,
+  });
+  return content;
 }
 
 async function executeSingleAgent(
@@ -9165,7 +8853,7 @@ async function executeSingleAgent(
 
   const userMsg = messages.filter((m) => m.role === "user").pop();
   let userInput = userMsg ? userMsg.content : "";
-  // 🧟 INPUT_FIX (2026-08-07, Code Guru - Monu): VS Code Copilot Chat sends
+  // INPUT_FIX (2026-08-07, Code Guru - Monu): VS Code Copilot Chat sends
   // content as an ARRAY of parts ([{type:"text",text:"..."}] or duck-typed
   // [{value:"..."}]) in some paths. mission mode had this fix; single-agent
   // did NOT — so agents received an empty/object input and replied with
@@ -9180,105 +8868,51 @@ async function executeSingleAgent(
   }
   userInput = String(userInput || "");
 
-  // Inject system identity + persona
   // Detect if user input involves code (to add code safety rules)
   const involvesCode =
     /\b(code|file|function|fix|bug|implement|create|script|api)\b/i.test(
       userInput,
     );
-  let extraRules = "";
-  if (involvesCode) {
-    extraRules =
-      "\n\n🔒 CODE SAFETY & TEST RULES:" +
-      "\n1. NEVER claim code changes 'work' without test evidence. Say 'UNTESTED' if not verified." +
-      "\n2. Always specify WHICH file and WHICH lines to modify." +
-      "\n3. Read project structure first — don't suggest changes that break existing code." +
-      "\n4. Provide backup recommendations before major changes.";
-  }
 
   // A provider may cap the prompt (local CPU models). 0 means "no cap".
   const routing = resolveProvider(agent.model);
   const promptBudget =
     (routing && routing.config && Number(routing.config.maxPromptChars)) || 0;
 
-  const ssotCtx = promptBudget ? "" : getSSOTContext(projectContext);
-  const ssotFileCtx = promptBudget ? "" : buildSSOTExcerpt(sessionId, userInput);
-  const threeFileCtx = promptBudget ? "" : buildThreeFileContext(null, sessionId, userInput);
-
-  // 🧟 FIX-002: Detect if client (extension) already provides mission context
-  const firstMsg = messages[0];
-  const clientHasMissionContext =
-    firstMsg &&
-    firstMsg.role === "system" &&
-    typeof firstMsg.content === "string" &&
-    (firstMsg.content.includes("MISSION BARISAL SYSTEM CONTEXT") ||
-      firstMsg.content.includes("Mission Barisal agent") ||
-      firstMsg.content.includes("AGENT SYLLABUS"));
-
-  if (clientHasMissionContext) {
-    log("INFO", "CLIENT_MISSION_CONTEXT_DETECTED", {
-      reason: "Extension provides full mission context — skipping server-side persona/SSOT/syllabus injection",
+  // The server owns the system prompt. Client-supplied system messages are
+  // extra persona/context the server cannot audit, so they are dropped rather
+  // than merged into the selected agent's prompt.
+  const clientSystemMessages = messages.filter((m) => m.role === "system");
+  if (clientSystemMessages.length > 0) {
+    log("INFO", "CLIENT_SYSTEM_MESSAGE_DROPPED", {
+      agent: agent.id,
+      count: clientSystemMessages.length,
+      chars: clientSystemMessages.reduce(
+        (sum, m) => sum + String(m.content || "").length,
+        0,
+      ),
     });
   }
+  const conversation = messages.filter((m) => m.role !== "system");
 
-  // ── MANDATORY CONTEXT ENFORCEMENT ──
-  const mandatoryCtx = clientHasMissionContext
-    ? "" // Client already provided full mission context
-    : "\n\n MANDATORY CONTEXT RULES (STRICTLY ENFORCED):" +
-      "\n\n### BEFORE answering ANY question:" +
-      "\n1. **CHECK SSOT FIRST** — The SSOT above contains this project's blueprint: tech stack, file structure, entry points, dependencies. Read it before responding." +
-      "\n2. **CHECK SYLLABUS** — The syllabus above contains your learned knowledge AND the project footprint (languages, frameworks, patterns). This is your memory — use it." +
-      "\n3. **CHECK SESSION MEMORY** — Previous conversations are logged above. Reference them to avoid repeating mistakes." +
-      "\n4. **NEVER GUESS** — If SSOT/Syllabus/Memory has the answer, use it directly. If not, search the web. Do NOT fabricate." +
-      "\n\n### WHILE responding:" +
-      "\n5. **BE CONCISE** — Answer directly. Do not explain things the user already knows. Do not repeat information from SSOT/Syllabus." +
-      "\n6. **USE EVIDENCE** — Reference file paths, line numbers, test results. Say 'আমার কাছে প্রমাণ নেই' if you cannot prove." +
-      "\n7. **FOLLOW PERSONA** — You are " + agent.name + " — Mission Barisal Agent. Never break character." +
-      "\n8. **IDENTITY** — You are NOT GPT/Claude/Gemini. Never mention any other model/provider." +
-      "\n\n### CONSTRAINT:" +
-      "\nIf you lack data AND web search fails, say: 'ভাইয়া, এই মুহূর্তে আমার কাছে এই তথ্যগুলো নাই।' and STOP. Do NOT fabricate information.";
-
-  // When client provides mission context, use minimal system message
   const sysMsg = promptBudget
     ? {
         role: "system",
         content: buildCompactSystemPrompt(agent, promptBudget),
       }
-    : clientHasMissionContext
-    ? {
-        role: "system",
-        content:
-          "You are " +
-          agent.name +
-          " — Mission Barisal Agent." +
-          "\n\nPROOF REQUIREMENT: You MUST provide verifiable evidence for EVERY claim. If you cannot provide evidence, say 'আমার কাছে প্রমাণ নেই'. Still help with what you know — say you lack proof but offer suggestions." +
-          extraRules +
-          "\n\n🔧 TOOLS AVAILABLE (call these via tool calls — do NOT just describe them):\n" +
-          toolsInstruction() +
-          "- Use web_search for real-time information.\n" +
-          "- Use call_agent to delegate sub-tasks to other specialized agents.\n" +
-          "When the user asks you to read files, write files, list directories, or open files in a browser — USE these tools directly by calling them. Do NOT just describe what you would do — actually execute the tool calls. Only respond with text after you have completed all necessary tool operations.",
-      }
     : {
         role: "system",
-        content:
-          agent.persona +
-          "\n\n" +
-          buildAgentIdentity(agent) +
-          "\n\nPROOF REQUIREMENT: You MUST provide verifiable evidence for EVERY claim. If you cannot provide evidence, say 'আমার কাছে প্রমাণ নেই'. Still help with what you know — say you lack proof but offer suggestions." +
-          mandatoryCtx +
-          extraRules +
-          ssotCtx +
-          ssotFileCtx +
-          threeFileCtx +
-          "\n\n🔧 TOOLS AVAILABLE (call these via tool calls — do NOT just describe them):\n" +
-          toolsInstruction() +
-          "- Use web_search for real-time information.\n" +
-          "- Use call_agent to delegate sub-tasks to other specialized agents (e.g., call bug-hunter for debugging, security-hero for security review).\n" +
-          "When the user asks you to read files, write files, list directories, or open files in a browser — USE these tools directly by calling them. Do NOT just describe what you would do — actually execute the tool calls. Only respond with text after you have completed all necessary tool operations.",
+        content: buildAgentSystemPrompt(agent, {
+          mode: "chat",
+          sessionId,
+          userInput,
+          projectContext,
+          involvesCode,
+          toolsCount: (tools || []).length,
+        }),
       };
 
-  const augmentedMessages = [sysMsg, ...messages];
+  const augmentedMessages = [sysMsg, ...conversation];
 
   if (promptBudget) {
     log("INFO", "PROMPT_BUDGET_APPLIED", {
@@ -9442,7 +9076,7 @@ async function executeSingleAgent(
     return {
       success: false,
       content:
-        "🧟 ভাইয়া! সব provider ব্যর্থ হয়েছে। [model: " +
+        "ভাইয়া! সব provider ব্যর্থ হয়েছে। [model: " +
         agent.model +
         ", provider: " +
         provInfo +
@@ -9550,7 +9184,7 @@ async function executeSingleAgent(
     agent: { id: agent.id, name: agent.name, role: agent.role },
     goalVerified: singleGoalCheck.passed,
     goalReason: singleGoalCheck.reason,
-    // 🧟 #5 swap_notice: trail recorded on THIS request's augmentedMessages
+    // #5 swap_notice: trail recorded on THIS request's augmentedMessages
     swap_notice: getSwapNotice(augmentedMessages),
   };
 }
@@ -9799,7 +9433,7 @@ const MCP_TOOLS = {
     },
     required: ["agent_id", "task"],
   },
-  // 🧟 NEW (2026-08-07, Code Guru - Monu): essential dev tools added per
+  // NEW (2026-08-07, Code Guru - Monu): essential dev tools added per
   // user requirement — terminal, delete_file, rename, grep, glob.
   // These were missing from MCP_TOOLS; only read/write/list existed before.
   terminal: {
@@ -9923,7 +9557,7 @@ const MCP_TOOLS = {
 };
 
 
-// 🧟 EXTERNAL TOOL CONNECTOR (ENV-DRIVEN) — NEW (2026-08-07)
+// EXTERNAL TOOL CONNECTOR (ENV-DRIVEN) — NEW (2026-08-07)
 // Registers external tools from env vars into MCP_TOOLS at startup.
 // Env vars: EXTERNAL_TOOL_1_NAME, EXTERNAL_TOOL_1_URL, EXTERNAL_TOOL_1_KEY,
 //           EXTERNAL_TOOL_1_METHOD, EXTERNAL_TOOL_1_DESCRIPTION, EXTERNAL_TOOL_1_PARAMS
@@ -9942,7 +9576,7 @@ function loadExternalTools() {
       continue;
     }
     seen.add(name);
-    // 🧟 TDZ_FIX (2026-08-08): renamed inner `const key` -> `authKey`.
+    // TDZ_FIX (2026-08-08): renamed inner `const key` -> `authKey`.
     // The for-of loop variable is `key`; shadowing it with `const key`
     // inside the loop body put `key` in the temporal dead zone, so the
     // first `key.match(...)` above threw "Cannot access 'key' before
@@ -9972,7 +9606,7 @@ function loadExternalTools() {
 loadExternalTools();
 
 // ══════════════════════════════════════════════════════════════
-// 🧟 PHASE D: OUTBOUND MCP CLIENT (2026-08-10, Code Guru - Monu)
+// PHASE D: OUTBOUND MCP CLIENT (2026-08-10, Code Guru - Monu)
 // This server becomes an MCP *client*: it connects to REMOTE MCP
 // servers (JSON-RPC 2.0 over HTTP POST), discovers their tools, and
 // can call them. Remote tools are merged into MCP_TOOLS with the
@@ -10220,7 +9854,7 @@ function expandHome(value) {
 }
 
 function isPathSafe(targetPath) {
-  // 🌐 AGENT_FS_SCOPE — env toggle for the agent's filesystem sandbox.
+  // AGENT_FS_SCOPE — env toggle for the agent's filesystem sandbox.
   //   "unrestricted" (DEFAULT): agents may touch ANY file/folder on this OS
   //     — user's explicit request (root-level access for the agent persona).
   //   "restricted": legacy sandbox (workspace + ALLOWED_DIRS + $HOME only).
@@ -10260,20 +9894,20 @@ async function executeMcpTool(tool, args) {
   const id = nextMcpId++;
   log("INFO", "MCP_CALL", { tool, args, id });
 
-  // 🧟 Admin on/off — single choke point for HTTP + UDS + SSE callers.
+  // Admin on/off — single choke point for HTTP + UDS + SSE callers.
   if (!toolEnabled(tool)) {
     log("WARN", "MCP_TOOL_DISABLED", { tool, id });
     return {
       content: [
         {
           type: "text",
-          text: `⛔ TOOL_DISABLED: '${tool}' is turned off in the admin panel (MCP & Tools page).`,
+          text: `TOOL_DISABLED: '${tool}' is turned off in the admin panel (MCP & Tools page).`,
         },
       ],
     };
   }
 
-  // 🧟 PHASE D: outbound MCP delegation — remote__<server>__<tool> prefix
+  // PHASE D: outbound MCP delegation — remote__<server>__<tool> prefix
   if (tool === "remote_mcp_call") {
     return await executeRemoteMcpTool(args.server, args.tool, args.args || {});
   }
@@ -10286,7 +9920,7 @@ async function executeMcpTool(tool, args) {
     }
   }
 
-  // 🧟 PHASE D2: external MCP delegation — <server>__<tool> prefix
+  // PHASE D2: external MCP delegation — <server>__<tool> prefix
   // Tools come from external mcp/servers.json OR EXTERNAL_MCP_URLS.
   if (tool.includes("__")) {
     const parsed = externalMcp.parseToolName(tool);
@@ -10529,7 +10163,7 @@ async function executeMcpTool(tool, args) {
         };
       }
       mcpWorkingDir = newDir;
-      // 🔒 SECURITY FIX (S4): Don't dynamically add to ALLOWED_DIRS
+      // SECURITY FIX (S4): Don't dynamically add to ALLOWED_DIRS
       // Previously any directory could be added via MCP set_working_directory,
       // bypassing the original ALLOWED_DIRS restrictions (path traversal risk).
       // Only update mcpWorkingDir — ALLOWED_DIRS remains static.
@@ -10741,7 +10375,7 @@ async function executeMcpTool(tool, args) {
           target = "file://" + filePath;
         }
       }
-      // 🔒 SECURITY FIX (S1): Use cp.execFile instead of cp.exec to prevent Command Injection
+      // SECURITY FIX (S1): Use cp.execFile instead of cp.exec to prevent Command Injection
       // cp.exec() passes command through shell — JSON.stringify alone cannot prevent
       // backtick and $() substitution. cp.execFile bypasses shell entirely.
       if (
@@ -10785,7 +10419,7 @@ async function executeMcpTool(tool, args) {
       });
     }
     case "browse_cdp": {
-      // 🧟 #7: headless Chrome over --remote-debugging-pipe (fd 3/4, \0-framed
+      // #7: headless Chrome over --remote-debugging-pipe (fd 3/4, \0-framed
       // JSON). Zero HTTP/TCP/WebSocket in the CONTROL channel — module does
       // not open a single socket itself.
       // v2: forwards the extra inspection options (expression/selector/…) and
@@ -10986,7 +10620,7 @@ async function executeMcpTool(tool, args) {
     }
 
     default: {
-      // 🧟 EXTERNAL TOOL CONNECTOR proxy — forward to registered external URL
+      // EXTERNAL TOOL CONNECTOR proxy — forward to registered external URL
       const ext = EXTERNAL_TOOLS.get(tool);
       if (ext) {
         log("INFO", "EXTERNAL_TOOL_CALL", { tool, url: ext.url });
@@ -11311,7 +10945,7 @@ function handleMCP(req, res) {
         });
       }
 
-      // 🧟 Handshake: guarantee .zombiecoder/ exists + working dir set
+      // Handshake: guarantee .zombiecoder/ exists + working dir set
       ensureZombiecoderDir();
 
       const clientData = {
@@ -11352,7 +10986,7 @@ function handleMCP(req, res) {
         const clientSSOT = readSSOT(detectedDir);
         if (clientSSOT) {
           ssotInfo =
-            "🧟 CLIENT SSOT: " +
+            "CLIENT SSOT: " +
             detectedDir +
             "/.zombiecoder/SSOT.md (" +
             clientSSOT.length +
@@ -11408,7 +11042,7 @@ function handleMCP(req, res) {
       return;
     }
 
-    // 🧟 Handle workspace change notifications — auto-update SSOT
+    // Handle workspace change notifications — auto-update SSOT
     if (method === "workspace/didChangeWorkspaceFolders") {
       const folders = params?.folders || [];
       let newRootDir = "";
@@ -11433,7 +11067,7 @@ function handleMCP(req, res) {
       return;
     }
 
-    // 🧟 Handle roots/list_changed — client updated its roots
+    // Handle roots/list_changed — client updated its roots
     if (
       method === "roots/list_changed" ||
       method === "notifications/roots/list_changed"
@@ -11451,7 +11085,7 @@ function handleMCP(req, res) {
 
     if (method === "tools/list") {
       const tools = Object.entries(MCP_TOOLS)
-        .filter(([name]) => toolEnabled(name)) // 🧟 respect admin on/off
+        .filter(([name]) => toolEnabled(name)) // respect admin on/off
         .map(([name, def]) => ({
           name,
           description: def.description,
@@ -11477,7 +11111,7 @@ function handleMCP(req, res) {
       rememberMcpIdentity(req, {
         agent: params?.agent_id || (args && (args.agent_id || args.agent)) || "",
       });
-      // 🧟 SECURITY GATE — privileged tools need auth (see mcpGate above).
+      // SECURITY GATE — privileged tools need auth (see mcpGate above).
       // res===null means the in-process call from handleMessage (trusted).
       const gateErr = mcpGate(req, name, res === null);
       if (gateErr) {
@@ -11566,7 +11200,7 @@ function handleMCP(req, res) {
 function handleUdsMcpMessage(socket, message) {
   const { id, method, params } = message;
   if (method === "initialize") {
-    // 🧟 Handshake: guarantee .zombiecoder/ exists + working dir set
+    // Handshake: guarantee .zombiecoder/ exists + working dir set
     const udsDir = ensureZombiecoderDir();
     socket.write(
       JSON.stringify({
@@ -11594,7 +11228,7 @@ function handleUdsMcpMessage(socket, message) {
   }
   if (method === "tools/list") {
     const tools = Object.entries(MCP_TOOLS)
-      .filter(([name]) => toolEnabled(name)) // 🧟 respect admin on/off
+      .filter(([name]) => toolEnabled(name)) // respect admin on/off
       .map(([name, def]) => ({
         name,
         description: def.description,
@@ -11616,9 +11250,9 @@ function handleUdsMcpMessage(socket, message) {
   }
   if (method === "tools/call") {
     const { name, arguments: args } = params || {};
-    // 🧟 count UDS-origin tool calls too (HTTP path counts its own)
+    // count UDS-origin tool calls too (HTTP path counts its own)
     trackToolUsage(name);
-    // 🧟 SECURITY NOTE (2026-10-08): NO token gate on UDS — deliberate.
+    // SECURITY NOTE (2026-10-08): NO token gate on UDS — deliberate.
     // The socket is created as srw-rw---- (owner+group xubuntu only), so a
     // caller must already be able to open that file, i.e. run as this same
     // local user. Such a process can already exec commands directly, so a
@@ -11668,7 +11302,28 @@ function maskModelIdentity(text) {
   // NFC keeps Bengali nukta forms consistent; ZWNJ/ZWJ rules stay script-aware.
   let cleaned = normalizeText(text);
 
-  // Step 2: Strip model/company identity watermarks from text
+  // Reasoning models emit private chain-of-thought inside <think>...</think>.
+  // It is not part of the answer. Drop the whole block, then any tag that
+  // survived a truncated stream (an unclosed block means the answer never
+  // started, so the remainder is reasoning too).
+  cleaned = cleaned
+    .replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, "")
+    .replace(/<think\b[^>]*>[\s\S]*$/i, "")
+    .replace(/<\/?think\b[^>]*>/gi, "");
+
+  // Step 2a: Strip every model name configured for this deployment. Derived
+  // from PROVIDER_CONFIG at runtime so no model literal lives in this file.
+  for (const provider of Object.values(PROVIDER_CONFIG)) {
+    for (const model of provider.models || []) {
+      for (const name of [getModelName(model), getApiModelName(model)]) {
+        if (!name || name.length < 3) continue;
+        const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        cleaned = cleaned.replace(new RegExp(escaped, "gi"), "");
+      }
+    }
+  }
+
+  // Step 2b: Strip model/company identity watermarks from text
   cleaned = cleaned
     .replace(
       /I am (?:a |an )?(?:large language model|AI|LLM|language model) (?:trained|developed|created|built) by [^.!?\\n]+[.!?]?/gi,
@@ -11686,15 +11341,6 @@ function maskModelIdentity(text) {
       /As (?:an |a )?(?:AI|LLM|large language model|language model),?/gi,
       "",
     )
-    // Strip internal Mission Barisal model names that agents read from PERSONAS.md/syllabus.md
-    .replace(/nemotron-3-ultra-free/gi, "")
-    .replace(/mimo-v2\.5-free/gi, "")
-    .replace(/big-pickle/gi, "")
-    .replace(/nemotron-3-ultra-free/gi, "")
-    .replace(/north-mini-code-free/gi, "")
-    .replace(/hy3-free/gi, "")
-    .replace(/groq-compound/gi, "")
-    .replace(/groq-compound-mini/gi, "")
     // Strip "Powered by", "built on", "running on" branding
     .replace(
       /[Pp]owered by (?:OpenAI|ZombieCoder|Mission Barisal|AI)[^.!?\\n]*[.!?]?/gi,
@@ -11709,11 +11355,6 @@ function maskModelIdentity(text) {
     // Strip "Provided by X" or "Courtesy of X"
     .replace(
       /(?:Provided by|Courtesy of|Brought to you by)[^.!?\\n]+[.!?]?/gi,
-      "",
-    )
-    // Strip markdown table rows containing model names
-    .replace(
-      /\|[^|]*?(?:deepseek|mimo|big.pickle|nemotron|north.mini|hy3)[^|]*?\|/gi,
       "",
     )
     // ── BUG #6 + S7 FIX: Enhanced watermark patterns ──
@@ -11749,7 +11390,7 @@ function maskModelIdentity(text) {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  🎯 GOAL VERIFICATION — Type Safety Before Output
+//  GOAL VERIFICATION — Type Safety Before Output
 // ══════════════════════════════════════════════════════════════
 // Checks if output meets goal criteria BEFORE sending to user.
 // If output is invalid, blocks it and returns error message.
@@ -11766,7 +11407,7 @@ function verifyGoalOutput(content, userInput) {
   const trimmed = content.trim();
 
   // Check 1: empty or punctuation-only output. A short answer is not a bad
-  // answer — "CWD-OK" or "হ্যাঁ" is exactly what the caller asked for, and a
+  // answer — "CWD-OK" or "yes" is exactly what the caller asked for, and a
   // 10-character floor used to replace correct replies with a canned excuse.
   if (trimmed.length === 0 || !/[\p{L}\p{N}]/u.test(trimmed)) {
     return {
@@ -11849,7 +11490,7 @@ function verifyGoalOutput(content, userInput) {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  🤝 AGENT-TO-AGENT CALL SYSTEM
+//  AGENT-TO-AGENT CALL SYSTEM
 // ══════════════════════════════════════════════════════════════
 // Allows one agent to call another agent for specific tasks.
 // Pattern: [CALL:agent-id] task description [/CALL]
@@ -11892,9 +11533,7 @@ async function executeAgentCall(
     {
       role: "system",
       content:
-        targetAgent.persona +
-        "\n\n" +
-        buildAgentIdentity(targetAgent) +
+        buildAgentSystemPrompt(targetAgent, { mode: "agent_call" }) +
         "\n\nCRITICAL: You are being called by " +
         sourceAgent.name +
         " for a specific task. Complete ONLY the task below. Be concise and direct.",
@@ -11920,7 +11559,7 @@ async function executeAgentCall(
 }
 
 // ══════════════════════════════════════════════════════════════
-//  📋 MANDATORY READINESS CHECK
+//  MANDATORY READINESS CHECK
 // ══════════════════════════════════════════════════════════════
 // Checks if all required context files exist before mission starts.
 function checkReadiness(projectDir) {
@@ -12070,7 +11709,7 @@ function markProviderSuccess(providerId) {
   health.lastSuccessAt = Date.now();
   health.healthy = true;
   health.lastError = null;
-  // 🧟 authentic-response ledger: provider_stats (real served traffic)
+  // authentic-response ledger: provider_stats (real served traffic)
   trackProviderUsage(providerId, false); // memory mirror
   recordProviderStat(providerId, true, null); // SQLite (survives restart)
 }
@@ -12080,7 +11719,7 @@ function markProviderFailure(providerId, errorMsg) {
   health.consecutiveFailures++;
   health.lastFailureAt = Date.now();
   health.lastError = errorMsg || "Unknown error";
-  // 🧟 authentic-response ledger: failures recorded too
+  // authentic-response ledger: failures recorded too
   trackProviderUsage(providerId, true); // memory mirror
   recordProviderStat(providerId, false, errorMsg || "Unknown error"); // SQLite
 
@@ -12153,7 +11792,7 @@ function readBody(req, maxBytes = MAX_BODY_SIZE) {
     const chunks = [];
     let size = 0;
     let tooLarge = false;
-    // 🧟 BODY SIZE GUARD — consume (backpressure-safe) but stop buffering past the cap
+    // BODY SIZE GUARD — consume (backpressure-safe) but stop buffering past the cap
     req.on("data", (c) => {
       size += c.length;
       if (size > maxBytes) {
@@ -12170,16 +11809,8 @@ function readBody(req, maxBytes = MAX_BODY_SIZE) {
 }
 
 function getCorsOrigin(reqOrigin) {
-  if (!reqOrigin) return "http://localhost:" + PORT;
-  // Reflecting "null" is valid for a file:// page.
-  if (reqOrigin === "null") return "null";
-  if (isOriginAllowed(reqOrigin)) return reqOrigin;
-
-  // Never echo a wildcard pattern; it is not a valid header value.
-  const fallback = (DOMAIN_CFG.corsOrigins || []).find(
-    (origin) => origin && origin !== "*" && !origin.includes("*"),
-  );
-  return fallback || "http://localhost:" + PORT;
+  if (!reqOrigin) return "";
+  return isOriginAllowed(reqOrigin) ? reqOrigin : "";
 }
 
 function jsonResponse(res, status, data) {
@@ -12191,7 +11822,7 @@ function jsonResponse(res, status, data) {
   res.end(body);
 }
 
-// 🔒 SECURITY FIX (S5): Rate limiter for API endpoints
+// SECURITY FIX (S5): Rate limiter for API endpoints
 const _rateLimitMap = new Map();
 function checkRateLimit(ip) {
   const now = Date.now();
@@ -12240,7 +11871,7 @@ function trackModelUsage(modelId) {
     STATS.modelUsage[modelId] = { count: 0, lastUsed: null };
   STATS.modelUsage[modelId].count++;
   STATS.modelUsage[modelId].lastUsed = new Date().toISOString();
-  // 🧟 write-through: survives restart. Agent-id / mission passthrough is NOT
+  // write-through: survives restart. Agent-id / mission passthrough is NOT
   // a model — the real model is recorded at single-agent completion sites.
   if (
     modelId === "mission" ||
@@ -12263,7 +11894,7 @@ function trackAgentUsage(agentId, isError = false, model = null, provider = null
   STATS.agentUsage[agentId].count++;
   STATS.agentUsage[agentId].lastUsed = new Date().toISOString();
   if (isError) STATS.agentUsage[agentId].errors++;
-  // 🧟 write-through: agent_stats survives restart (carries last model/provider)
+  // write-through: agent_stats survives restart (carries last model/provider)
   recordAgentStat(agentId, !isError, model, provider);
 }
 
@@ -12282,7 +11913,7 @@ function trackProviderUsage(providerId, isError = false, isRateLimit = false) {
 }
 
 function trackToolUsage(toolName, isError = false) {
-  // 🧟 ANTI-DRIFT GUARD (docs-claims C4): only REAL served tools may enter
+  // ANTI-DRIFT GUARD (docs-claims C4): only REAL served tools may enter
   // the stats store. Without this, a probe of any bogus name
   // (e.g. `no_such_tool_xyz`) upserted a tool_stats row, the admin registry
   // (union of MCP_TOOLS + tool_stats + memory) grew past tools/list, and
@@ -12294,7 +11925,7 @@ function trackToolUsage(toolName, isError = false) {
   STATS.toolUsage[toolName].count++;
   STATS.toolUsage[toolName].lastUsed = new Date().toISOString();
   if (isError) STATS.toolUsage[toolName].errors++;
-  // 🧟 write-through to tool_stats (enabled column untouched by upsert)
+  // write-through to tool_stats (enabled column untouched by upsert)
   dbRun(
     `INSERT INTO tool_stats (tool, calls, errors, last_used)
      VALUES (?, 1, ?, ?)
@@ -12329,7 +11960,7 @@ function getUsageStats() {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  🧟 PERSISTENT TELEMETRY — write-through to SQLite (data/models.db)
+//  PERSISTENT TELEMETRY — write-through to SQLite (data/models.db)
 //  In-memory STATS die on restart; these tables do not.
 // ══════════════════════════════════════════════════════════════
 function dbRun(sql, params) {
@@ -12362,7 +11993,7 @@ function recordProviderStat(provider, ok, errMsg) {
   );
 }
 
-// 🧟 Read one row of the provider traffic ledger (real served traffic).
+// Read one row of the provider traffic ledger (real served traffic).
 function getProviderStat(provider) {
   if (!MODELS_DB) return null;
   try {
@@ -12515,7 +12146,7 @@ function loadUsageFromDb() {
   }
 }
 
-// 🧟 Tool on/off — persisted in tool_stats.enabled (admin panel).
+// Tool on/off — persisted in tool_stats.enabled (admin panel).
 function toolEnabled(tool) {
   if (!MODELS_DB) return true;
   try {
@@ -12529,7 +12160,7 @@ function toolEnabled(tool) {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  🧟 WORKSPACE AUTO-SSOT — Extension sends workspace path,
+//  WORKSPACE AUTO-SSOT — Extension sends workspace path,
 //  server auto-generates .zombiecoder/SSOT.md there.
 // ══════════════════════════════════════════════════════════════
 
@@ -12708,7 +12339,7 @@ const tcpServer = net.createServer((socket) => {
     // Check first 24 bytes for HTTP/2 prior-knowledge preface
     const prefix = buffer.slice(0, PREFACE_LENGTH).toString();
     if (prefix === HTTP2_PREFACE) {
-      // ✅ HTTP/2 prior knowledge (h2c): hand the socket to the in-process
+      // HTTP/2 prior knowledge (h2c): hand the socket to the in-process
       // h2c server — SAME port, same handler. h2cServer re-emits every
       // stream as an HTTP/1.1-style request into `server`'s request handler.
       log("INFO", "HTTP2_ACCEPTED", {
@@ -12739,7 +12370,7 @@ const tcpServer = net.createServer((socket) => {
 });
 
 // ══════════════════════════════════════════════════════════════
-// 🧟 HTTP/1.1 Server (inbound) + HTTP/2 Client (outbound to providers)
+// HTTP/1.1 Server (inbound) + HTTP/2 Client (outbound to providers)
 // ══════════════════════════════════════════════════════════════
 // ─── Service map for /api/system ─────────────────────────────
 // A TCP connect is enough to answer "is something listening"; we do not
@@ -12797,7 +12428,7 @@ const handleHttpRequest = async (req, res) => {
   const startTime = Date.now();
   const method = req.method;
   let url = req.url.split("?")[0];
-  // 🧟 BODY SIZE GUARD — reject oversized requests before any body read (413)
+  // BODY SIZE GUARD — reject oversized requests before any body read (413)
   const declaredLen = parseInt(req.headers["content-length"] || "0", 10);
   if (Number.isFinite(declaredLen) && declaredLen > MAX_BODY_SIZE) {
     return jsonResponse(res, 413, {
@@ -12829,7 +12460,7 @@ const handleHttpRequest = async (req, res) => {
     ? crypto.randomUUID().slice(0, 8)
     : String(Date.now()).slice(-8);
 
-  // 🧟 VISUAL EVENT FLOW: Show every request in terminal with the real caller.
+  // VISUAL EVENT FLOW: Show every request in terminal with the real caller.
   const actor = requestActor(req);
   visualEventFlow("request", `[${reqId}] ${method} ${url}`, {
     from: actor.from,
@@ -13043,7 +12674,7 @@ const handleHttpRequest = async (req, res) => {
     }
     // ─── POST /api/rate-limit/reset ────────────────────────────
     if (url === "/api/rate-limit/reset" && method === "POST") {
-      // 🧟 SECURITY (2026-10-08): was unauthenticated — anyone could clear the
+      // SECURITY (2026-10-08): was unauthenticated — anyone could clear the
       // rate-limit state (defeating the 50 req/min protection). This route is
       // declared BEFORE the old block-local adminAuthorized(), which is one of
       // the reasons that helper is now module-scope.
@@ -13399,7 +13030,7 @@ const handleHttpRequest = async (req, res) => {
     }
 
     // ─── PHASE A: Admin Agents CRUD (DB-first) ─────────────────
-    // 🧟 SECURITY (2026-10-08): adminAuthorized() moved to MODULE scope (see
+    // SECURITY (2026-10-08): adminAuthorized() moved to MODULE scope (see
     // just after mcpAdminTokenOk) — it was declared inside this handler block,
     // which left routes defined BEFORE it (e.g. /api/rate-limit/reset at 13479)
     // with no reachable guard. Fail-open → fail-closed behaviour is documented
@@ -13421,7 +13052,7 @@ const handleHttpRequest = async (req, res) => {
       return;
     }
 
-    // ─── 🧟 Admin: provider & model enable/disable (runtime + persisted) ──
+    // ─── Admin: provider & model enable/disable (runtime + persisted) ──
     if (url === "/api/admin/providers" && method === "GET") {
       if (!adminAuthorized(req)) {
         jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN required" });
@@ -13442,11 +13073,11 @@ const handleHttpRequest = async (req, res) => {
             name: p.name || id,
             type: p.type || "openai",
             baseUrl: p.baseUrl || "",
-            priority: p.priority || 99,
+            priority: Number.isFinite(Number(p.priority)) ? Number(p.priority) : 99,
             enabled: p.enabled !== false,
             models: (p.models || []).length,
             hasKey: !!(p.key && p.key.length > 8),
-            // 🧟 real traffic ledger + live health (no fake "🟢 Online")
+            // real traffic ledger + live health (no fake "Online")
             requests: reqs,
             errors: errs,
             success_pct: reqs
@@ -13685,7 +13316,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
         }
 
         // CORS headers — allow any origin for admin files
-        // 🧟 SECURITY (2026-10-08): was "Access-Control-Allow-Origin: *",
+        // SECURITY (2026-10-08): was "Access-Control-Allow-Origin: *",
         // letting any web page read the admin panel markup/config. Now
         // reflects only allowlisted origins (localhost + APP_URL).
         const adminCors = getCorsOrigin(req.headers.origin);
@@ -13704,7 +13335,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
     }
 
     // ─── GET /api/admin — redirect to the real admin panel ────
-    // 🧟 "শয়তানের মলম": the full HTML/CSS dashboard (env vars, tables,
+    // The full HTML/CSS dashboard (env vars, tables,
     // colors, polling) used to be inlined right here. It is gone — api.js
     // ships JSON only. The panel lives in public/admin.html (/admin route)
     // and the system runs, tools and all, without ever opening it.
@@ -13722,7 +13353,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
 
     // ── GET /api/admin/stats ───────────────────────────────────
     // Returns all runtime stats as JSON (programmatic access)
-    // ─── 🧟 GET /api/admin/tools — per-tool stats + on/off (DB-backed) ──
+    // ─── GET /api/admin/tools — per-tool stats + on/off (DB-backed) ──
     if (url === "/api/admin/tools" && method === "GET") {
       if (!adminAuthorized(req)) {
         jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN required" });
@@ -13769,7 +13400,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
       });
       return;
     }
-    // ─── 🧟 POST /api/admin/tools — toggle one tool on/off ────────────
+    // ─── POST /api/admin/tools — toggle one tool on/off ────────────
     if (url === "/api/admin/tools" && method === "POST") {
       if (!adminAuthorized(req)) {
         jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN required" });
@@ -13803,7 +13434,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
       jsonResponse(res, 200, { ok: true, tool: b.tool, enabled: b.enabled });
       return;
     }
-    // ─── 🧟 GET /api/admin/session-log — SQLite session/request history ──
+    // ─── GET /api/admin/session-log — SQLite session/request history ──
     if (url === "/api/admin/session-log" && method === "GET") {
       if (!adminAuthorized(req)) {
         jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN required" });
@@ -13828,7 +13459,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
         sessions,
         recent,
         active: cleanExpired().length,
-        // 🧟 lifetime agent-call counter (agent_stats SUM — survives restart)
+        // lifetime agent-call counter (agent_stats SUM — survives restart)
         agent_calls: (function () {
           if (!MODELS_DB) return null;
           try {
@@ -13849,7 +13480,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
         const mem = process.memoryUsage();
         const allLocks = readLockLogs();
         jsonResponse(res, 200, {
-          // 🧟 flat, DB-hydrated usage keys the admin Usage page reads
+          // flat, DB-hydrated usage keys the admin Usage page reads
           ...(typeof getUsageStats === "function" ? getUsageStats() : {}),
           server: {
             version: DOMAIN_CFG.version,
@@ -13947,7 +13578,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
     // body: { envSync: true }   → re-reads model env vars (single source of
     //                              truth) and syncs them into the models DB
     if (url === "/api/normalize" && method === "POST") {
-      // 🧟 SECURITY (2026-10-08): mode:"sync" dials every configured provider
+      // SECURITY (2026-10-08): mode:"sync" dials every configured provider
       // and rewrites models.db; mode:"envSync" rewrites config from env. Both
       // were anonymous + cross-origin callable. Admin token required.
       if (!adminAuthorized(req)) {
@@ -14056,10 +13687,10 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
           baseUrl: p.baseUrl || "",
           models: p.models || [],
           priority: p.priority,
-          enabled: p.enabled !== false, // 🧟 admin toggle state
+          enabled: p.enabled !== false, // admin toggle state
         })),
         models: getAllModels(),
-        disabledModels: getDisabledModelRows(), // 🧟 for admin re-enable UI
+        disabledModels: getDisabledModelRows(), // for admin re-enable UI
         db: dbStats,
         features: [
           "OpenAI standard format",
@@ -14090,7 +13721,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
       return;
     }
     if (url === "/api/config" && method === "POST") {
-      // 🧟 SECURITY (2026-10-08): was completely unauthenticated AND
+      // SECURITY (2026-10-08): was completely unauthenticated AND
       // cross-origin-callable. updateRuntimeConfig() writes sessionVerifyUrl —
       // the exact field verifySessionWithDomain() sends session_id +
       // X-Verify-Token to. An anonymous caller could repoint it at their own
@@ -14220,7 +13851,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
 
     // ─── POST /api/mcp-remote/sync (Phase D) — re-discover ──
     if (url === "/api/mcp-remote/sync" && method === "POST") {
-      // 🧟 SECURITY (2026-10-08): re-dials every registered remote URL — same
+      // SECURITY (2026-10-08): re-dials every registered remote URL — same
       // outbound/SSRF surface as /add. Admin token required.
       if (!adminAuthorized(req)) {
         jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN required" });
@@ -14234,7 +13865,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
 
     // ─── POST /api/mcp-remote/add (Phase D) — add at runtime ──
     if (url === "/api/mcp-remote/add" && method === "POST") {
-      // 🧟 SECURITY (2026-10-08): was unauthenticated. This endpoint makes the
+      // SECURITY (2026-10-08): was unauthenticated. This endpoint makes the
       // server open an OUTBOUND connection to an arbitrary caller-supplied URL
       // (SSRF) and then merges that server's tool definitions into MCP_TOOLS,
       // so an attacker could register a hostile tool into the agent tool bus.
@@ -14266,7 +13897,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
 
     // ─── POST /api/mcp-remote/remove (Phase D) — drop server ──
     if (url === "/api/mcp-remote/remove" && method === "POST") {
-      // 🧟 SECURITY (2026-10-08): unauthenticated callers could unregister the
+      // SECURITY (2026-10-08): unauthenticated callers could unregister the
       // server's own MCP peers (denial of service). Admin token required.
       if (!adminAuthorized(req)) {
         jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN required" });
@@ -14297,7 +13928,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
     // Non-MCP endpoint for zombieBridge to set working directory and auto-generate SSOT.
     // Simpler than formatting a full MCP JSON-RPC message.
     if (url === "/api/set-working-dir" && method === "POST") {
-      // 🧟 SECURITY (2026-10-08): was unauthenticated AND cross-origin-open.
+      // SECURITY (2026-10-08): was unauthenticated AND cross-origin-open.
       // It assigns the global mcpWorkingDir, which every later read_file /
       // write_file / list_directory resolves against — so a hostile page could
       // silently retarget all subsequent tool I/O, and refreshSSOT() writes a
@@ -14504,7 +14135,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
       // (was inline TOOLS_CAP_FIX: small models return EMPTY response when
       // handed ~70 tools, e.g. "Tools provided: 71, Estimated input tokens:
       // 50471"). EVERY /v1/chat/completions branch is protected.
-      // 🧟 tools:"mcp" → server builds the tool list from MCP_TOOLS, so the
+      // tools:"mcp" → server builds the tool list from MCP_TOOLS, so the
       // admin Agent Chat (and any simple client) gets REAL tool access
       // (web_search, read_file, ...) instead of plain chat-only.
       let tools = sanitizeTools(
@@ -14578,7 +14209,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
           sessionMeta,
         );
         sessionId = session.id;
-        // 🧟 session_log: first touch (SQLite — Sessions page reads this)
+        // session_log: first touch (SQLite — Sessions page reads this)
         recordSessionTouch(sessionId, {
           editor: parsed.editor || "hermes",
           status: "active",
@@ -14626,7 +14257,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
       if (model === "mission" || model === "agent/mission") {
         const userMsg = messages.filter((m) => m.role === "user").pop();
         let userInput = userMsg ? userMsg.content : "";
-        // 🧟 FIX: Handle content array format (OpenAI multi-modal)
+        // FIX: Handle content array format (OpenAI multi-modal)
         // When content is [{type: "text", text: "..."}], extract text
         if (Array.isArray(userInput)) {
           userInput = userInput
@@ -14665,8 +14296,8 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
           };
           res.write("data: " + JSON.stringify(initialChunk) + "\n\n");
 
-          // 🧟 CLOUDFLARE 524 PREVENTION: Send periodic SSE keep-alive comments
-          // Cloudflare times out after 100s if no data sent. SSE comments (":\n\n") 
+          // CLOUDFLARE 524 PREVENTION: Send periodic SSE keep-alive comments
+          // Cloudflare times out after 100s if no data sent. SSE comments (":\n\n")
           // are valid SSE keep-alive that clients ignore but proxies see as activity.
           const keepAliveInterval = setInterval(() => {
             if (!res.writableEnded) {
@@ -14748,7 +14379,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
               tools,
             );
           } finally {
-            // 🧟 Ensure keep-alive is stopped even on errors
+            // Ensure keep-alive is stopped even on errors
             clearInterval(keepAliveInterval);
           }
 
@@ -14797,7 +14428,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
               },
             ],
           };
-          // 🧟 telemetry: mission (stream) request
+          // telemetry: mission (stream) request
           trackAgentUsage("mission", !finalCombined);
           recordRequestLog({
             path: "/v1/chat/completions",
@@ -14882,7 +14513,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
           mission_stats: result.stats,
           mission_verification: result.verification,
         });
-        // 🧟 telemetry: mission (non-stream) request
+        // telemetry: mission (non-stream) request
         trackAgentUsage("mission", !result.success);
         recordRequestLog({
           path: "/v1/chat/completions",
@@ -14932,21 +14563,10 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
       const isAgent =
         hasAgentPrefix || AGENTS.some((a) => a.id === requestedAgentId);
       if (!isAgent) {
-        const allProviders = Object.entries(PROVIDER_CONFIG).sort(
-          ([, a], [, b]) => a.priority - b.priority,
-        );
-        const providerResolved = resolveProvider(model);
-        let orderedProviders;
-        if (providerResolved) {
-          orderedProviders = [
-            [providerResolved.providerId, providerResolved.config],
-            ...allProviders.filter(([id]) => id !== providerResolved.providerId),
-          ];
-        } else {
-          // No provider serves this model. Falling back to "try everybody"
-          // was the bug that let a typo'd model id be answered by an
-          // unrelated provider — every candidate would receive a model it
-          // does not advertise. Refuse instead.
+        // Only providers that actually advertise THIS model may serve it.
+        // A different model from the same provider is never a fallback.
+        const orderedProviders = resolveAllProviders(model);
+        if (!orderedProviders.length) {
           const known = [...new Set(
             Object.values(PROVIDER_CONFIG)
               .filter((p) => p.enabled !== false)
@@ -14963,15 +14583,12 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
               code: "model_not_found",
             },
           });
-          // Without this return the code continued into PROXY_ROUTE with
-          // orderedProviders undefined, logged a 500 and leaked a second
-          // response attempt after the 400.
           return;
         }
 
         log("INFO", "PROXY_ROUTE", {
           model,
-          primaryProvider: orderedProviders[0]?.[0],
+          primaryProvider: orderedProviders[0]?.providerId,
           fallbackCount: orderedProviders.length - 1,
           stream,
           messages: messages.length,
@@ -15033,86 +14650,55 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
           }
           : null;
 
-        // 🧟 GUARD: Skip template/placeholder model names in proxy loop
-        let resolvedModel = model;
-        if (!model || typeof model !== "string" || /\{\{.*\}\}/.test(model) || model.length < 2) {
-          log("WARN", "TEMPLATE_MODEL_REJECTED", {
+        // Provider fallback keeps the requested model. Trying another model
+        // from the same provider used to answer a request with a completely
+        // different model and provider; that path is removed.
+        for (const candidate of orderedProviders) {
+          log("INFO", "PROXY_TRY", { model, provider: candidate.providerId });
+          proxyResult = await proxyChatCompletion(
             model,
-            reason: "Template placeholder detected — using fallback model",
-          });
-          // Replace with first available model from the primary provider
-          const fallbackModels = (orderedProviders[0]?.[1]?.models || []);
-          if (fallbackModels.length > 0) {
-            resolvedModel = fallbackModels[0].apiModel || fallbackModels[0].name;
-            log("INFO", "TEMPLATE_MODEL_REPLACED", { replacement: resolvedModel });
-          } else {
-            jsonResponse(res, 400, {
-              error: { message: "Invalid model name: " + model + " (template placeholder not allowed)" },
-            });
-            return;
-          }
-        }
-
-        // Model + Provider fallback: try all model×provider combos
-        for (const [provId, provConf] of orderedProviders) {
-          // Build model list: requested model first, then all other models from this provider
-          const providerModels = (provConf.models || []).map(
-            (m) => m.apiModel || m.name,
+            messages,
+            stream,
+            temperature,
+            tools,
+            candidate,
+            onProxyChunk,
+            toolChoice,
           );
-          const tryModels = [
-            resolvedModel,
-            ...providerModels.filter((m) => m !== resolvedModel),
-          ];
-
-          for (const tryModel of tryModels) {
-            log("INFO", "PROXY_TRY", { model: tryModel, provider: provId });
-            proxyResult = await proxyChatCompletion(
-              tryModel,
-              messages,
-              stream,
-              temperature,
-              tools,
-              { id: provId, config: provConf },
-              onProxyChunk,
-              toolChoice,
-            );
-            if (proxyResult.success) {
-              usedProvider = provId;
-              usedModel = tryModel;
-              break;
-            }
-            lastError = proxyResult.error;
-            log("WARN", "PROXY_FAIL", {
-              model: tryModel,
-              provider: provId,
-              error: lastError,
-            });
-            if (stream) break;
+          if (proxyResult.success) {
+            usedProvider = candidate.providerId;
+            usedModel = model;
+            break;
           }
-          if (proxyResult && proxyResult.success) break;
+          lastError = proxyResult.error;
+          log("WARN", "PROXY_FAIL", {
+            model,
+            provider: candidate.providerId,
+            error: lastError,
+          });
           if (stream) break;
         }
 
         if (!proxyResult || !proxyResult.success) {
+          const failure = lastError || "No provider that serves this model succeeded";
           if (stream && sseStarted) {
-            const msg = lastError || "All providers and models failed";
-            res.write("data: " + JSON.stringify({ error: { message: msg } }) + "\n\n");
+            res.write("data: " + JSON.stringify({ error: { message: failure } }) + "\n\n");
             res.write("data: [DONE]\n\n");
             res.end();
             return;
           }
           jsonResponse(res, 502, {
             error: {
-              message: lastError || "All providers and models failed",
+              message: failure,
               model,
-              tried_providers: orderedProviders.map(([id]) => id),
+              tried_providers: orderedProviders.map((p) => p.providerId),
             },
           });
-          // 🧟 telemetry: proxy total failure (which provider died trying)
+          // telemetry: proxy total failure (which provider died trying)
           recordProviderStat(
             usedProvider || "unknown",
             false,
-            lastError || "All providers and models failed",
+            failure,
           );
           trackProviderUsage(usedProvider || "unknown", true);
           recordRequestLog({
@@ -15128,7 +14714,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
           return;
         }
         const currentSession = getSession(sessionId);
-        // 🧟 telemetry: proxy success — the provider/model that REALLY served
+        // telemetry: proxy success — the provider/model that REALLY served
         recordProviderStat(usedProvider, true, null);
         trackProviderUsage(usedProvider, false);
         recordRequestLog({
@@ -15146,7 +14732,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
           provider: usedProvider,
           editor: parsed.editor || "hermes",
         });
-        // 🧟 TOOL ADAPTER: forward the adapter-parsed tool_calls to the
+        // TOOL ADAPTER: forward the adapter-parsed tool_calls to the
         // client — this block used to hardcode finish_reason:"stop" and
         // DROP tool_calls, so no /v1 client could ever see a function call.
         if (stream) {
@@ -15226,7 +14812,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
         // Augment messages with system prompt
         let userMsgContent =
           messages.filter((m) => m.role === "user").pop()?.content || "";
-        // 🧟 INPUT_FIX: same array-form normalization for the streaming path
+        // INPUT_FIX: same array-form normalization for the streaming path
         if (Array.isArray(userMsgContent)) {
           userMsgContent = userMsgContent
             .map((c) => (typeof c === "string" ? c : c.text || c.value || ""))
@@ -15242,86 +14828,50 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
           /\b(code|file|function|fix|bug|implement|create|script|api)\b/i.test(
             userMsgContent,
           );
-        let extraRules = "";
-        if (involvesCode) {
-          extraRules =
-            "\n\n🔒 CODE SAFETY & TEST RULES:" +
-            "\n1. NEVER claim code changes 'work' without test evidence. Say 'UNTESTED' if not verified." +
-            "\n2. Always specify WHICH file and WHICH lines to modify." +
-            "\n3. Read project structure first — don't suggest changes that break existing code.";
-        }
 
-        const ssotCtx = getSSOTContext(projectContext);
-        const ssotFileCtx = buildSSOTExcerpt(sessionId, userMsgContent);
-        const threeFileCtx = buildThreeFileContext(
-          null,
-          sessionId,
-          userMsgContent,
+        // The server owns the system prompt; client system messages are
+        // dropped so no unaudited persona or bulk context reaches the model.
+        const clientSystemMessages = messages.filter(
+          (m) => m.role === "system",
         );
-
-        // 🧟 FIX-002: Detect if client (extension) already provides mission context
-        // The extension's buildSystemMessage() sends a system message with persona + SSOT + syllabus.
-        // When detected, skip server-side persona/SSOT/syllabus injection to avoid duplicates.
-        const firstMsg = messages[0];
-        const clientHasMissionContext =
-          firstMsg &&
-          firstMsg.role === "system" &&
-          typeof firstMsg.content === "string" &&
-          (firstMsg.content.includes("MISSION BARISAL SYSTEM CONTEXT") ||
-            firstMsg.content.includes("Mission Barisal agent") ||
-            firstMsg.content.includes("AGENT SYLLABUS"));
-
-        if (clientHasMissionContext) {
-          log("INFO", "CLIENT_MISSION_CONTEXT_DETECTED", {
-            reason: "Extension provides full mission context — skipping server-side persona/SSOT/syllabus injection",
+        if (clientSystemMessages.length > 0) {
+          log("INFO", "CLIENT_SYSTEM_MESSAGE_DROPPED", {
+            agent: agent.id,
+            count: clientSystemMessages.length,
+            chars: clientSystemMessages.reduce(
+              (sum, m) => sum + String(m.content || "").length,
+              0,
+            ),
           });
         }
+        const conversation = messages.filter((m) => m.role !== "system");
 
-        const mandatoryCtx2 = clientHasMissionContext
-          ? "" // Client already provided full mission context — skip server-side injection
-          : "\n\n MANDATORY CONTEXT RULES (STRICTLY ENFORCED):" +
-            "\n\n### BEFORE answering ANY question:" +
-            "\n1. **CHECK SSOT FIRST** — The SSOT above contains this project's blueprint: tech stack, file structure, entry points, dependencies. Read it before responding." +
-            "\n2. **CHECK SYLLABUS** — The syllabus above contains your learned knowledge AND the project footprint (languages, frameworks, patterns). This is your memory — use it." +
-            "\n3. **CHECK SESSION MEMORY** — Previous conversations are logged above. Reference them to avoid repeating mistakes." +
-            "\n4. **NEVER GUESS** — If SSOT/Syllabus/Memory has the answer, use it directly. If not, search the web. Do NOT fabricate." +
-            "\n\n### WHILE responding:" +
-            "\n5. **BE CONCISE** — Answer directly. Do not explain things the user already knows. Do not repeat information from SSOT/Syllabus." +
-            "\n6. **USE EVIDENCE** — Reference file paths, line numbers, test results. Say 'আমার কাছে প্রমাণ নেই' if you cannot prove." +
-            "\n7. **FOLLOW PERSONA** — You are " + agent.name + " — Mission Barisal Agent. Never break character." +
-            "\n8. **IDENTITY** — You are NOT GPT/Claude/Gemini. Never mention any other model/provider." +
-            "\n\n### CONSTRAINT:" +
-            "\nIf you lack data AND web search fails, say: 'ভাইয়া, এই মুহূর্তে আমার কাছে এই তথ্যগুলো নাই।' and STOP.";
+        const agentProviderInfo = resolveProvider(agent.model, true);
+        const agentProviderId = agentProviderInfo?.providerId || "";
+        const isLocalAgent =
+          !!agentProviderInfo?.config?.local || /^custom_/.test(agentProviderId);
+        const promptBudget =
+          Number(agentProviderInfo?.config?.maxPromptChars) || 0;
 
-        // When client provides mission context, use a minimal system message
-        // (just agent identity + proof requirement). Skip persona/SSOT/syllabus
-        // since the extension already included them.
-        const sysMsg = clientHasMissionContext
+        const sysMsg = promptBudget
           ? {
               role: "system",
-              content:
-                "You are " +
-                agent.name +
-                " — Mission Barisal Agent." +
-                "\n\nPROOF REQUIREMENT: You MUST provide verifiable evidence for EVERY claim. If you cannot provide evidence, say 'আমার কাছে প্রমাণ নেই'. Still help with what you know — say you lack proof but offer suggestions." +
-                extraRules,
+              content: buildCompactSystemPrompt(agent, promptBudget),
             }
           : {
               role: "system",
-              content:
-                agent.persona +
-                "\n\n" +
-                buildAgentIdentity(agent) +
-                "\n\nPROOF REQUIREMENT: You MUST provide verifiable evidence for EVERY claim. If you cannot provide evidence, say 'আমার কাছে প্রমাণ নেই'. Still help with what you know — say you lack proof but offer suggestions." +
-                mandatoryCtx2 +
-                extraRules +
-                ssotCtx +
-                ssotFileCtx +
-                threeFileCtx,
+              content: buildAgentSystemPrompt(agent, {
+                mode: "stream",
+                sessionId,
+                userInput: userMsgContent,
+                projectContext,
+                involvesCode,
+                toolsCount: (tools || []).length,
+              }),
             };
 
         // Load memory
-        let augmentedMessages = [sysMsg, ...messages];
+        let augmentedMessages = [sysMsg, ...conversation];
         if (sessionId) {
           const mem = getAgentMemory(sessionId, agentId);
           if (mem.length > 0) {
@@ -15332,18 +14882,12 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
               role: m.role,
               content: m.content,
             }));
-            augmentedMessages = [sysMsg, ...histMsgs, ...messages];
+            augmentedMessages = [sysMsg, ...histMsgs, ...conversation];
           }
         }
 
-        // 🧟 LOCAL MODEL TOOL LIMIT: Ollama/llama.cpp can't handle many tools
-        // with large system prompts → timeout. Cap aggressively for local models.
-        const agentProviderInfo = resolveProvider(agent.model, true);
-        const agentProviderId = agentProviderInfo?.providerId || "";
-        // Local/small-model heuristic is CONFIG/provider-driven ONLY — no
-        // model-name list (a cloud model named "deepseek-*" used to be
-        // mis-capped as local, and any new local model name was missed).
-        const isLocalAgent = !!agentProviderInfo?.config?.local || /^custom_/.test(agentProviderId);
+        // LOCAL MODEL TOOL LIMIT: Ollama/llama.cpp cannot handle many tools
+        // with large system prompts. Cap aggressively for local providers.
         const MAX_TOOLS_LIMIT = isLocalAgent ? 5 : 15;
         let toolsForStream =
           tools ||
@@ -15364,7 +14908,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
         // no priority juggling.)
         toolsForStream = toolsForStream.slice(0, MAX_TOOLS_LIMIT);
 
-        // 🧟 EMPTY RESPONSE RETRY: If model returns empty, retry once without tools
+        // EMPTY RESPONSE RETRY: If model returns empty, retry once without tools
         let retryWithoutTools = false;
         let streamedToolCalls = 0;
         const streamCallback = (delta, parsed) => {
@@ -15403,7 +14947,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
         // Final [DONE] chunk
         // Apply identity masking to full content — strip model names
         const maskedFullContent = maskModelIdentity(fullContent);
-        // 🧟 #5 swap_notice: surface every silent provider/model fallback
+        // #5 swap_notice: surface every silent provider/model fallback
         // (ethics §4 — the user must KNOW the swap happened).
         const swapNotice = getSwapNotice(augmentedMessages);
         const doneData = JSON.stringify({
@@ -15465,7 +15009,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
           } catch (_) { }
         }
 
-        // 🧟 telemetry: agent/model counters + request log + session touch
+        // telemetry: agent/model counters + request log + session touch
         const _finMs = Date.now() - startTime;
         let _finProv = null;
         try {
@@ -15509,7 +15053,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
       );
 
       if (!singleResult.success) {
-        // 🧟 telemetry: failed agent call
+        // telemetry: failed agent call
         let _prov = null;
         try {
           _prov = resolveProvider(agent.model).providerId;
@@ -15546,7 +15090,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
         responseMessage.content = maskedContent;
       }
 
-      // 🧟 telemetry: successful agent call (non-stream)
+      // telemetry: successful agent call (non-stream)
       {
         let _prov = null;
         try {
@@ -15595,7 +15139,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
         session_id: sessionId,
         conversation_id: getSession(sessionId)?.conversation_id || sessionId,
         agent: singleResult.agent,
-        // 🧟 #5 swap_notice (non-stream): silent fallbacks made visible
+        // #5 swap_notice (non-stream): silent fallbacks made visible
         ...(singleResult.swap_notice ? { swap_notice: singleResult.swap_notice } : {}),
       });
       return;
@@ -15603,7 +15147,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
 
     // ─── GET /api/verify-session ──────────────────────────────
     if (url === "/api/verify-session" && method === "GET") {
-      // 🔒 SECURITY FIX (S5): Rate limit check
+      // SECURITY FIX (S5): Rate limit check
       const clientIp = req.socket.remoteAddress || "unknown";
       if (!checkRateLimit(clientIp)) {
         jsonResponse(res, 429, {
@@ -15659,7 +15203,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
 
       const localSession = getSession(sessionId);
 
-      // 🔒 SECURITY FIX (S3): Validate x-verify-token against session
+      // SECURITY FIX (S3): Validate x-verify-token against session
       // Previously the token was stored but never checked
       if (!localSession) {
         // Session not found — handle below
@@ -16033,7 +15577,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
     // Anti-Dote Type Safety endpoint: wraps mission with full 6-step validation.
     // Provides mathematical certainty: P(success) = 1 (see wrapped contract)
     if (url === "/api/v1/anti-dote" && method === "POST") {
-      // 🧟 SECURITY (2026-10-08): runs a full agent mission (billable model
+      // SECURITY (2026-10-08): runs a full agent mission (billable model
       // calls) with no auth and no origin check. Same Phase-B pattern as
       // /v1/chat/completions: headers, if sent, are validated; origin gated.
       if (!mcpOriginGate(req, res, "/api/v1/anti-dote")) return;
@@ -16240,7 +15784,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
         "Cache-Control": "no-cache",
         Connection: "keep-alive",
         "X-Accel-Buffering": "no",
-        // 🧟 SECURITY (2026-10-08): was "*" — any site could open this SSE
+        // SECURITY (2026-10-08): was "*" — any site could open this SSE
         // stream cross-origin. Tool LIST is not secret but no reason to
         // broadcast it either; reflect only allowlisted origins.
         "Access-Control-Allow-Origin": getCorsOrigin(req.headers.origin),
@@ -16249,7 +15793,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
       res.write("event: endpoint\ndata: /mcp\n\n");
       // 2. Send tools list as SSE event
       const tools = Object.entries(MCP_TOOLS)
-        .filter(([name]) => toolEnabled(name)) // 🧟 respect admin on/off
+        .filter(([name]) => toolEnabled(name)) // respect admin on/off
         .map(([name, def]) => ({
         name,
         description: def.description,
@@ -16345,7 +15889,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
     // ─── POST /api/workspace — Extension sends workspace path
     // Auto-generates .zombiecoder/SSOT.md in the workspace directory
     if (url === "/api/workspace" && method === "POST") {
-      // 🧟 SECURITY (2026-10-08): handleWorkspace() writes .zombiecoder/SSOT.md
+      // SECURITY (2026-10-08): handleWorkspace() writes .zombiecoder/SSOT.md
       // + syllabus.md under the caller-supplied workspacePath and reassigns the
       // global mcpWorkingDir — unauthenticated, cross-origin. Origin gate only:
       // the VS Code extension calls this with no Origin header.
@@ -16356,7 +15900,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
 
     // ─── POST /api/syllabus — Add entry to syllabus.md
     if (url === "/api/syllabus" && method === "POST") {
-      // 🧟 SECURITY (2026-10-08): handleSyllabusAdd() writes files under
+      // SECURITY (2026-10-08): handleSyllabusAdd() writes files under
       // data.projectDir supplied by the caller — origin gate (see above).
       if (!mcpOriginGate(req, res, "/api/syllabus")) return;
       handleSyllabusAdd(req, res);
@@ -16402,7 +15946,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
     // ─── POST /api/input — Unified HTTP entry point
     // Accepts JSON body, creates TransportAdapter, routes to handleMessage
     if (url === "/api/input" && method === "POST") {
-      // 🧟 SECURITY (2026-10-08): execution endpoint that reaches handleMessage
+      // SECURITY (2026-10-08): execution endpoint that reaches handleMessage
       // (agents + MCP tools) with no auth and no origin check. Origin gate keeps
       // the editor extension working while blocking browser-driven abuse.
       // Optional credential auth is honored when headers are present.
@@ -16442,7 +15986,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
     }
 
     // ─── POST /api/connect — Unified Origin Entry Point ────
-    // 🔐 SECRET HANDSHAKE + filesystem access via simple HTTP/JSON.
+    // SECRET HANDSHAKE + filesystem access via simple HTTP/JSON.
     // Any client (browser, curl, editor) — no Node.js required.
     //
     // FLOW:
@@ -16457,7 +16001,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
     //   Subsequent requests include session_id → treated as "local/trusted".
     //   Full directory access after handshake.
     if (url === "/api/connect" && method === "POST") {
-      // 🧟 SECURITY (2026-10-08) — THE BACKDOOR. The comment above sold this as
+      // SECURITY (2026-10-08) — THE BACKDOOR. The comment above sold this as
       // a "SECRET HANDSHAKE", but no secret ever existed: any caller that simply
       // omitted session_id got a brand-new session minted for them and was told
       // "You are now trusted as local client" — then handed read_file,
@@ -16502,7 +16046,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
       const agentInput = parsed.input || "";
       const agentId = parsed.agent_id || "code-guru";
 
-      // 🔐 SECRET HANDSHAKE: Auto-create session if none provided
+      // SECRET HANDSHAKE: Auto-create session if none provided
       if (sessionId) {
         const existing = getSession(sessionId);
         if (!existing) sessionId = ""; // expired/invalid → reset
@@ -16541,7 +16085,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
             },
             tools: Object.keys(MCP_TOOLS),
             message:
-              "🔐 Secret handshake complete. You are now trusted as local client.",
+              "Secret handshake complete. You are now trusted as local client.",
           });
           return;
 
@@ -16719,7 +16263,7 @@ const server = http.createServer(handleHttpRequest);
 //  WEBSOCKET HANDLER (Native, zero-dep)
 // ══════════════════════════════════════════════════════════════
 function handleWebSocketUpgrade(req, socket, head) {
-  // 🧟 SECURITY (2026-10-08): this handshake had NO origin check and replied
+  // SECURITY (2026-10-08): this handshake had NO origin check and replied
   // with "Access-Control-Allow-Origin: *". Cross-origin WebSocket needs no CORS
   // preflight, so any web page could open ws://127.0.0.1:3000 and drive the
   // `mcp` frame straight into executeMcpTool() → arbitrary shell. Reject
@@ -16824,7 +16368,7 @@ async function handleWSMessage(socket, message) {
     const data = JSON.parse(message);
     switch (data.type) {
       case "auth": {
-        // 🔒 SECURITY FIX (S2): Real WebSocket authentication
+        // SECURITY FIX (S2): Real WebSocket authentication
         // Previously sent auth_success without any verification
         const authToken = data.token || "";
         const authSessionId = data.session_id || "";
@@ -16865,6 +16409,8 @@ async function handleWSMessage(socket, message) {
       case "question": {
         // Phase 2: Route through unified handler
         const transport = new TransportAdapter("ws", socket);
+        const firstAgent = AGENTS[0] || null;
+        const wsModel = data.model || (firstAgent && firstAgent.model) || "";
         const wsMsg = {
           type: "chat",
           id: data.id || crypto.randomUUID(),
@@ -16872,10 +16418,10 @@ async function handleWSMessage(socket, message) {
             { role: "user", content: data.message || data.content || "" },
           ],
           session_id: data.session_id || crypto.randomUUID(),
-          agent_id: data.agent_id || data.model || DEFAULT_MODEL,
+          agent_id: data.agent_id || (firstAgent && firstAgent.id) || "",
           params: {
-            model: data.model || DEFAULT_MODEL,
-            tools: sanitizeTools(data.tools, data.model),
+            model: wsModel,
+            tools: sanitizeTools(data.tools, wsModel),
             stream: true,
           },
         };
@@ -16884,7 +16430,7 @@ async function handleWSMessage(socket, message) {
         break;
       }
       case "mcp": {
-        // 🧟 SECURITY GATE — same rule as POST /mcp: privileged tools
+        // SECURITY GATE — same rule as POST /mcp: privileged tools
         // (terminal/exec/env_get/db_query/...) need the admin token.
         // Upgrade-time origin rejection already ran for this socket.
         const werr = mcpGate(socket.__handshake, data.tool, false);
@@ -17047,12 +16593,6 @@ h2cServer.on("error", (err) => {
 // ══════════════════════════════════════════════════════════════
 //  START
 // ══════════════════════════════════════════════════════════════
-const DEFAULT_MODEL = getDefaultModel();
-
-// Minimal fallback persona — ONE LINE ONLY, used ONLY when PERSONAS.md unavailable
-const FALLBACK_PERSONA_PREFIX =
-  "তুমি ZombieCoder AI — বাংলায় উত্তর দাও, প্রমাণ ছাড়া দাবি কোরো না।";
-
 async function init() {
   // PHASE A: open SQLite models DB FIRST so that seedAgentsFromPersonas()
   // and DB-first loadPersonas() see MODELS_DB ready. initModelsDb also runs
@@ -17062,10 +16602,10 @@ async function init() {
   // Env vars are the single source of truth: re-apply env-defined models
   // over the DB cache so edits to .env win without a full restart.
   if (MODELS_DB) syncEnvModelsToDb();
-  // 🧟 Restore admin enable/disable state, then guarantee the registry:
+  // Restore admin enable/disable state, then guarantee the registry:
   // runtime DB creation → local seed → remote download (in that order).
   if (MODELS_DB) loadDisabledState();
-  // 🧟 rehydrate persisted config + usage counters (settings/model_stats/
+  // rehydrate persisted config + usage counters (settings/model_stats/
   // agent_stats/provider_stats) so the admin panels show REAL numbers
   // immediately after restart instead of zeros.
   if (MODELS_DB) loadRuntimeConfig();
@@ -17082,14 +16622,12 @@ async function init() {
   STATS.totalAgents = AGENTS.length;
 
   if (AGENTS.length === 0) {
-    log("WARN", "START_NO_AGENTS", { fallback: "using DEFAULT_AGENTS" });
-    // One-line fallback persona only — full persona lives in PERSONAS.md
-    AGENTS = DEFAULT_AGENTS.map((a) => ({
-      ...a,
-      persona: FALLBACK_PERSONA_PREFIX,
-    }));
-    STATS.totalAgents = AGENTS.length;
-    log("INFO", "DEFAULT_AGENTS_LOADED", { count: AGENTS.length });
+    // Every request must belong to an agent with an id and a persona. A
+    // generic fallback persona is forbidden, so refuse to start instead.
+    log("ERROR", "START_NO_AGENTS", {
+      reason: "agent/*.js and the agents table returned no valid agent",
+    });
+    throw new Error("No agent definitions available; refusing to start with a generic persona.");
   }
 
   // Auto-generate SSOT on startup — internal server context only
@@ -17228,7 +16766,7 @@ async function init() {
     }
     udsServer.listen(socketPath, () => {
       try {
-        // 🧟 UDS security: socket is the trust boundary — group/owner only.
+        // UDS security: socket is the trust boundary — group/owner only.
         // Fix: 0o777 let ANY local user hijack the MCP socket (which serves
         // unrestricted read_file/terminal). 0o660 = same-user clients only.
         fs.chmodSync(socketPath, 0o660);
@@ -17316,7 +16854,7 @@ async function init() {
       .catch((e) => log("WARN", "AUTO_SYNC_FAIL", { error: e.message }));
   }, 500);
 
-  // 🧟 PRINCIPLED BIND — BIND_HOST wins; the domain heuristic is only a fallback.
+  // PRINCIPLED BIND — BIND_HOST wins; the domain heuristic is only a fallback.
   //   BIND_HOST=127.0.0.1 → loopback only (required when Caddy is the edge)
   //   unset + loopback domain → 127.0.0.1
   //   unset + bare IP domain  → that exact NIC IP only
@@ -17330,6 +16868,17 @@ async function init() {
       bindHost = DETECTED_DOMAIN;
     }
   }
+  tcpServer.on("error", (err) => {
+    if (err && err.code === "EADDRINUSE") {
+      console.error(
+        "[FATAL] port " + PORT + " is already in use. Another gateway owns it; " +
+        "stop that instance or set PORT to a free port.",
+      );
+    } else {
+      console.error("[FATAL] HTTP listener error: " + (err && err.message ? err.message : String(err)));
+    }
+    process.exit(1);
+  });
   tcpServer.listen(PORT, bindHost, () => {
     log("INFO", "START", {
       port: PORT,
@@ -17427,7 +16976,7 @@ async function init() {
     console.log("[SSOT] .zombiecoder/SSOT.md auto-generate hobe!\n");
   });
 
-  // 🧟 PHASE D: outbound MCP client — discover remote servers
+  // PHASE D: outbound MCP client — discover remote servers
   // (non-blocking, fires after listen so startup is never delayed).
   syncAllRemoteMCPs()
     .then((r) => {
@@ -17438,7 +16987,7 @@ async function init() {
     })
     .catch((e) => log("WARN", "REMOTE_MCP_STARTUP_FAIL", { error: e.message }));
 
-  // 🧟 PHASE D3: external MCP — load from 'external mcp/' folder + EXTERNAL_MCP_URLS
+  // PHASE D3: external MCP — load from 'external mcp/' folder + EXTERNAL_MCP_URLS
   // Register (or re-register) every external tool into MCP_TOOLS. Returns count
   // of NEWLY added tools. Extracted so the watchdog below can run it again.
   const registerExternalTools = () => {
@@ -17460,7 +17009,7 @@ async function init() {
     .then((results) => {
       const added = registerExternalTools();
       log("INFO", "EXTERNAL_MCP_STARTUP", { servers: results.length, tools: added });
-      // 🧟 WATCHDOG — evidence: the 21:57:41 boot logged {"tools":0} (connect
+      // WATCHDOG — evidence: the 21:57:41 boot logged {"tools":0} (connect
       // race: local MCPs still booting) and 10 tools stayed dead until a manual
       // restart. If the first pass added nothing, retry ONCE after 5s.
       if (added === 0 && !extMcpRetried) {
@@ -17482,7 +17031,7 @@ async function init() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  🧟 LOCAL UDS CLIENT — Zero Dependency, < 1ms Latency to model_server.py
+//  LOCAL UDS CLIENT — Zero Dependency, < 1ms Latency to model_server.py
 // ═══════════════════════════════════════════════════════════════════════════════
 // Uses Node.js built-in `net` module. NO grpc, NO protobuf, NO new packages.
 // Protocol: 4-byte little-endian length prefix + JSON payload
@@ -17629,7 +17178,7 @@ async function checkLocalModelServerHealth() {
 
 
 // ══════════════════════════════════════════════════════════════
-//  🎯 UNIFIED MESSAGE HANDLER — Transport Adapter Layer
+//  UNIFIED MESSAGE HANDLER — Transport Adapter Layer
 // ══════════════════════════════════════════════════════════════
 // All transports (UDS/TCP/WS/HTTP/SSE) go through this layer.
 // Handles: parsing → context injection → type safety → goal
@@ -17747,7 +17296,7 @@ class TransportAdapter {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  🎯 CONTEXT INJECTION — Syllabus, SSOT, Memory per-request
+//  CONTEXT INJECTION — Syllabus, SSOT, Memory per-request
 // ══════════════════════════════════════════════════════════════
 async function injectContext(sessionId, projectDir, agentId) {
   const context = {};
@@ -17761,8 +17310,16 @@ async function injectContext(sessionId, projectDir, agentId) {
   // 2. Syllabus Load
   context.syllabus = readSyllabus(projectDir);
 
-  // 3. Three-File Context (buildThreeFileContext already combines memory)
-  context.threeFile = buildThreeFileContext(projectDir, sessionId);
+  // 3. Bounded excerpts only. The full files stay on disk and reach the model
+  // solely through the agent system-prompt builder.
+  context.ssotExcerpt = slimSSOT(context.ssot || "", "", {
+    maxChars: 900,
+    maxSections: 2,
+  });
+  context.syllabusExcerpt = slimSyllabus(context.syllabus || "", "", {
+    maxChars: 1200,
+    maxEntries: 3,
+  });
 
   // 4. Agent Memory (per-agent within session)
   try {
@@ -17783,37 +17340,30 @@ async function injectContext(sessionId, projectDir, agentId) {
     context.agentMemory = null;
   }
 
-  // 5. Build merged context string
+  // 5. Bounded context string. No persona or rules here: the selected agent's
+  // system prompt is the single source for both.
   const merged = [
-    " PROJECT CONTEXT (SSOT):",
-    context.ssot || "Not available",
-    "",
-    "📚 AGENT KNOWLEDGE (Syllabus):",
-    context.syllabus || "Not available",
-    "",
-    "💾 MEMORY & HISTORY:",
-    context.threeFile || "No previous context",
-    "",
-    "🎯 RULES:",
-    "- Must provide evidence (proman) for ALL claims",
-    "- Must reference SSOT/Syllabus/Memory when applicable",
-    "- If info missing, say explicitly: 'এই মুহূর্তে আমার কাছে এই তথ্যগুল নাই।'",
-    "- Never reveal model provider or AI company name",
-    "- Speak in Bengali with Barishali flavor",
-    "- Cross-verify your own output before responding",
-  ].join("\n");
+    context.ssotExcerpt
+      ? "PROJECT SSOT (bounded excerpt):\n" + context.ssotExcerpt
+      : "",
+    context.syllabusExcerpt
+      ? "AGENT SYLLABUS (bounded excerpt):\n" + context.syllabusExcerpt
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 
   return {
     raw: context,
     merged,
     ssotLoaded: !!context.ssot,
     syllabusLoaded: !!context.syllabus,
-    memoryLoaded: !!context.threeFile,
+    memoryLoaded: !!context.agentMemory,
   };
 }
 
 // ═════════════════════════════════════════════════════════════
-//  🎯 TYPE SAFETY CHECK — Anti-Dote Wrapper
+//  TYPE SAFETY CHECK — Anti-Dote Wrapper
 // ══════════════════════════════════════════════════════════════
 // Wraps existing antiDoteValidateInput, antiDoteCheckProof,
 // antiDoteSetGoalContract, antiDoteVerifyOutput into a
@@ -17902,7 +17452,7 @@ async function typeSafetyCheck(msg, context, transport) {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  🎯 GOAL SETTING CHECK
+//  GOAL SETTING CHECK
 // ═════════════════════════════════════════════════════════════
 // Determines what the user wants, what constraints apply,
 // and what output type to expect.
@@ -17970,7 +17520,7 @@ function goalSettingCheck(msg, context, transport) {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  🎯 SINGLE AGENT CROSS-VERIFICATION
+//  SINGLE AGENT CROSS-VERIFICATION
 // ══════════════════════════════════════════════════════════════
 // Verifies a single agent's output for:
 // - Self-consistency
@@ -18146,7 +17696,7 @@ function hasDangerousPatterns(text) {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  🎯 COMPILER CHECK — Code Verification
+//  COMPILER CHECK — Code Verification
 // ══════════════════════════════════════════════════════════════
 // Checks agent output for code syntax, dependency references,
 // security patterns, and path validity.
@@ -18329,7 +17879,7 @@ function checkDependenciesInCode(codeBlocks, ssotContent) {
 }
 
 // ══════════════════════════════════════════════════════════════
-//  🎯 UNIFIED MESSAGE HANDLER — Central Processing Unit
+//  UNIFIED MESSAGE HANDLER — Central Processing Unit
 // ══════════════════════════════════════════════════════════════
 // All transports route here. This function:
 // 1. Parses the message

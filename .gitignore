@@ -8,6 +8,8 @@
 sahon.zip
 
 # ── রান-টাইম ডেটা (লোকালেই তৈরি হয়) ──
+.verify/
+
 # dist/ is a generated artifact and may contain a copied .env (secrets).
 dist/
 data/

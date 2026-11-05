@@ -50,21 +50,25 @@ run_user() {
   fi
 }
 
-NODE_BIN="$(command -v node 2>/dev/null || true)"
+# Node.js is a separate runtime owned by this project, not whatever `node`
+# happens to be on PATH. The installer writes it to $HOME/.local/node-v24 with
+# an official checksum; the gateway wrapper reads the same path.
+NODE_BIN=""
 node_major() {
   [ -n "$NODE_BIN" ] || { echo 0; return; }
   "$NODE_BIN" -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0
 }
 
 find_node_24() {
-  if [ -n "$NODE_BIN" ] && [ "$(node_major)" -ge 24 ]; then return 0; fi
   local candidate
+  if [ -x "$ROOT/runtime/node/bin/node" ] &&
+     "$ROOT/runtime/node/bin/node" -e 'process.exit(Number(process.versions.node.split(".")[0])>=24?0:1)' 2>/dev/null; then
+    NODE_BIN="$ROOT/runtime/node/bin/node"
+    return 0
+  fi
   for candidate in \
-    "$HOME"/.nvm/versions/node/v24*/bin/node \
-    "$HOME"/.local/node-v24*/bin/node \
-    "$HOME"/.local/node/bin/node \
-    /usr/local/bin/node \
-    /usr/bin/node; do
+    "$HOME"/.local/node-v24/bin/node \
+    "$HOME"/.local/node-v24.*/bin/node; do
     if [ -x "$candidate" ] && "$candidate" -e 'process.exit(Number(process.versions.node.split(".")[0])>=24?0:1)' 2>/dev/null; then
       NODE_BIN="$candidate"
       return 0
@@ -92,7 +96,8 @@ install_node() {
   ver="$(printf '%s\n' "$sums" | grep -oE 'node-v24\.[0-9]+\.[0-9]+-'"$arch"'\.tar\.xz' | head -1)"
   [ -n "$ver" ] || fail "no Node 24 tarball for $arch"
   local tmp expected
-  tmp="$(mktemp -d /tmp/opencode/node-install-XXXXXX)"
+  mkdir -p "$ROOT/.verify/install"
+  tmp="$(mktemp -d "$ROOT/.verify/install/node-XXXXXX")"
   curl -fsSL --max-time 300 "https://nodejs.org/dist/latest-v24.x/$ver" -o "$tmp/$ver" \
     || fail "Node.js download failed"
   expected="$(printf '%s\n' "$sums" | awk -v f="$ver" '$2==f{print $1}')"
@@ -189,11 +194,14 @@ install_caddy() {
 configure_caddy() {
   have caddy || { warn "Caddy not installed; skipping edge configuration"; return 0; }
   step "Rendering and validating Caddyfile"
-  local rendered="/tmp/opencode/Caddyfile.install.$$"
-  mkdir -p /tmp/opencode
+  local scratch="$ROOT/.verify/install"
+  local rendered validate_log
+  mkdir -p "$scratch"
+  rendered="$scratch/Caddyfile.$$"
+  validate_log="$scratch/caddy-validate.$$.log"
   "$NODE_BIN" scripts/caddy-render.js --out "$rendered" >/dev/null || fail "Caddyfile render failed"
-  caddy validate --config "$rendered" --adapter caddyfile >/tmp/opencode/caddy-validate.install.log 2>&1 \
-    || { tail -20 /tmp/opencode/caddy-validate.install.log >&2; fail "Caddyfile validation failed"; }
+  caddy validate --config "$rendered" --adapter caddyfile >"$validate_log" 2>&1 \
+    || { tail -20 "$validate_log" >&2; fail "Caddyfile validation failed"; }
   ok "Caddyfile valid"
   if [ "$SKIP_CADDY" = 1 ]; then
     warn "SKIP_CADDY: rendered file left at $rendered"
@@ -255,20 +263,12 @@ render_tools_manifest() {
   ok "tools manifest present"
 }
 
-bind_llama() {
-  if ! have curl; then warn "curl missing; skipping llama.cpp probe"; return 0; fi
-  if curl -fsS --max-time 2 http://127.0.0.1:9932/v1/models >/dev/null 2>&1; then
-    "$NODE_BIN" scripts/bind-llama-cpp.js || fail "llama.cpp bind failed"
-  else
-    warn "llama.cpp not reachable on 127.0.0.1:9932 (optional); agents keep their file fallback"
-  fi
-}
-
 build() {
   step "Building dist/"
   "$NODE_BIN" --check api.js || fail "api.js syntax check failed"
-  "$NODE_BIN" scripts/build.js >/tmp/opencode/build.install.log 2>&1 \
-    || { tail -20 /tmp/opencode/build.install.log >&2; fail "build failed"; }
+  mkdir -p "$ROOT/.verify/install"
+  "$NODE_BIN" scripts/build.js >"$ROOT/.verify/install/build.log" 2>&1 \
+    || { tail -20 "$ROOT/.verify/install/build.log" >&2; fail "build failed"; }
   [ -s dist/manifest.json ] || fail "dist/manifest.json missing"
   ok "build complete"
 }
@@ -280,7 +280,8 @@ start_stack() {
     bash scripts/install-service.sh --start || fail "systemd user start failed"
   else
     mkdir -p logs
-    nohup "$NODE_BIN" start.js --start-all -s >>logs/install-start.log 2>&1 &
+    # Same launcher as the systemd unit: dist/ runtime, project Node.js.
+    nohup bash scripts/zombiecoder-gateway.sh >>logs/install-start.log 2>&1 &
     ok "started in background (pid $!)"
   fi
   local health=""
@@ -293,45 +294,26 @@ start_stack() {
   ok "gateway healthy"
 }
 
-restart_stack() {
-  if [ "$SKIP_START" = 1 ]; then return 0; fi
-  step "Restarting after agent binding"
-  if have systemctl && systemctl --user is-enabled zombiecoder-gateway.service >/dev/null 2>&1; then
-    systemctl --user restart zombiecoder-gateway.service || fail "systemd restart failed"
-  else
-    warn "restart the gateway manually so it reloads the agent model rows"
-    return 0
-  fi
-  local api_port health=""
-  api_port="$("$NODE_BIN" -e 'const{loadEnv}=require("./lib/env");console.log(loadEnv({root:process.cwd()}).ports.api)' 2>/dev/null || echo 5050)"
-  for _ in $(seq 1 60); do
-    health="$(curl -fsS --max-time 1 "http://127.0.0.1:$api_port/health" 2>/dev/null || true)"
-    [ -n "$health" ] && break
-    sleep 1
-  done
-  [ -n "$health" ] || fail "gateway did not answer /health after restart"
-  ok "gateway restarted"
-}
-
 preflight() {
-  step "Preflight -- no files are written"
+  step "Preflight -- project files are not modified"
   find_node_24 || { warn "Node 24+ not found (full install can download it)"; }
   [ -f .env.example ] || fail ".env.example missing"
   [ -f "external mcp/servers.example.json" ] || fail "external mcp/servers.example.json missing"
   [ -f scripts/env-ensure.js ] || fail "scripts/env-ensure.js missing"
   [ -f scripts/build.js ] || fail "scripts/build.js missing"
   [ -f scripts/install-verify.sh ] || fail "scripts/install-verify.sh missing"
-  [ -x scripts/bind-llama-cpp.js ] || fail "scripts/bind-llama-cpp.js missing"
   [ -x scripts/install-verify.sh ] || warn "install-verify.sh has no exec bit; 'bash scripts/install-verify.sh' still works"
   bash -n scripts/install.sh || fail "install.sh syntax"
   bash -n scripts/install-service.sh || fail "install-service.sh syntax"
   "$NODE_BIN" --check scripts/env-ensure.js || fail "env-ensure.js syntax"
-  "$NODE_BIN" --check scripts/bind-llama-cpp.js || fail "bind-llama-cpp.js syntax"
   render_tools_manifest
   if have caddy && [ -f .env ]; then
-    "$NODE_BIN" scripts/caddy-render.js --out /tmp/opencode/Caddyfile.check >/dev/null \
-      && caddy validate --config /tmp/opencode/Caddyfile.check --adapter caddyfile >/dev/null 2>&1 \
-      || fail "Caddyfile does not validate"
+    local check_config="$ROOT/.verify/install/Caddyfile.check.$$"
+    mkdir -p "$ROOT/.verify/install"
+    "$NODE_BIN" scripts/caddy-render.js --out "$check_config" >/dev/null \
+      && caddy validate --config "$check_config" --adapter caddyfile >/dev/null 2>&1 \
+      || { rm -f "$check_config"; fail "Caddyfile does not validate"; }
+    rm -f "$check_config"
     ok "Caddyfile validates"
   fi
   echo "INSTALL_CHECK_OK installer=ok"
@@ -364,8 +346,6 @@ trust_local_ca
 render_tools_manifest
 build
 start_stack
-bind_llama
-restart_stack
 
 step "Live verification"
 if [ "$SKIP_START" = 1 ]; then
