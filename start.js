@@ -15,10 +15,23 @@ const readline = require("readline");
 const http = require("http");
 const net = require("net");
 const { execSync, spawn } = require("child_process");
+const systemInfo = require("./lib/system-info.js");
 
 const VERSION = "3.2.1"; // keep in sync with api.js /health version
 const CONFIG_DIR = path.join(os.homedir(), ".zombiecoder");
 const CONFIG_PATH = path.join(CONFIG_DIR, "config.json");
+
+// Project-owned state follows the code, never the shell's cwd. DATA_DIR and
+// DB_SQLITE_PATH may be absolute (tests, dist) and then win as usual.
+function projectDataDir() {
+  return path.resolve(__dirname, process.env.DATA_DIR || "./data");
+}
+function projectDbPath() {
+  return path.resolve(
+    __dirname,
+    process.env.DB_SQLITE_PATH || path.join(projectDataDir(), "models.db"),
+  );
+}
 
 // ─── Health-check / integration test endpoints ───
 const HEALTH_ENDPOINTS = [
@@ -39,7 +52,9 @@ const HEALTH_CHECK_DELAY_MS = 2000;
 // ---------------------------------------------------------------------------
 function loadEnv() {
   try {
-    const envPath = path.resolve(".env");
+    // Anchor to the project, not the shell's cwd. `node /path/to/start.js`
+    // from /tmp must still load the project's .env and data directory.
+    const envPath = path.join(__dirname, ".env");
     if (fs.existsSync(envPath)) {
       const content = fs.readFileSync(envPath, "utf8");
       let loaded = 0;
@@ -92,7 +107,7 @@ function detectEnvironment() {
     hostname: os.hostname(),
     username: process.env.USER || process.env.USERNAME || "unknown",
     cwd: process.cwd(),
-    dataDir: path.join(process.cwd(), "data"),
+    dataDir: projectDataDir(),
     configDir: CONFIG_DIR,
     timestamp: new Date().toISOString(),
   };
@@ -111,41 +126,62 @@ function detectEnvironment() {
 
 function ensureDatabase() {
   console.log("\n[DB] Ensuring database from environment variables...");
-  
-  // Create data directory if not exists
-  const dataDir = path.join(process.cwd(), "data");
+
+  const dataDir = projectDataDir();
   if (!fs.existsSync(dataDir)) {
     fs.mkdirSync(dataDir, { recursive: true });
     console.log("[DB] Created data directory:", dataDir);
   }
-  
-  // Verify models.db exists and has tables
-  const dbPath = path.join(dataDir, "models.db");
-  if (fs.existsSync(dbPath)) {
-    try {
-      const { DatabaseSync } = require("node:sqlite");
-      const db = new DatabaseSync(dbPath);
-      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(r => r.name);
-      const modelCount = db.prepare("SELECT COUNT(*) as c FROM models").get().c;
-      const agentCount = db.prepare("SELECT COUNT(*) as c FROM agents").get().c;
-      
-      console.log("[DB] models.db exists with tables:", tables.join(", "));
-      console.log(`[DB] Models: ${modelCount}, Agents: ${agentCount}`);
-      db.close();
-      return { exists: true, tables, modelCount, agentCount };
-    } catch (err) {
-      console.warn("[DB] Could not read existing models.db:", err.message);
-    }
-  } else {
-    console.log("[DB] models.db not found — will be created by api.js on startup");
+
+  const dbPath = projectDbPath();
+  if (!fs.existsSync(dbPath)) {
+    console.log("[DB] " + dbPath + " not found — api.js will create and seed it");
+    return { exists: false, dbPath };
   }
-  
-  return { exists: false };
+
+  try {
+    const { DatabaseSync } = require("node:sqlite");
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+    const check = db.prepare("PRAGMA quick_check").get();
+    const integrity = check ? String(Object.values(check)[0] || "") : "";
+    if (integrity.toLowerCase() !== "ok") {
+      throw new Error("integrity_check=" + (integrity || "empty"));
+    }
+    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(r => r.name);
+    const count = (table) =>
+      tables.includes(table) ? db.prepare(`SELECT COUNT(*) as c FROM ${table}`).get().c : 0;
+    const modelCount = count("models");
+    const agentCount = count("agents");
+    db.close();
+
+    console.log("[DB] " + dbPath + " tables: " + (tables.join(", ") || "(none)"));
+    console.log(`[DB] Models: ${modelCount}, Agents: ${agentCount}`);
+    if (!tables.includes("models") || !tables.includes("agents")) {
+      console.warn("[DB] schema incomplete — api.js will create the missing tables");
+    } else if (agentCount === 0) {
+      console.warn("[DB] agents table is empty — api.js will repair it from agent/*.js");
+    }
+    // Fresh clones and deleted rows: api.js owns the repair (INSERT OR IGNORE
+    // for agents, upsert for models) so the start script does not duplicate
+    // schema knowledge.
+    return { exists: true, tables, modelCount, agentCount, dbPath };
+  } catch (err) {
+    // A corrupt file can never be repaired by seeding. Move it aside once so
+    // api.js can create a clean database instead of failing on every boot.
+    const quarantine = dbPath + ".corrupt-" + Date.now();
+    try {
+      fs.renameSync(dbPath, quarantine);
+      console.warn("[DB] unreadable database moved to " + quarantine + " (" + err.message + ")");
+    } catch (moveErr) {
+      console.warn("[DB] unreadable database and could not move it:", moveErr.message);
+    }
+    return { exists: false, corrupt: true, dbPath };
+  }
 }
 
 function storeRuntimeConfig(envInfo) {
   try {
-    const dataDir = path.join(process.cwd(), "data");
+    const dataDir = projectDataDir();
     fs.mkdirSync(dataDir, { recursive: true });
     
     // Capture all relevant env vars for debugging/inspection
@@ -322,8 +358,8 @@ async function runHealthChecks(host, port) {
   
   console.log(`\n[HEALTH] Results: ${passed} passed, ${failed} failed`);
   
-  // Save health check results
-  const dataDir = path.join(process.cwd(), "data");
+  // Save health check results beside the project's real data directory.
+  const dataDir = projectDataDir();
   fs.mkdirSync(dataDir, { recursive: true });
   const resultPath = path.join(dataDir, "health-check-" + Date.now() + ".json");
   fs.writeFileSync(resultPath, JSON.stringify({
@@ -387,14 +423,14 @@ function configAll() {
 // START ALL — load env + config, then boot the main server
 // ---------------------------------------------------------------------------
 function cleanupOldProcesses() {
-  // Kill any previously-running server processes (api.js / hamba.js /
-  // php-broker-server.js) and free the target port BEFORE booting fresh.
+  // Kill any previously-running server processes (api.js / hamba.js)
+  // and free the target port BEFORE booting fresh.
   // Cross-platform: Windows uses netstat + taskkill; Linux/macOS uses
   // ss/ps + process.kill. The current process (this start.js) is never killed.
   const targetPort =
     Number(process.env.PORT) ||
     Number(process.env.SERVER_PORT) ||
-    3000;
+    5050;
   console.log(
     "[CLEANUP] Scanning for old server processes on port " +
       targetPort +
@@ -463,7 +499,7 @@ function cleanupOldProcesses() {
   if (process.platform !== "win32") {
     try {
       const out = execSync(
-        'ps -eo pid,args | grep -E "node .*(api|hamba|php-broker-server|note-store)\\.js" | grep -v grep',
+        'ps -eo pid,args | grep -E "node .*(api|hamba|note-store)\\.js" | grep -v grep',
         { encoding: "utf8" },
       );
       for (const line of String(out).split("\n")) {
@@ -475,12 +511,9 @@ function cleanupOldProcesses() {
         if (args.indexOf("start.js") !== -1) continue; // never kill this script
         // SAFETY: only kill server scripts from THIS project directory,
         // so a test run on an alternate port never kills a server that
-        // is running from a different directory (e.g. the live 3000).
+        // is running from a different directory (e.g. the live 5050).
         if (args.indexOf(__dirname) === -1) continue;
-        if (
-          args.indexOf("api.js") !== -1 ||
-          args.indexOf("php-broker-server.js") !== -1
-        ) {
+        if (args.indexOf("api.js") !== -1) {
           killPid(pid, false);
         }
       }
@@ -497,6 +530,163 @@ function cleanupOldProcesses() {
 
   console.log("[CLEANUP] Port " + targetPort + " is free. Starting fresh ...");
 }
+
+// ─── Local LLM bridge ─────────────────────────────────────────
+// The bridge is one hop in front of Ollama. Starting it here means the menu
+// option and `--start-all` bring up the same stack; a missing bridge used to
+// leave every agent fallback pointing at a dead port.
+let bridgeChild = null;
+let bridgeShuttingDown = false;
+
+function bridgePort() {
+  return parseInt(process.env.BRIDGE_PORT || "11435", 10);
+}
+
+function tcpOpen(port, host, timeoutMs) {
+  return new Promise((resolve) => {
+    const socket = net.connect({ port, host: host || "127.0.0.1" });
+    let settled = false;
+    const done = (value) => {
+      if (settled) return;
+      settled = true;
+      try { socket.destroy(); } catch (_) {}
+      resolve(value);
+    };
+    socket.setTimeout(timeoutMs || 400);
+    socket.once("connect", () => done(true));
+    socket.once("timeout", () => done(false));
+    socket.once("error", () => done(false));
+  });
+}
+
+function httpGetJson(port, pathName, timeoutMs) {
+  return new Promise((resolve) => {
+    const req = http.get(
+      { host: "127.0.0.1", port, path: pathName, timeout: timeoutMs || 1500 },
+      (res) => {
+        let buf = "";
+        res.on("data", (d) => (buf += d));
+        res.on("end", () => {
+          if (res.statusCode !== 200) {
+            resolve({ ok: false, status: res.statusCode, body: buf });
+            return;
+          }
+          try {
+            resolve({ ok: true, status: res.statusCode, json: JSON.parse(buf), body: buf });
+          } catch (_) {
+            resolve({ ok: false, status: res.statusCode, body: buf });
+          }
+        });
+      },
+    );
+    req.on("error", (e) => resolve({ ok: false, error: e.message }));
+    req.on("timeout", () => {
+      req.destroy();
+      resolve({ ok: false, error: "timeout" });
+    });
+  });
+}
+
+function waitFor(check, timeoutMs, intervalMs) {
+  return new Promise((resolve) => {
+    const deadline = Date.now() + timeoutMs;
+    const tick = async () => {
+      let value = false;
+      try {
+        value = await check();
+      } catch (_) {
+        value = false;
+      }
+      if (value) {
+        resolve(true);
+        return;
+      }
+      if (Date.now() >= deadline) {
+        resolve(false);
+        return;
+      }
+      setTimeout(tick, intervalMs || 300);
+    };
+    tick();
+  });
+}
+
+function stopBridge() {
+  if (bridgeShuttingDown) return;
+  bridgeShuttingDown = true;
+  if (!bridgeChild) return;
+  try {
+    bridgeChild.kill("SIGTERM");
+  } catch (_) {}
+  bridgeChild = null;
+}
+
+async function startBridge() {
+  const port = bridgePort();
+  const existing = await httpGetJson(port, "/health", 1200);
+  if (existing.ok) {
+    const model = existing.json && existing.json.model ? existing.json.model : "unknown";
+    console.log("[BRIDGE] already running on :" + port + " model=" + model + " — skip spawn");
+    return { started: false, port, model, healthy: true };
+  }
+  if (await tcpOpen(port, "127.0.0.1", 500)) {
+    console.warn(
+      "[BRIDGE] port " + port + " is occupied by a process that is not the bridge — skip spawn",
+    );
+    return { started: false, port, healthy: false, error: "port_occupied" };
+  }
+
+  const script = path.join(__dirname, "local-llm-bridge.js");
+  if (!fs.existsSync(script)) {
+    console.warn("[BRIDGE] script missing: " + script);
+    return { started: false, port, healthy: false, error: "script_missing" };
+  }
+
+  console.log("[BRIDGE] starting " + script + " on 127.0.0.1:" + port + " ...");
+  bridgeChild = spawn(process.execPath, [script], {
+    cwd: __dirname,
+    env: process.env,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const prefix = (chunk) => {
+    const text = chunk.toString();
+    for (const line of text.split(/\r?\n/)) {
+      if (line.trim()) process.stdout.write("[BRIDGE] " + line + "\n");
+    }
+  };
+  if (bridgeChild.stdout) bridgeChild.stdout.on("data", prefix);
+  if (bridgeChild.stderr) bridgeChild.stderr.on("data", prefix);
+  bridgeChild.on("exit", (code, signal) => {
+    if (!bridgeShuttingDown) {
+      console.warn("[BRIDGE] exited code=" + code + " signal=" + (signal || "none"));
+    }
+    bridgeChild = null;
+  });
+
+  const ready = await waitFor(async () => {
+    const r = await httpGetJson(port, "/health", 900);
+    return r.ok && r.json && r.json.upstream && r.json.upstream.ready === true;
+  }, 15000, 350);
+
+  if (!ready) {
+    console.warn("[BRIDGE] did not become healthy within 15s — check BRIDGE_OLLAMA_URL");
+    return { started: true, port, healthy: false };
+  }
+  const health = await httpGetJson(port, "/health", 1200);
+  const model = health.json && health.json.model ? health.json.model : "unknown";
+  console.log("[BRIDGE] healthy on :" + port + " model=" + model);
+  return { started: true, port, model, healthy: true };
+}
+
+process.on("exit", stopBridge);
+process.on("SIGINT", () => {
+  stopBridge();
+  process.exit(0);
+});
+process.on("SIGTERM", () => {
+  stopBridge();
+  process.exit(0);
+});
 
 function storeModels() {
   // Capture provider/model configuration from environment variables and
@@ -537,43 +727,6 @@ function storeModels() {
   }
 }
 
-function startBroker() {
-  // Spawn the PHP broker server (php-broker-server.js) alongside the
-  // sarver. It reads BROKER_PORT / FRONTEND_DIR / brokerUrl from the
-  // already-loaded process.env (loaded from .env in startAll).
-  const brokerPath = path.join(__dirname, "external tools", "php-broker-server.js");
-  if (!fs.existsSync(brokerPath)) {
-    console.warn("[BROKER] php-broker-server.js not found at:", brokerPath);
-    return;
-  }
-  // Idempotent, same rule as api.js BROKER_AUTORUN: the port may already be
-  // owned by a broker from ANOTHER project (cleanup only kills this
-  // directory), and spawning anyway dies with EADDRINUSE on boot.
-  const brokerPort = parseInt(process.env.BROKER_PORT || "9998", 10);
-  const sock = net.connect(brokerPort, "127.0.0.1");
-  let connected = false;
-  sock.once("connect", () => {
-    connected = true;
-    sock.destroy();
-    console.log("[BROKER] already running on :" + brokerPort + " — skip spawn");
-  });
-  sock.once("error", () => {
-    if (connected) return;
-    const broker = spawn(process.execPath, [brokerPath], {
-      stdio: "inherit",
-      env: process.env,
-    });
-    broker.on("error", (err) => console.error("[BROKER] spawn error:", err.message));
-    broker.on("exit", (code, signal) => {
-      console.log("[BROKER] exited code=" + code + " signal=" + signal);
-    });
-    console.log("[BROKER] spawned php-broker-server.js (pid " + broker.pid + ")");
-  });
-  sock.setTimeout(1500, () => {
-    if (!connected) sock.destroy();
-  });
-}
-
 async function startAll() {
   console.log("\n" + "=".repeat(60));
   console.log("  Mission Barisal v" + VERSION + " — START ALL (Full Bootstrap)");
@@ -584,6 +737,26 @@ async function startAll() {
   
   // 2. Detect environment
   const envInfo = detectEnvironment();
+
+  // 2b. Host details are printed once, before any child starts. The API
+  // exposes the same facts at /api/system for clients that cannot read stdout.
+  try {
+    const host = systemInfo.collectSystemInfo();
+    console.log("[SYSTEM] " + systemInfo.formatSummary(host));
+    console.log(
+      "[SYSTEM] mem=" + host.memory.free_gb + "/" + host.memory.total_gb +
+      " GB free, disk=" + host.disk.free_gb + "/" + host.disk.total_gb +
+      " GB free, root=" + host.root,
+    );
+    console.log(
+      "[SYSTEM] ports api=" + (process.env.PORT || "5050") +
+      " grpc=" + (process.env.GRPC_PORT || "5052") +
+      " bridge=" + (process.env.BRIDGE_PORT || "11435") +
+      " mcp=3110-3123",
+    );
+  } catch (err) {
+    console.warn("[SYSTEM] host details unavailable:", err.message);
+  }
   
   // 3. Ensure database exists (will be created by api.js if not present)
   const dbStatus = ensureDatabase();
@@ -592,10 +765,10 @@ async function startAll() {
   storeRuntimeConfig(envInfo);
   
   // ── Final required conditions (user-specified) ──
-  // PORT must be 3000 and APP_URL must point at the public app URL.
+  // PORT defaults to 5050 and APP_URL must point at the public app URL.
   // Enforced even if missing from .env so the server always boots on the
   // expected port / URL.
-  process.env.PORT = process.env.PORT || "3000";
+  process.env.PORT = process.env.PORT || "5050";
   // APP_URL: derive from DEPLOY_DOMAIN if not set, don't hardcode
   if (!process.env.APP_URL) {
     const domain = process.env.DEPLOY_DOMAIN || "localhost";
@@ -626,10 +799,17 @@ async function startAll() {
   // 6. Cleanup old processes
   console.log("[START ALL] Cleaning up old server processes ...");
   cleanupOldProcesses();
+
+  // 6b. Local LLM bridge — idempotent. A bridge already on the port is
+  // reused, never killed; a foreign listener is reported and left alone.
+  try {
+    await startBridge();
+  } catch (err) {
+    console.warn("[BRIDGE] startup warning:", err.message);
+  }
   
   // 7. Boot the server
   console.log("[START ALL] Booting Mission Barisal v" + VERSION + " ...");
-  startBroker();
   
   // 8. Start local MCP servers (OCR, Screen Recorder, TTS)
   try {
@@ -722,7 +902,7 @@ if (args.includes("--config-all") || args.includes("-c")) {
   startAll();
 } else if (args.includes("--health-only")) {
   loadEnv();
-  const port = Number(process.env.PORT) || 3000;
+  const port = Number(process.env.PORT) || 5050;
   runHealthChecks("127.0.0.1", port).catch(err => {
     console.error("[HEALTH] Failed:", err.message);
     process.exit(1);

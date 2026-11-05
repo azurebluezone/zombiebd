@@ -74,7 +74,7 @@ StandardError=append:$LOG_DIR/systemd-err.log
 # Hardening — the server reads its own tree and writes data/, logs/, cache/.
 ProtectSystem=full
 ProtectHome=read-only
-ReadWritePaths=$ROOT/data $ROOT/logs $ROOT/cache
+ReadWritePaths=$ROOT/data $ROOT/logs $ROOT/cache $ROOT/.zombiecoder $ROOT/.missionbarisal $ROOT/skills
 # ProtectKernelModules=true is deliberately absent: in a *user* unit it makes
 # systemd abort the exec (status=218/CAPABILITIES). Verified 2026-09-30.
 ProtectControlGroups=true

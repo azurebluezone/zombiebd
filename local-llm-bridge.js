@@ -134,6 +134,96 @@ const UPSTREAM_BASE =
 let child = null;
 let shuttingDown = false;
 
+// Installed models are discovered from the backend, never guessed. A stale
+// BRIDGE_MODEL/BRIDGE_UPSTREAM_MODEL used to make every request fail with an
+// upstream 404 even though a perfectly good model was installed.
+const MODEL_STATE = {
+  configured: CFG.upstreamModel,
+  installed: [],
+  selected: CFG.upstreamModel,
+  source: "configured",
+  error: "",
+};
+
+function fetchJson(url, timeoutMs) {
+  return new Promise((resolve) => {
+    const req = http.get(url, { timeout: timeoutMs || 3000 }, (res) => {
+      let buf = "";
+      res.on("data", (d) => (buf += d));
+      res.on("end", () => {
+        if (res.statusCode !== 200) {
+          resolve({ ok: false, status: res.statusCode, error: "HTTP " + res.statusCode, body: buf });
+          return;
+        }
+        try {
+          resolve({ ok: true, status: res.statusCode, json: JSON.parse(buf), body: buf });
+        } catch (e) {
+          resolve({ ok: false, status: res.statusCode, error: "invalid json: " + e.message, body: buf });
+        }
+      });
+    });
+    req.on("error", (e) => resolve({ ok: false, status: 0, error: e.message, body: "" }));
+    req.on("timeout", () => {
+      req.destroy();
+      resolve({ ok: false, status: 0, error: "timeout", body: "" });
+    });
+  });
+}
+
+async function refreshModelState() {
+  if (CFG.backend !== "ollama") {
+    MODEL_STATE.selected = CFG.upstreamModel;
+    MODEL_STATE.source = "backend:" + CFG.backend;
+    return MODEL_STATE;
+  }
+  const base = CFG.ollamaUrl.replace(/\/$/, "");
+  const result = await fetchJson(base + "/api/tags", 3000);
+  if (!result.ok) {
+    MODEL_STATE.error = result.error;
+    log("WARN", "MODEL_DISCOVERY_FAIL", { url: base + "/api/tags", error: result.error });
+    return MODEL_STATE;
+  }
+  const names = (result.json.models || [])
+    .map((m) => m && m.name)
+    .filter((n) => typeof n === "string" && n.length > 0);
+  MODEL_STATE.installed = names;
+  MODEL_STATE.error = "";
+  const wanted = CFG.upstreamModel;
+  if (names.includes(wanted)) {
+    MODEL_STATE.selected = wanted;
+    MODEL_STATE.source = "configured";
+  } else if (names.includes(CFG.model)) {
+    MODEL_STATE.selected = CFG.model;
+    MODEL_STATE.source = "configured-alias";
+  } else if (names.length > 0) {
+    MODEL_STATE.selected = names[0];
+    MODEL_STATE.source = "autoselect";
+  } else {
+    MODEL_STATE.selected = wanted;
+    MODEL_STATE.source = "none-installed";
+  }
+  CFG.upstreamModel = MODEL_STATE.selected || CFG.upstreamModel;
+  CFG.model = MODEL_STATE.selected || CFG.model;
+  log("INFO", "MODEL_STATE", {
+    configured: MODEL_STATE.configured,
+    selected: MODEL_STATE.selected,
+    source: MODEL_STATE.source,
+    installed: names,
+  });
+  return MODEL_STATE;
+}
+
+function resolveRequestModel(requested) {
+  const want = typeof requested === "string" ? requested.trim() : "";
+  if (!want) return CFG.upstreamModel;
+  if (CFG.backend !== "ollama") return want;
+  if (MODEL_STATE.installed.includes(want)) return want;
+  // Agent fallbacks such as "llama-local" are aliases, not Ollama tags. The
+  // bridge is the compatibility layer: map any unknown alias to the installed
+  // model instead of forwarding a name the backend cannot serve.
+  return CFG.upstreamModel;
+}
+
 // ── Logging ───────────────────────────────────────────────────
 function log(level, msg, extra) {
   const t = new Date().toISOString().slice(11, 19);
@@ -497,7 +587,7 @@ function readBody(req, max = 8 * 1024 * 1024) {
 
 function buildPayload(body, stream) {
   const p = {
-    model: CFG.upstreamModel,
+    model: resolveRequestModel(body.model),
     messages: body.messages,
     stream: !!stream,
     temperature: typeof body.temperature === "number" ? body.temperature : 0.7,
@@ -558,7 +648,7 @@ function normalizeUpstream(parsed) {
 // ── Handlers (Non-Stream & Stream) ───────────────────────────
 async function chatNonStream(body, transport) {
   const t0 = Date.now();
-  const wantModel = typeof body.model === "string" && body.model ? body.model : CFG.model;
+  const wantModel = resolveRequestModel(body.model);
   const hadTools = Array.isArray(body.tools) && body.tools.length > 0;
   const payload0 = buildPayload(body, false);
 
@@ -650,7 +740,7 @@ async function chatNonStream(body, transport) {
 
 async function chatStream(body, req, res, transport) {
   const t0 = Date.now();
-  const wantModel = typeof body.model === "string" && body.model ? body.model : CFG.model;
+  const wantModel = resolveRequestModel(body.model);
   const payload = buildPayload(body, true);
   const bodyStr = JSON.stringify(payload);
   const stamp = "chatcmpl-bridge-" + crypto.randomBytes(8).toString("hex");
@@ -777,15 +867,22 @@ async function handler(req, res) {
   }
 
   if (req.method === "GET" && (url === "/health" || url === "/v1/health")) {
+    if (CFG.backend === "ollama" && MODEL_STATE.installed.length === 0) {
+      await refreshModelState();
+    }
     const h = await upstreamHealth();
     cors(req, res);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(
       JSON.stringify({
-        status: "ok",
+        status: h.ok ? "ok" : "degraded",
         bridge: "local-llm-bridge",
         backend: CFG.backend,
         model: CFG.model,
+        configured_model: MODEL_STATE.configured,
+        model_source: MODEL_STATE.source,
+        installed_models: MODEL_STATE.installed,
+        model_error: MODEL_STATE.error || undefined,
         upstream: { base: UPSTREAM_BASE, ready: h.ok },
         transports: { unix_socket: CFG.socket, tcp: "127.0.0.1:" + CFG.port },
       })
@@ -794,22 +891,24 @@ async function handler(req, res) {
   }
 
   if (req.method === "GET" && (url === "/v1/models" || url === "/models")) {
+    const ids = MODEL_STATE.installed.length
+      ? MODEL_STATE.installed.slice()
+      : [CFG.model];
+    if (!ids.includes(CFG.model)) ids.unshift(CFG.model);
     cors(req, res);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(
       JSON.stringify({
         object: "list",
-        data: [
-          {
-            id: CFG.model,
-            object: "model",
-            created: Math.floor(Date.now() / 1000),
-            owned_by: "local-llm-bridge",
-            permission: [],
-            root: CFG.gguf ? path.basename(CFG.gguf) : CFG.model,
-            parent: null,
-          },
-        ],
+        data: ids.map((id) => ({
+          id,
+          object: "model",
+          created: Math.floor(Date.now() / 1000),
+          owned_by: "local-llm-bridge",
+          permission: [],
+          root: CFG.gguf ? path.basename(CFG.gguf) : id,
+          parent: null,
+        })),
       })
     );
     return;
@@ -895,6 +994,8 @@ async function main() {
   if (CFG.backend === "llama") {
     spawnLlamaServer();
     await waitUpstreamReady(30000);
+  } else {
+    await refreshModelState();
   }
 
   const tcpServer = http.createServer(handler);

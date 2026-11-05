@@ -10,8 +10,11 @@ const { URL } = require("url");
 const fs = require("fs");
 const path = require("path");
 
+// Anchor the default to this module's directory: a gateway launched from
+// /tmp must still persist its client list in the project's data folder.
 const CONFIG_PATH = path.resolve(
-  process.env.MCP_CLIENTS_FILE || "./data/mcp-clients.json",
+  __dirname,
+  process.env.MCP_CLIENTS_FILE || path.join("data", "mcp-clients.json"),
 );
 const DEFAULT_TIMEOUT = 30000;
 

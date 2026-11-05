@@ -27,6 +27,7 @@ const COPY_DIRS = [
   "provider",
   "tools",
   "normalizer",
+  "transport",
   "external mcp",
   "external tools",
   "universal-adapter",

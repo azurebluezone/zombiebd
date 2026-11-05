@@ -307,6 +307,7 @@ function createStreamNormalizer(opts) {
   let finish = null;
   const calls = [];               // {index, id, name, args}
   const emittedIds = new Set();
+  let sentRole = false;
 
   function normalizeFrame(frame) {
     if (!frame || typeof frame !== "object") return null;
@@ -384,16 +385,19 @@ function createStreamNormalizer(opts) {
         if (tc.id) c.id = tc.id;
         if (tc.function) {
           if (tc.function.name) c.name = tc.function.name;
-          if (typeof tc.function.arguments === "string" && tc.function.arguments) {
-            c.fragments.push(tc.function.arguments);
+          const args = tc.function.arguments;
+          if (typeof args === "string" && args) {
+            c.fragments.push(args);
+          } else if (args && typeof args === "object") {
+            c.args = Object.assign(c.args, args);
           }
         }
       }
     }
     if (choice.finish_reason) {
-      finish = choice.finish_reason === "tool_calls" || calls.length
-        ? (choice.finish_reason || "tool_calls")
-        : choice.finish_reason;
+      // Some OpenAI-compatible providers say "stop" even when they emitted
+      // tool calls. The client must see tool_calls so it executes the call.
+      finish = calls.length ? "tool_calls" : choice.finish_reason;
     }
     return buildChunk();
   }
@@ -401,8 +405,10 @@ function createStreamNormalizer(opts) {
   // Emit a chunk carrying whatever is new since the last emission.
   function buildChunk() {
     const delta = {};
-    const isNew = !emittedIds.size;
-    if (isNew) delta.role = "assistant";
+    if (!sentRole) {
+      delta.role = "assistant";
+      sentRole = true;
+    }
     if (content) { delta.content = content; content = ""; }
     if (reasoning) { delta.reasoning_content = reasoning; reasoning = ""; }
 

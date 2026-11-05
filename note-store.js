@@ -34,10 +34,13 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");  // Built-in in Node.js — zero dependency
 
-// Env wins; otherwise resolve against THIS file's directory (never cwd).
-const DATA_DIR = path.resolve(
-  process.env.DATA_DIR || path.join(__dirname, "data"),
-);
+// Env wins; a relative env value resolves against THIS file's directory, not
+// the shell's cwd. Otherwise `DATA_DIR=./data` launched from /tmp would write
+// notes into /tmp/data.
+const RAW_DATA_DIR = process.env.DATA_DIR || "data";
+const DATA_DIR = path.isAbsolute(RAW_DATA_DIR)
+  ? RAW_DATA_DIR
+  : path.resolve(__dirname, RAW_DATA_DIR);
 const NOTE_FILE = path.join(DATA_DIR, "notes.json");
 const LOCK_FILE = path.join(DATA_DIR, ".note-store.lock");
 // NOTE: read at call time, not module load time, so env changes take effect

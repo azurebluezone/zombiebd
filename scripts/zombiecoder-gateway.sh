@@ -23,12 +23,28 @@ set -uo pipefail
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_DIR="$APP_DIR/logs"
 ENV_FILE="$APP_DIR/.env"
-# /usr/bin/node on this box is v22, which has no node:sqlite — the whole
-# storage layer silently disappears. Use the nvm build (24+) the rest of the
-# project runs on, discovered at runtime so a future nvm upgrade just works.
-# $HOME, not a literal path — a fresh OS account must not need this file edited.
-NODE_BIN="$(ls -d "$HOME"/.nvm/versions/node/v2[4-9]*.*/bin/node 2>/dev/null | sort -V | tail -1)"
-[ -x "$NODE_BIN" ] || NODE_BIN="/usr/bin/node"
+# /usr/bin/node is often too old (no node:sqlite). Discover a 24+ binary the
+# same way a user would: current PATH first, then nvm and the installer's
+# per-user Node. No literal version path is baked in.
+find_node() {
+  local candidate
+  for candidate in \
+    "$(command -v node 2>/dev/null || true)" \
+    "$HOME"/.nvm/versions/node/v24*/bin/node \
+    "$HOME"/.local/node-v24*/bin/node \
+    "$HOME"/.local/node/bin/node \
+    /usr/local/bin/node \
+    /usr/bin/node; do
+    [ -n "$candidate" ] || continue
+    if [ -x "$candidate" ] && "$candidate" -e 'process.exit(Number(process.versions.node.split(".")[0])>=24?0:1)' 2>/dev/null; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+NODE_BIN="$(find_node || true)"
+[ -n "$NODE_BIN" ] || NODE_BIN="/usr/bin/node"
 START_LOG="$LOG_DIR/gateway.log"
 
 mkdir -p "$LOG_DIR" 2>/dev/null || true
@@ -50,12 +66,26 @@ fi
 log "node $("$NODE_BIN" -v) · env ok"
 
 # ── Load .env into this process ──────────────────────────────────────────────
-# start.js loads .env itself, but the broker and the local MCP servers are
-# spawned by systemd as siblings and need it here too.
-set -a
-# shellcheck disable=SC1090
-. "$ENV_FILE" 2>/dev/null || log "WARN: .env had parse issues; continuing"
-set +a
+# start.js loads .env itself, but the local MCP servers are
+# spawned by systemd as siblings and need it here too. Parse line by line
+# instead of sourcing: .env.example contains placeholders such as
+# GROQ_API_KEY=<YOUR_GROQ_KEY> and a shell "." would abort on the first "<".
+while IFS= read -r line || [ -n "$line" ]; do
+  line="${line%$'\r'}"
+  case "$line" in ''|'#'*) continue ;; esac
+  case "$line" in export\ *) line="${line#export }" ;; esac
+  key="${line%%=*}"
+  value="${line#*=}"
+  case "$key" in ''|*[!A-Za-z0-9_]*) continue ;; esac
+  case "$key" in [0-9]*) continue ;; esac
+  # Strip an unquoted trailing comment and matching surrounding quotes.
+  value="${value%%[[:space:]]#*}"
+  case "$value" in
+    \"*\") value="${value#\"}"; value="${value%\"}" ;;
+    \'*\') value="${value#\'}"; value="${value%\'}" ;;
+  esac
+  export "$key=$value"
+done < "$ENV_FILE"
 
 cd "$APP_DIR" || { log "FATAL: cd $APP_DIR failed"; exit 1; }
 

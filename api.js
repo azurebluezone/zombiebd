@@ -108,10 +108,12 @@ const { expandEnv } = require("./lib/expand-env.js");
 const {
   slimSyllabus,
   slimSSOT,
-  compactToolsText,
 } = require("./tools/context-slimmer.js");
 const { makeAliasResolver } = require("./tools/model-alias.js");
-const { loadAgentFiles, getAgentById, listAgentIds } = require("./agent");
+const { normalizeText } = require("./lib/text-integrity.js");
+const { loadAgentFiles, getAgentById, listAgentIds, resolveAgentModel } = require("./agent");
+const systemInfo = require("./lib/system-info.js");
+const { SERVICE_PORTS, DEFAULTS } = require("./lib/env.js");
 
 // ─── MCP gateway route table (deny-by-default) ─────────────────────────
 // The local tool servers (ocr / screen-recorder / tts) are child processes
@@ -156,10 +158,15 @@ const {
   DOMAIN_CONFIGS,
 } = require("./domain-config");
 
+// Project root = this file's directory. Every project-owned path (.env,
+// data/, logs/, models.db) is anchored here so the gateway behaves the same
+// when a user launches it from /tmp or any other working directory.
+const PROJECT_ROOT = __dirname;
+
 // ─── .env Loader (zero-dependency) ───────────────────────────
 (function loadEnv() {
   try {
-    const envPath = path.resolve(".env");
+    const envPath = path.join(PROJECT_ROOT, ".env");
     if (fs.existsSync(envPath)) {
       const content = fs.readFileSync(envPath, "utf8");
       for (const line of content.split("\n")) {
@@ -192,9 +199,10 @@ const MAX_BODY_SIZE = parseInt(
 const INSTANCE_ID = process.env.INSTANCE_ID || crypto.randomUUID();
 const OPENCODE_BASE = process.env.OPENCODE_BASE || "https://opencode.ai/zen/v1";
 const MAX_DEBATE_ROUNDS = parseInt(process.env.MAX_DEBATE_ROUNDS || "0", 10);
-const LOG_DIR = path.resolve(process.env.LOG_DIR || "./logs");
-const DATA_DIR = path.resolve(process.env.DATA_DIR || "./data");
+const LOG_DIR = path.resolve(PROJECT_ROOT, process.env.LOG_DIR || "./logs");
+const DATA_DIR = path.resolve(PROJECT_ROOT, process.env.DATA_DIR || "./data");
 const PERSONAS_FILE = path.resolve(
+  PROJECT_ROOT,
   process.env.PERSONAS_FILE || "./PERSONAS.md",
 );
 const SESSION_TTL_MS = parseInt(process.env.SESSION_TTL || "86400000", 10);
@@ -204,10 +212,10 @@ const GIT_PERSONAS_URL = process.env.GIT_PERSONAS_URL || "";
 // ─── User-Agent Constant ────────────────────────────────────
 const USER_AGENT = "MissionBarisal-v3/1.0";
 let ALLOWED_DIRS = (
-  process.env.ALLOWED_DIRS || LOG_DIR + "," + DATA_DIR + "," + path.resolve(".")
+  process.env.ALLOWED_DIRS || LOG_DIR + "," + DATA_DIR + "," + PROJECT_ROOT
 )
   .split(",")
-  .map((d) => path.resolve(d.trim()));
+  .map((d) => path.resolve(PROJECT_ROOT, d.trim()));
 
 // ─── Domain Detection ────────────────────────────────────────
 // Domain detected immediately on server start — env var > port heuristic > localhost
@@ -250,21 +258,32 @@ const UDS_PORT = parseInt(
   "5150",
   10,
 );
-const UDS_PATH =
-  process.env.UDS_PATH ||
-  path.join(os.tmpdir(), "zombiecoder", "mcp.sock");
-let udsServer = null; // UDS server instance (assigned in init())
+const UDS_PATH = path.resolve(
+  PROJECT_ROOT,
+  process.env.UDS_PATH || path.join(os.tmpdir(), "zombiecoder", "mcp.sock"),
+);
+let udsServer = null; // MCP UDS server (newline JSON-RPC)
+let openaiUdsServer = null; // OpenAI HTTP over UDS
+// Socket ownership is tracked by inode, not by path. On a restart the old
+// process can outlive the new listener for a few milliseconds; an unguarded
+// unlink then deletes the *new* socket path and leaves a live-but-unreachable
+// listener behind (reproduced after the Caddy install restart).
+let udsBoundIno = 0;
+let openaiUdsPath = "";
+let openaiUdsIno = 0;
+let httpsServer = null; // optional in-process TLS listener
+let grpcServer = null; // HTTP/2 + protobuf transport
 
 // ─── Cache & Git Config ─────────────────────────────────────
 // Cross-session user cache for accuracy & performance
-const CACHE_DIR = path.resolve(process.env.CACHE_DIR || "./cache");
+const CACHE_DIR = path.resolve(PROJECT_ROOT, process.env.CACHE_DIR || "./cache");
 const CACHE_TTL = parseInt(process.env.CACHE_TTL || "86400000", 10); // 24h default
 const CACHE_MAX_ENTRIES = parseInt(process.env.CACHE_MAX_ENTRIES || "1000", 10);
 
 // Git runtime download URLs — personas, skills, instructions
 const GIT_SKILLS_URL = process.env.GIT_SKILLS_URL || "";
 const GIT_INSTRUCTIONS_URL = process.env.GIT_INSTRUCTIONS_URL || "";
-const SKILLS_DIR = path.resolve(process.env.SKILLS_DIR || "./skills");
+const SKILLS_DIR = path.resolve(PROJECT_ROOT, process.env.SKILLS_DIR || "./skills");
 
 // ─── Runtime Config (changeable via API without restart) ──────
 const RUNTIME_CONFIG = {
@@ -992,6 +1011,20 @@ function loadCustomProviders() {
     const providerId = "custom_" + num;
     const socket =
       process.env["CUSTOM_PROVIDER_" + num + "_SOCKET"] || "";
+    // A CPU model can spend minutes on prefill; the cloud-shaped 60s default
+    // aborted real answers. Budget is per provider, set by env only.
+    const timeout = parseInt(
+      process.env["CUSTOM_PROVIDER_" + num + "_TIMEOUT_MS"] || "",
+      10,
+    );
+    const streamTimeout = parseInt(
+      process.env["CUSTOM_PROVIDER_" + num + "_STREAM_TIMEOUT_MS"] || "",
+      10,
+    );
+    const maxPromptChars = parseInt(
+      process.env["CUSTOM_PROVIDER_" + num + "_MAX_PROMPT_CHARS"] || "",
+      10,
+    );
     PROVIDER_CONFIG[providerId] = {
       name: name,
       baseUrl: url,
@@ -1001,6 +1034,9 @@ function loadCustomProviders() {
       models: models,
       custom: true,
       socketPath: socket || undefined,
+      ...(Number.isFinite(timeout) && timeout > 0 ? { timeout } : {}),
+      ...(Number.isFinite(streamTimeout) && streamTimeout > 0 ? { streamTimeout } : {}),
+      ...(Number.isFinite(maxPromptChars) && maxPromptChars > 0 ? { maxPromptChars } : {}),
     };
     console.log("[CUSTOM_PROVIDER] Loaded: " + name + " (" + url + ")");
   }
@@ -1020,6 +1056,7 @@ let MODELS_DB = null;
 // 🧟 DB path priority: env DB_SQLITE_PATH → DATA_DIR/models.db (fallback),
 // so a forgotten env var can never brick the gateway.
 const MODELS_DB_PATH = path.resolve(
+  PROJECT_ROOT,
   process.env.DB_SQLITE_PATH || path.join(DATA_DIR, "models.db"),
 );
 
@@ -1028,13 +1065,12 @@ function initModelsDb() {
   try {
     const { DatabaseSync } = require("node:sqlite");
     if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-    // 🧟 Alibaba-40-thieves: when the stored DB is missing locally, pull the
-    // snapshot from git (raw) down to the exact location — validated as a
-    // real SQLite file before adopting (HTML error pages are rejected).
-    if (!fs.existsSync(MODELS_DB_PATH)) {
-      const remote =
-        process.env.DB_REMOTE_URL ||
-        "https://raw.githubusercontent.com/sahonsrabon-os/monu_the_builder/main/registry.db";
+    // The DB is created locally. A fresh install must not depend on a remote
+    // snapshot: the old default pulled registry.db from another repository and
+    // filled the agents table with stale model names before agent/*.js could
+    // seed it. Set DB_REMOTE_URL explicitly if you really want that behavior.
+    if (!fs.existsSync(MODELS_DB_PATH) && process.env.DB_REMOTE_URL) {
+      const remote = process.env.DB_REMOTE_URL;
       if (remote.startsWith("http")) {
         const tmp = MODELS_DB_PATH + ".dl";
         try {
@@ -1798,7 +1834,7 @@ if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 // Mission Barisal automatically discovers the project it serves,
 // creates/updates .zombiecoder/SSOT.md, and agents follow it as truth.
 
-const SSOT_DIR = path.resolve(process.env.SSOT_DIR || "./.zombiecoder");
+const SSOT_DIR = path.resolve(PROJECT_ROOT, process.env.SSOT_DIR || "./.zombiecoder");
 const SSOT_PATH = path.join(SSOT_DIR, "SSOT.md");
 
 function scanProject(rootDir) {
@@ -2970,6 +3006,102 @@ function log(level, category, data, consoleOnly) {
  * Visual Event Flow — real-time terminal visualization of request flow
  * Shows: REQUEST → AGENT → PROVIDER → RESPONSE with timing
  */
+// ─── Request identity ─────────────────────────────────────────
+// The visual log used to call the HTTP User-Agent an "agent" and print
+// origin:"direct" whenever no Origin header existed. That told the operator
+// nothing about who called the MCP endpoint. Identity is now resolved from
+// explicit headers first, then from the MCP initialize handshake cached on the
+// keep-alive socket, and only then falls back to the network origin.
+const MCP_SOCKET_IDENTITY = new WeakMap();
+
+function isLoopbackAddress(value) {
+  const addr = String(value || "");
+  return addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1" || addr === "localhost";
+}
+
+function socketAddress(req) {
+  const s = req && req.socket;
+  if (!s) return "";
+  try {
+    const addr = s.address();
+    if (typeof addr === "string") return "unix";
+  } catch (_) {
+    /* address() can throw after the socket is destroyed */
+  }
+  return s.remoteAddress || "";
+}
+
+function requestOrigin(req) {
+  const h = (req && req.headers) || {};
+  if (h.origin) return String(h.origin).slice(0, 160);
+  if (h.referer) {
+    try {
+      return new URL(h.referer).origin;
+    } catch (_) {
+      /* malformed Referer: fall through to network origin */
+    }
+  }
+  if (h["x-forwarded-proto"] || h["x-forwarded-host"]) {
+    const proto = String(h["x-forwarded-proto"] || "http").split(",")[0].trim();
+    const host = String(h["x-forwarded-host"] || h.host || "").split(",")[0].trim();
+    if (host) return proto + "://" + host;
+  }
+  const from = socketAddress(req);
+  if (from === "unix") return "unix";
+  if (isLoopbackAddress(from)) return "local";
+  return from ? "tcp://" + from : "unknown";
+}
+
+function rememberMcpIdentity(req, patch) {
+  const socket = req && req.socket;
+  if (!socket || !patch) return;
+  const current = MCP_SOCKET_IDENTITY.get(socket) || {};
+  const next = Object.assign({}, current);
+  for (const [key, value] of Object.entries(patch)) {
+    if (value !== undefined && value !== null && String(value).trim() !== "") {
+      next[key] = String(value).trim().slice(0, 160);
+    }
+  }
+  MCP_SOCKET_IDENTITY.set(socket, next);
+}
+
+function mcpSocketIdentity(req) {
+  const socket = req && req.socket;
+  return (socket && MCP_SOCKET_IDENTITY.get(socket)) || {};
+}
+
+function requestActor(req) {
+  const h = (req && req.headers) || {};
+  const cached = mcpSocketIdentity(req);
+  const agent =
+    h["x-agent-id"] ||
+    h["x-mcp-agent"] ||
+    cached.agent ||
+    h["x-mcp-client-name"] ||
+    h["x-client-name"] ||
+    "";
+  const client =
+    h["x-mcp-client-name"] ||
+    h["x-client-name"] ||
+    cached.client ||
+    "";
+  return {
+    from: socketAddress(req) || "unknown",
+    origin: requestOrigin(req),
+    client: String(client || "").slice(0, 160),
+    agent: String(agent || "").slice(0, 160),
+    user_agent: String(h["user-agent"] || "").slice(0, 160),
+  };
+}
+
+function actorHeader(actor) {
+  try {
+    return Buffer.from(JSON.stringify(actor), "utf8").toString("base64url");
+  } catch (_) {
+    return "";
+  }
+}
+
 function visualEventFlow(phase, label, detail) {
   const ts = new Date().toISOString().slice(11, 19);
   const phaseIcons = {
@@ -3214,6 +3346,17 @@ async function loadPersonas() {
   const merged = [];
   const seen = new Set();
 
+  // Load the file definitions once. A DB row written by an older seed can
+  // still contain the "MODELS_DB" sentinel; the file's fallbackModel is the
+  // only honest concrete model in that case.
+  let fileAgents = [];
+  try {
+    fileAgents = loadAgentFiles();
+  } catch (e) {
+    log("WARN", "AGENTS_FILE_LOAD_FAIL", { error: e.message });
+  }
+  const fileAgentById = new Map(fileAgents.map((a) => [a.id, a]));
+
   // 0. DB agents first (PHASE A) — enabled rows from the agents table.
   //    DB is the primary source; files below fill gaps / override.
   if (MODELS_DB) {
@@ -3227,12 +3370,11 @@ async function loadPersonas() {
         merged.push({
           id: r.id,
           name: r.name || r.id,
-          // No hardcoded model fallback. "MODELS_DB" is the project's
-          // sentinel meaning "resolve this later from the models table /
-          // provider registry" — the same sentinel agent/*.js files use.
-          // A literal model name here would silently pin an agent to one
-          // provider and defeat runtime model selection.
-          model: r.model || "MODELS_DB",
+          // A real DB model wins. If the row still says "MODELS_DB",
+          // resolve the file's fallbackModel instead of forwarding the
+          // sentinel as a model name (which used to fall through to the
+          // default cloud provider and hide the misconfiguration).
+          model: resolveAgentModel(fileAgentById.get(r.id), r.model) || "MODELS_DB",
           role: r.role || "general",
           expertise: r.expertise || "",
           priority: r.priority || 99,
@@ -3410,7 +3552,11 @@ function seedAgentsFromPersonas() {
     const now = Date.now();
     for (const a of agents) {
       try {
-        ins.run(a.id, a.name || a.id, a.role || "general", a.model || "", a.expertise || "", a.persona || "", a.priority || 99, now);
+        // Store the agent's concrete fallback model, never the "MODELS_DB"
+        // sentinel. A sentinel row used to fall through to the default cloud
+        // provider at request time, which is not what the agent asked for.
+        const model = resolveAgentModel(a, null) || "";
+        ins.run(a.id, a.name || a.id, a.role || "general", model, a.expertise || "", a.persona || "", a.priority || 99, now);
         seeded++;
       } catch (e) {
         log("WARN", "AGENT_SEED_SKIP", { id: a.id, error: e.message });
@@ -3430,8 +3576,7 @@ function seedAgentsFromPersonas() {
 // agent/*.js); (3) if STILL empty → download registry.seed.json from the
 // remote repo. Models follow the same ladder via ensureModelsRegistry().
 const REGISTRY_REMOTE_URL =
-  process.env.REGISTRY_REMOTE_URL ||
-  "https://raw.githubusercontent.com/sahonsrabon-os/monu_the_builder/main/registry.seed.json";
+  process.env.REGISTRY_REMOTE_URL || "";
 
 async function seedRegistryFromRemote(reason) {
   if (!REGISTRY_REMOTE_URL.startsWith("http")) {
@@ -3508,29 +3653,41 @@ async function seedRegistryFromRemote(reason) {
 
 async function ensureAgentsRegistry() {
   if (!MODELS_DB) return { ok: false, error: "sqlite unavailable" };
-  try {
-    const c = MODELS_DB.prepare("SELECT COUNT(*) c FROM agents").get();
-    if (c && c.c > 0) return { ok: true, source: "db", count: c.c };
-  } catch (e) { /* fall through to seed */ }
-  // 2. local agent/*.js files (zero-dependency curated defaults)
+  // Repair, not just first-run seed. A non-empty but incomplete table (stale
+  // DB from an older build, a failed earlier seed, a deleted row) used to be
+  // accepted forever because the check was only `count > 0`. INSERT OR IGNORE
+  // restores only missing ids, so admin-edited rows are never overwritten.
+  let repaired = 0;
   try {
     const fileAgents = loadAgentFiles();
     const ins = MODELS_DB.prepare(
       `INSERT OR IGNORE INTO agents (id, name, role, model, expertise, persona, enabled, priority, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)`
     );
+    // Older seeds wrote the sentinel "MODELS_DB" as a literal model. Those
+    // rows are not usable at routing time, so replace the sentinel with the
+    // file's concrete fallback while leaving every admin-chosen model alone.
+    const fix = MODELS_DB.prepare(
+      `UPDATE agents SET model = ?, updated_at = ?
+       WHERE id = ? AND (model IS NULL OR model = '' OR model = 'MODELS_DB')`
+    );
     const now = Date.now();
-    let n = 0;
     for (const a of fileAgents) {
       if (!a || !a.id) continue;
+      const model = resolveAgentModel(a, null) || "";
       try {
-        ins.run(a.id, a.name || a.id, a.role || "general", a.model || "", a.expertise || "", a.persona || "Agent", a.priority || 99, now);
-        n++;
+        const r = ins.run(a.id, a.name || a.id, a.role || "general", model, a.expertise || "", a.persona || "Agent", a.priority || 99, now);
+        repaired += r.changes || 0;
+        const fixed = fix.run(model, now, a.id);
+        repaired += fixed.changes || 0;
       } catch (_) { /* dup */ }
     }
-    if (n > 0) {
-      log("INFO", "AGENTS_SEEDED", { from: "agent/*.js", count: n });
-      return { ok: true, source: "files", count: n };
+    const c = MODELS_DB.prepare("SELECT COUNT(*) c FROM agents").get();
+    if (c && c.c > 0) {
+      if (repaired > 0) {
+        log("INFO", "AGENTS_REPAIRED", { from: "agent/*.js", added: repaired, total: c.c });
+      }
+      return { ok: true, source: "db", count: c.c, repaired };
     }
   } catch (e) {
     log("WARN", "AGENTS_FILE_SEED_FAIL", { error: e.message });
@@ -4344,6 +4501,7 @@ async function pushDone(stats) {
 // ══════════════════════════════════════════════════════════════
 
 const LOCK_DIR = path.resolve(
+  PROJECT_ROOT,
   process.env.LOCK_DIR || path.join(DATA_DIR, "locks"),
 );
 
@@ -6355,6 +6513,37 @@ async function callModelWithTools(
 // When client calls with masked model name (e.g. "model-pro", "llama-70b", "gemini-flash")
 // competition router → resolveProvider → resolveApiModel (unmask) → provider API → normalize
 
+function finishProxyStream(res, opts) {
+  const o = opts || {};
+  const chunk = (delta, finish) =>
+    "data: " +
+    JSON.stringify({
+      id: o.id,
+      object: "chat.completion.chunk",
+      created: o.created,
+      model: o.model,
+      choices: [{ index: 0, delta, finish_reason: finish }],
+    }) +
+    "\n\n";
+  if (!o.started) {
+    o.id = "chatcmpl-" + crypto.randomUUID().replace(/-/g, "");
+    o.created = Math.floor(Date.now() / 1000);
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+      "Access-Control-Allow-Origin": getCorsOrigin(o.origin),
+    });
+    res.write(chunk({ role: "assistant" }, null));
+  }
+  const calls = Array.isArray(o.calls) ? o.calls : [];
+  const delta = calls.length && !o.callsStreamed ? { tool_calls: calls } : {};
+  res.write(chunk(delta, calls.length ? "tool_calls" : "stop"));
+  res.write("data: [DONE]\n\n");
+  res.end();
+}
+
 async function proxyChatCompletion(
   model,
   messages,
@@ -6362,18 +6551,20 @@ async function proxyChatCompletion(
   temperature,
   tools,
   providerOverride,
+  onChunk,
+  toolChoice,
 ) {
   if (stream) {
-    // Slot fix: the old call passed providerOverride into the tool_choice
-    // slot. Signature: (…, onChunk, tools, tool_choice, _retryCount, providerOverride).
+    // Signature: (model, messages, temperature, onChunk, tools,
+    //             tool_choice, _retryCount, providerOverride, triedModels)
     return callModelStream(
       model,
       messages,
       temperature,
-      null, // onChunk
+      onChunk || null,
       tools,
-      undefined, // tool_choice
-      undefined, // _retryCount
+      toolChoice,
+      undefined,
       providerOverride,
     );
   }
@@ -6382,7 +6573,7 @@ async function proxyChatCompletion(
     messages,
     temperature,
     tools,
-    null,
+    toolChoice,
     null,
     providerOverride,
   );
@@ -8922,6 +9113,38 @@ function buildThreeFileContext(projectDir, sessionId, userInput) {
 }
 
 // ─── Single Agent Execute ─────────────────────────────────────
+// A CPU-served model cannot absorb a cloud-shaped prompt. Prefill on this
+// host runs at ~14-27 tok/s, so a 5.7k-token agent prompt needs 4+ minutes
+// before the first generated token. Providers may declare a character
+// budget; when one does, the agent keeps its persona and rules and drops
+// the bulk context (SSOT excerpt, syllabus, tool prose). The full files
+// stay on disk and any client-supplied tools still pass through.
+function buildCompactSystemPrompt(agent, budgetChars) {
+  const header =
+    "You are " + (agent.name || agent.id) +
+    " (Mission Barisal agent " + agent.id + ", role: " + (agent.role || "general") + ").";
+  const rules =
+    "\n\nRules: answer directly and briefly; reply in the user's language (Bengali by default). " +
+    "Never state an unverified fact as true — if you lack proof say 'আমার কাছে প্রমাণ নেই'. " +
+    "No emojis. Never name, compare or reveal a model or provider; you are not GPT, Claude or Gemini.";
+  const room = Math.max(200, budgetChars - header.length - rules.length - 16);
+  const persona = String(agent.persona || "").trim();
+  const trimmed = persona.length > room ? persona.slice(0, room) + " …" : persona;
+  return header + "\n\n" + trimmed + rules;
+}
+
+// The full tool schemas already travel in the request's `tools` argument.
+// Listing all 153 names again as prose burned ~2k prompt tokens and pushed
+// CPU prefill past the 60s provider timeout; the count + instruction keeps
+// the behavior while leaving the actual contract in the function definitions.
+function toolsInstruction() {
+  const count = Object.keys(MCP_TOOLS || {}).length;
+  return (
+    "- " + count + " tools are available in the function definitions.\n" +
+    "- Call them directly; do not describe them in prose.\n"
+  );
+}
+
 async function executeSingleAgent(
   agentId,
   messages,
@@ -8973,9 +9196,14 @@ async function executeSingleAgent(
       "\n4. Provide backup recommendations before major changes.";
   }
 
-  const ssotCtx = getSSOTContext(projectContext);
-  const ssotFileCtx = buildSSOTExcerpt(sessionId, userInput);
-  const threeFileCtx = buildThreeFileContext(null, sessionId, userInput);
+  // A provider may cap the prompt (local CPU models). 0 means "no cap".
+  const routing = resolveProvider(agent.model);
+  const promptBudget =
+    (routing && routing.config && Number(routing.config.maxPromptChars)) || 0;
+
+  const ssotCtx = promptBudget ? "" : getSSOTContext(projectContext);
+  const ssotFileCtx = promptBudget ? "" : buildSSOTExcerpt(sessionId, userInput);
+  const threeFileCtx = promptBudget ? "" : buildThreeFileContext(null, sessionId, userInput);
 
   // 🧟 FIX-002: Detect if client (extension) already provides mission context
   const firstMsg = messages[0];
@@ -9011,7 +9239,12 @@ async function executeSingleAgent(
       "\nIf you lack data AND web search fails, say: 'ভাইয়া, এই মুহূর্তে আমার কাছে এই তথ্যগুলো নাই।' and STOP. Do NOT fabricate information.";
 
   // When client provides mission context, use minimal system message
-  const sysMsg = clientHasMissionContext
+  const sysMsg = promptBudget
+    ? {
+        role: "system",
+        content: buildCompactSystemPrompt(agent, promptBudget),
+      }
+    : clientHasMissionContext
     ? {
         role: "system",
         content:
@@ -9021,7 +9254,7 @@ async function executeSingleAgent(
           "\n\nPROOF REQUIREMENT: You MUST provide verifiable evidence for EVERY claim. If you cannot provide evidence, say 'আমার কাছে প্রমাণ নেই'. Still help with what you know — say you lack proof but offer suggestions." +
           extraRules +
           "\n\n🔧 TOOLS AVAILABLE (call these via tool calls — do NOT just describe them):\n" +
-          compactToolsText(MCP_TOOLS) +
+          toolsInstruction() +
           "- Use web_search for real-time information.\n" +
           "- Use call_agent to delegate sub-tasks to other specialized agents.\n" +
           "When the user asks you to read files, write files, list directories, or open files in a browser — USE these tools directly by calling them. Do NOT just describe what you would do — actually execute the tool calls. Only respond with text after you have completed all necessary tool operations.",
@@ -9039,13 +9272,23 @@ async function executeSingleAgent(
           ssotFileCtx +
           threeFileCtx +
           "\n\n🔧 TOOLS AVAILABLE (call these via tool calls — do NOT just describe them):\n" +
-          compactToolsText(MCP_TOOLS) +
+          toolsInstruction() +
           "- Use web_search for real-time information.\n" +
           "- Use call_agent to delegate sub-tasks to other specialized agents (e.g., call bug-hunter for debugging, security-hero for security review).\n" +
           "When the user asks you to read files, write files, list directories, or open files in a browser — USE these tools directly by calling them. Do NOT just describe what you would do — actually execute the tool calls. Only respond with text after you have completed all necessary tool operations.",
       };
 
   const augmentedMessages = [sysMsg, ...messages];
+
+  if (promptBudget) {
+    log("INFO", "PROMPT_BUDGET_APPLIED", {
+      agent: agent.id,
+      provider: routing && routing.providerId,
+      budget: promptBudget,
+      systemChars: String(sysMsg.content || "").length,
+      tools: (tools || []).length,
+    });
+  }
 
   // ─── Auto Web Search: detect need and inject results ────
   // Free models never write "web_search:" — so we detect need proactively
@@ -9085,8 +9328,9 @@ async function executeSingleAgent(
     }
   }
 
-  // Load memory if session exists
-  if (sessionId) {
+  // Load memory if session exists (skipped under a prompt budget: history is
+  // the first thing that must go when the model cannot afford the tokens).
+  if (sessionId && !promptBudget) {
     const mem = getAgentMemory(sessionId, agentId);
     if (mem.length > 0) {
       const history = mem
@@ -9104,9 +9348,11 @@ async function executeSingleAgent(
     }
   }
 
-  // Auto-inject MCP tools when no tools provided
+  // Auto-inject MCP tools when no tools provided.
   //  MAX_TOOLS_LIMIT: module-level const (Phase C) — single source of truth
-  if (!tools || tools.length === 0) {
+  // A budgeted provider opts out: 25 schemas cost ~11k chars and a small
+  // local model answers with a tool call instead of the requested text.
+  if ((!tools || tools.length === 0) && !promptBudget) {
     const mcpToolList = Object.entries(MCP_TOOLS).map(([name, def]) => ({
       type: "function",
       function: {
@@ -9962,6 +10208,17 @@ async function executeRemoteMcpTool(server, tool, args) {
   };
 }
 
+// Clients often send ~/project even though path.isAbsolute("~/x") is false.
+// Expand it before resolving so the agent reaches the same file a shell would.
+function expandHome(value) {
+  const s = String(value || "");
+  if (s === "~") return os.homedir();
+  if (s.startsWith("~/") || s.startsWith("~\\")) {
+    return path.join(os.homedir(), s.slice(2));
+  }
+  return s;
+}
+
 function isPathSafe(targetPath) {
   // 🌐 AGENT_FS_SCOPE — env toggle for the agent's filesystem sandbox.
   //   "unrestricted" (DEFAULT): agents may touch ANY file/folder on this OS
@@ -10041,7 +10298,7 @@ async function executeMcpTool(tool, args) {
 
   switch (tool) {
     case "read_file": {
-      const readPath = args.path || ".";
+      const readPath = expandHome(args.path || ".");
       const p = path.isAbsolute(readPath)
         ? path.resolve(readPath)
         : path.resolve(mcpWorkingDir, readPath);
@@ -10066,7 +10323,7 @@ async function executeMcpTool(tool, args) {
       return { content: [{ type: "text", text: content.slice(0, 100000) }] };
     }
     case "write_file": {
-      const writePath = args.path || "";
+      const writePath = expandHome(args.path || "");
       const p = path.isAbsolute(writePath)
         ? path.resolve(writePath)
         : path.resolve(mcpWorkingDir, writePath);
@@ -10101,7 +10358,7 @@ async function executeMcpTool(tool, args) {
       }
       const cwd =
         args.cwd && typeof args.cwd === "string"
-          ? path.resolve(mcpWorkingDir || ".", args.cwd)
+          ? path.resolve(mcpWorkingDir || ".", expandHome(args.cwd))
           : mcpWorkingDir || ".";
       const { exec } = require("child_process");
       const shell = _PLATFORM === "win32" ? "powershell.exe" : "/bin/bash";
@@ -10123,9 +10380,10 @@ async function executeMcpTool(tool, args) {
       });
     }
     case "delete_file": {
-      const p = path.isAbsolute(args.path || "")
-        ? path.resolve(args.path)
-        : path.resolve(mcpWorkingDir, args.path || "");
+      const deletePath = expandHome(args.path || "");
+      const p = path.isAbsolute(deletePath)
+        ? path.resolve(deletePath)
+        : path.resolve(mcpWorkingDir, deletePath);
       if (!isPathSafe(p)) {
         return { content: [{ type: "text", text: "Access denied: path outside allowed directories: " + p }] };
       }
@@ -10144,12 +10402,14 @@ async function executeMcpTool(tool, args) {
       };
     }
     case "rename_file": {
-      const fromP = path.isAbsolute(args.from || "")
-        ? path.resolve(args.from)
-        : path.resolve(mcpWorkingDir, args.from || "");
-      const toP = path.isAbsolute(args.to || "")
-        ? path.resolve(args.to)
-        : path.resolve(mcpWorkingDir, args.to || "");
+      const fromRaw = expandHome(args.from || "");
+      const toRaw = expandHome(args.to || "");
+      const fromP = path.isAbsolute(fromRaw)
+        ? path.resolve(fromRaw)
+        : path.resolve(mcpWorkingDir, fromRaw);
+      const toP = path.isAbsolute(toRaw)
+        ? path.resolve(toRaw)
+        : path.resolve(mcpWorkingDir, toRaw);
       if (!isPathSafe(fromP) || !isPathSafe(toP)) {
         return { content: [{ type: "text", text: "Access denied: path outside allowed directories" }] };
       }
@@ -10253,7 +10513,8 @@ async function executeMcpTool(tool, args) {
             "Client sent ${workspaceFolder} unexpanded. Cursor MCP config needs to support variable expansion. Defaulting to server dir.",
         });
       }
-      const newDir = path.resolve(rawDir);
+      rawDir = expandHome(rawDir);
+      const newDir = path.resolve(mcpWorkingDir || ".", rawDir);
       if (!fs.existsSync(newDir)) {
         return {
           content: [
@@ -10966,11 +11227,16 @@ function handleMCP(req, res) {
         params?.clientInfo?.name || clientNameFromHeader || "unknown";
       const clientVersion = params?.clientInfo?.version || "unknown";
       mcpActiveConnections++;
+      rememberMcpIdentity(req, {
+        client: clientName !== "unknown" ? clientName : clientNameFromHeader,
+        agent: params?.agent_id || params?.clientInfo?.agent,
+      });
       log("INFO", "MCP_INIT", {
         client: clientName,
         version: clientVersion,
         protocol: params?.protocolVersion || "unknown",
         id: id?.toString().slice(0, 8),
+        ...requestActor(req),
       });
       // Always track clients — anonymous gets generated name
       const effectiveName =
@@ -11195,7 +11461,7 @@ function handleMCP(req, res) {
             required: def.required,
           },
         }));
-      log("INFO", "MCP_TOOLS_LIST", { count: tools.length });
+      log("INFO", "MCP_TOOLS_LIST", { count: tools.length, ...requestActor(req) });
       jsonResponse(res, 200, { jsonrpc: "2.0", id, result: { tools } });
       log("INFO", "REQUEST", {
         method: "POST",
@@ -11208,6 +11474,9 @@ function handleMCP(req, res) {
 
     if (method === "tools/call") {
       const { name, arguments: args } = params || {};
+      rememberMcpIdentity(req, {
+        agent: params?.agent_id || (args && (args.agent_id || args.agent)) || "",
+      });
       // 🧟 SECURITY GATE — privileged tools need auth (see mcpGate above).
       // res===null means the in-process call from handleMessage (trusted).
       const gateErr = mcpGate(req, name, res === null);
@@ -11228,7 +11497,7 @@ function handleMCP(req, res) {
         });
         return;
       }
-      log("INFO", "MCP_TOOLS_CALL", { tool: name });
+      log("INFO", "MCP_TOOLS_CALL", { tool: name, ...requestActor(req) });
       trackToolUsage(name);
       executeMcpTool(name, args || {})
         .then((result) => {
@@ -11395,42 +11664,9 @@ function handleUdsMcpMessage(socket, message) {
 function maskModelIdentity(text) {
   if (!text || typeof text !== "string") return text;
 
-  // ── BENGALI DETECTION: preserve zero-width chars for Bengali ──
-  // Bengali conjunct characters require \u200C (ZWNJ) and \u200D (ZWJ)
-  // Only strip these for pure non-Bengali text
-  const hasBengali = /[\u0980-\u09FF]/.test(text);
-  const hasDevanagari = /[\u0900-\u097F]/.test(text);
-  const isIndicScript = hasBengali || hasDevanagari;
-
-  // Step 1: Strip invisible Unicode characters (zero-width watermarks)
-  // These can be embedded in responses as hidden branding
-  let cleaned = text
-    .replace(/\uFFFD/g, "") // Unicode replacement char (from encoding errors) — ALWAYS strip
-    .replace(/\u200B/g, "") // zero-width space — ALWAYS strip (not needed for Bengali)
-    .replace(/\uFEFF/g, "") // BOM / zero-width no-break space — ALWAYS strip
-    .replace(/\u2060/g, "") // word joiner — ALWAYS strip
-    .replace(/\u2061/g, "") // function application — ALWAYS strip
-    .replace(/\u2062/g, "") // invisible times — ALWAYS strip
-    .replace(/\u2063/g, "") // invisible separator — ALWAYS strip
-    .replace(/\u2064/g, "") // invisible plus — ALWAYS strip
-    .replace(/\u180E/g, "") // mongolian vowel separator — ALWAYS strip
-    .replace(/\u00AD/g, "") // soft hyphen — ALWAYS strip
-    .replace(/\u200E/g, "") // left-to-right mark — ALWAYS strip
-    .replace(/\u200F/g, ""); // right-to-left mark — ALWAYS strip
-
-  // CONDITIONAL: Only strip ZWNJ/ZWJ if text is NOT Bengali/Indic
-  // Bengali conjuncts: ক\u200Dষ, গ\u200Dহ, etc.
-  if (!isIndicScript) {
-    cleaned = cleaned
-      .replace(/\u200C/g, "") // zero-width non-joiner — safe to strip for non-Bengali
-      .replace(/\u200D/g, ""); // zero-width joiner — safe to strip for non-Bengali
-  } else {
-    // For Bengali: preserve ZWNJ (\u200C) but strip ZWJ (\u200D) only if it's NOT between Bengali chars
-    // ZWJ between Bengali chars creates conjuncts (e.g., ক\u200Dষ)
-    // ZWJ used as watermark (e.g., after English text) can be stripped
-    cleaned = cleaned.replace(/(\u200D)(?![\u0980-\u09FF])/g, "");
-    // Keep ZWNJ (\u200C) — essential for Bengali text rendering
-  }
+  // Step 1: canonical + invisible-character cleanup (lib/text-integrity.js).
+  // NFC keeps Bengali nukta forms consistent; ZWNJ/ZWJ rules stay script-aware.
+  let cleaned = normalizeText(text);
 
   // Step 2: Strip model/company identity watermarks from text
   cleaned = cleaned
@@ -11529,8 +11765,10 @@ function verifyGoalOutput(content, userInput) {
 
   const trimmed = content.trim();
 
-  // Check 1: Too short to be useful
-  if (trimmed.length < 10) {
+  // Check 1: empty or punctuation-only output. A short answer is not a bad
+  // answer — "CWD-OK" or "হ্যাঁ" is exactly what the caller asked for, and a
+  // 10-character floor used to replace correct replies with a canned excuse.
+  if (trimmed.length === 0 || !/[\p{L}\p{N}]/u.test(trimmed)) {
     return {
       passed: false,
       reason: "too_short",
@@ -12503,7 +12741,59 @@ const tcpServer = net.createServer((socket) => {
 // ══════════════════════════════════════════════════════════════
 // 🧟 HTTP/1.1 Server (inbound) + HTTP/2 Client (outbound to providers)
 // ══════════════════════════════════════════════════════════════
-const server = http.createServer(async (req, res) => {
+// ─── Service map for /api/system ─────────────────────────────
+// A TCP connect is enough to answer "is something listening"; we do not
+// claim the listener is healthy. /health and each service's own /health
+// endpoint remain the authority for health.
+function probeTcp(port, host, timeoutMs) {
+  return new Promise((resolve) => {
+    if (!port) {
+      resolve(false);
+      return;
+    }
+    const socket = netModule.connect({ port, host: host || "127.0.0.1" });
+    let settled = false;
+    const done = (value) => {
+      if (settled) return;
+      settled = true;
+      try { socket.destroy(); } catch (_) {}
+      resolve(value);
+    };
+    socket.setTimeout(timeoutMs || 400);
+    socket.once("connect", () => done(true));
+    socket.once("timeout", () => done(false));
+    socket.once("error", () => done(false));
+  });
+}
+
+function configuredServiceMap() {
+  const skip = new Set(["caddy_http", "caddy_https", "https", "uds"]);
+  return Object.entries(SERVICE_PORTS)
+    .filter(([name]) => !skip.has(name))
+    .map(([name, key]) => {
+      const raw = process.env[key] || DEFAULTS[key] || "";
+      const port = Number(raw);
+      return {
+        name,
+        env: key,
+        port: Number.isInteger(port) && port > 0 ? port : 0,
+      };
+    })
+    .filter((item) => item.port > 0);
+}
+
+async function collectServiceStatus() {
+  const services = configuredServiceMap();
+  const checks = await Promise.all(
+    services.map(async (item) => ({
+      ...item,
+      listening: await probeTcp(item.port, "127.0.0.1", 350),
+    })),
+  );
+  return checks;
+}
+
+const handleHttpRequest = async (req, res) => {
   const startTime = Date.now();
   const method = req.method;
   let url = req.url.split("?")[0];
@@ -12539,12 +12829,20 @@ const server = http.createServer(async (req, res) => {
     ? crypto.randomUUID().slice(0, 8)
     : String(Date.now()).slice(-8);
 
-  // 🧟 VISUAL EVENT FLOW: Show every request in terminal
+  // 🧟 VISUAL EVENT FLOW: Show every request in terminal with the real caller.
+  const actor = requestActor(req);
   visualEventFlow("request", `[${reqId}] ${method} ${url}`, {
-    from: req.socket.remoteAddress,
-    origin: req.headers.origin || "direct",
-    agent: req.headers["user-agent"]?.slice(0, 50) || "unknown",
+    from: actor.from,
+    origin: actor.origin,
+    client: actor.client || undefined,
+    agent: actor.agent || "unknown",
   });
+  try {
+    const encodedActor = actorHeader(actor);
+    if (encodedActor) res.setHeader("X-Request-Actor", encodedActor);
+  } catch (_) {
+    /* headers already sent by an early route */
+  }
 
   // Store reqId on response for downstream use
   res._reqId = reqId;
@@ -12690,6 +12988,7 @@ const server = http.createServer(async (req, res) => {
         maxRateLimit: DOMAIN_CFG.maxRateLimitPerServer,
         uptime: Math.floor((Date.now() - STATS.startTime) / 1000),
         session_count: cleanExpired().length,
+        system: systemInfo.compactSystemInfo(),
         rate_limit: rateLimit.limited
           ? {
             limited: true,
@@ -12700,6 +12999,39 @@ const server = http.createServer(async (req, res) => {
             message: rateLimit.message,
           }
           : { limited: false, domain: requestDomain },
+      });
+      return;
+    }
+
+    // ─── GET /api/system ──────────────────────────────────────
+    // Host facts plus a live TCP listener map. The map answers "is something
+    // listening", not "is it healthy" — each service keeps its own /health.
+    if (url === "/api/system" && method === "GET") {
+      const system = systemInfo.collectSystemInfo();
+      const services = await collectServiceStatus();
+      log("INFO", "REQUEST", {
+        method,
+        url,
+        status: 200,
+        elapsed: Date.now() - startTime,
+        listeners: services.filter((s) => s.listening).length,
+      });
+      jsonResponse(res, 200, {
+        ok: true,
+        collected_at: new Date().toISOString(),
+        system,
+        services,
+        agents: {
+          count: AGENTS.length,
+          tool_catalog: Object.keys(MCP_TOOLS).length,
+        },
+        runtime: {
+          port: PORT,
+          uds_port: UDS_PORT,
+          grpc_port: parseInt(process.env.GRPC_PORT || "5052", 10),
+          bridge_port: parseInt(process.env.BRIDGE_PORT || "11435", 10),
+          ollama_base: process.env.OLLAMA_BASE || "",
+        },
       });
       return;
     }
@@ -13027,6 +13359,7 @@ const server = http.createServer(async (req, res) => {
 
     // ─── GET /api/agents ─────────────────────────────────────
     if (url === "/api/agents" && method === "GET") {
+      const toolNames = Object.keys(MCP_TOOLS);
       log("INFO", "REQUEST", {
         method,
         url,
@@ -13036,13 +13369,31 @@ const server = http.createServer(async (req, res) => {
       jsonResponse(res, 200, {
         count: AGENTS.length,
         source: "agent/*.js",
-        agents: AGENTS.map((a) => ({
-          id: a.id,
-          name: a.name,
-          role: a.role,
-          model: maskModelName(a.model),
-          provider: "ZombieCoder",
-        })),
+        tools: {
+          catalog: toolNames.length,
+          execution_limit: MAX_TOOLS_LIMIT,
+          default_stream_limit: MAX_TOOLS_LIMIT,
+        },
+        agents: AGENTS.map((a) => {
+          const providerInfo = resolveProvider(a.model, true);
+          const providerId = providerInfo?.providerId || "";
+          const isLocal = !!providerInfo?.config?.local || /^custom_/.test(providerId);
+          const streamLimit = Math.min(MAX_TOOLS_LIMIT, isLocal ? 5 : 15);
+          return {
+            id: a.id,
+            name: a.name,
+            role: a.role,
+            model: maskModelName(a.model),
+            provider: "ZombieCoder",
+            tools: {
+              catalog: toolNames.length,
+              execution_limit: MAX_TOOLS_LIMIT,
+              stream_limit: streamLimit,
+              bound: toolNames.slice(0, MAX_TOOLS_LIMIT),
+              stream_bound: toolNames.slice(0, streamLimit),
+            },
+          };
+        }),
       });
       return;
     }
@@ -14148,6 +14499,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
       const messages = parsed.messages || [];
       const stream = parsed.stream || false;
       const temperature = parsed.temperature || 0.7;
+      const toolChoice = parsed.tool_choice;
       // Phase C: shared sanitizer — validates array + caps at MAX_TOOLS_LIMIT
       // (was inline TOOLS_CAP_FIX: small models return EMPTY response when
       // handed ~70 tools, e.g. "Tools provided: 71, Estimated input tokens:
@@ -14567,7 +14919,18 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
       // ─── PROXY MODE (Competition Router + Provider Fallback) ──────
       // If model is not an agent but resolves to a provider -> direct proxy
       // Try next provider on failure (rate limit, timeout, error)
-      const isAgent = AGENTS.some((a) => a.id === model);
+      // "agent/<id>" is the documented client form. The old check compared
+      // the prefixed string with bare agent ids, so every prefixed request
+      // fell into proxy mode and died with model_not_found before the
+      // single-agent block (which already strips the prefix) could run.
+      const requestedAgentId =
+        typeof model === "string" && model.startsWith("agent/")
+          ? model.slice("agent/".length)
+          : model;
+      const hasAgentPrefix =
+        typeof model === "string" && model.startsWith("agent/");
+      const isAgent =
+        hasAgentPrefix || AGENTS.some((a) => a.id === requestedAgentId);
       if (!isAgent) {
         const allProviders = Object.entries(PROVIDER_CONFIG).sort(
           ([, a], [, b]) => a.priority - b.priority,
@@ -14600,6 +14963,10 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
               code: "model_not_found",
             },
           });
+          // Without this return the code continued into PROXY_ROUTE with
+          // orderedProviders undefined, logged a 500 and leaked a second
+          // response attempt after the 400.
+          return;
         }
 
         log("INFO", "PROXY_ROUTE", {
@@ -14614,6 +14981,57 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
         let usedProvider = null;
         let usedModel = model;
         let proxyResult = null;
+
+        // Direct-model streaming: write OpenAI SSE chunks as the provider
+        // emits them. Headers are delayed until the first real chunk so a
+        // pre-stream provider failure can still return a JSON error.
+        let sseStarted = false;
+        let sseId = null;
+        let sseCreated = null;
+        let sseToolCalls = false;
+        const onProxyChunk = stream
+          ? (delta, chunk) => {
+            if (Array.isArray(delta && delta.tool_calls) && delta.tool_calls.length) {
+              sseToolCalls = true;
+            }
+            if (!sseStarted) {
+              sseStarted = true;
+              sseId = "chatcmpl-" + crypto.randomUUID().replace(/-/g, "");
+              sseCreated = Math.floor(Date.now() / 1000);
+              res.writeHead(200, {
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                Connection: "keep-alive",
+                "X-Accel-Buffering": "no",
+                "Access-Control-Allow-Origin": getCorsOrigin(req.headers.origin),
+              });
+              res.write(
+                "data: " +
+                JSON.stringify({
+                  id: sseId,
+                  object: "chat.completion.chunk",
+                  created: sseCreated,
+                  model,
+                  choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }],
+                }) +
+                "\n\n",
+              );
+            }
+            const upstream = chunk && chunk.choices && chunk.choices[0];
+            const finish = upstream ? upstream.finish_reason : null;
+            res.write(
+              "data: " +
+              JSON.stringify({
+                id: sseId,
+                object: "chat.completion.chunk",
+                created: sseCreated,
+                model,
+                choices: [{ index: 0, delta: delta || {}, finish_reason: finish || null }],
+              }) +
+              "\n\n",
+            );
+          }
+          : null;
 
         // 🧟 GUARD: Skip template/placeholder model names in proxy loop
         let resolvedModel = model;
@@ -14655,6 +15073,8 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
               temperature,
               tools,
               { id: provId, config: provConf },
+              onProxyChunk,
+              toolChoice,
             );
             if (proxyResult.success) {
               usedProvider = provId;
@@ -14674,6 +15094,13 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
         }
 
         if (!proxyResult || !proxyResult.success) {
+          if (stream && sseStarted) {
+            const msg = lastError || "All providers and models failed";
+            res.write("data: " + JSON.stringify({ error: { message: msg } }) + "\n\n");
+            res.write("data: [DONE]\n\n");
+            res.end();
+            return;
+          }
           jsonResponse(res, 502, {
             error: {
               message: lastError || "All providers and models failed",
@@ -14722,10 +15149,27 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
         // 🧟 TOOL ADAPTER: forward the adapter-parsed tool_calls to the
         // client — this block used to hardcode finish_reason:"stop" and
         // DROP tool_calls, so no /v1 client could ever see a function call.
+        if (stream) {
+          finishProxyStream(res, {
+            started: sseStarted,
+            id: sseId,
+            created: sseCreated,
+            model,
+            origin: req.headers.origin,
+            calls: proxyResult && proxyResult.tool_calls,
+            callsStreamed: sseToolCalls,
+          });
+          return;
+        }
         const proxyToolCalls =
           proxyResult && Array.isArray(proxyResult.tool_calls)
             ? proxyResult.tool_calls
             : [];
+        // OpenAI-compatible clients read usage.*; it used to be {} on this
+        // path while the agent path already estimated the same way.
+        const proxyContent = proxyResult ? proxyResult.content || "" : "";
+        const promptTokens = Math.ceil(JSON.stringify(messages).length / 4);
+        const completionTokens = Math.ceil(proxyContent.length / 4);
         return jsonResponse(res, 200, {
           id: "chatcmpl-" + crypto.randomUUID().replace(/-/g, ""),
           object: "chat.completion",
@@ -14746,7 +15190,11 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
               finish_reason: proxyToolCalls.length ? "tool_calls" : "stop",
             },
           ],
-          usage: {},
+          usage: {
+            prompt_tokens: promptTokens,
+            completion_tokens: completionTokens,
+            total_tokens: promptTokens + completionTokens,
+          },
           session_id: sessionId,
           conversation_id: currentSession?.conversation_id || sessionId,
         });
@@ -16263,7 +16711,9 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
     if (!res.headersSent) jsonResponse(res, 500, { error: err.message });
     else try { res.end(); } catch (_) {}
   }
-});
+};
+
+const server = http.createServer(handleHttpRequest);
 
 // ══════════════════════════════════════════════════════════════
 //  WEBSOCKET HANDLER (Native, zero-dep)
@@ -16782,8 +17232,9 @@ async function init() {
         // Fix: 0o777 let ANY local user hijack the MCP socket (which serves
         // unrestricted read_file/terminal). 0o660 = same-user clients only.
         fs.chmodSync(socketPath, 0o660);
+        udsBoundIno = fs.statSync(socketPath).ino;
       } catch (_) { }
-      log("INFO", "UDS_LISTENING", { transport: "uds", path: socketPath });
+      log("INFO", "UDS_LISTENING", { transport: "uds", path: socketPath, ino: udsBoundIno });
     });
   }
   udsServer.on("error", (err) => {
@@ -16792,6 +17243,58 @@ async function init() {
       transport: isWindows ? "tcp" : "uds",
     });
   });
+
+  // ── OpenAI HTTP over UDS — same handler as TCP ──────────────
+  if (!isWindows && process.env.OPENAI_UDS !== "0") {
+    openaiUdsPath = path.resolve(
+      PROJECT_ROOT,
+      process.env.OPENAI_UDS_PATH || path.join(os.tmpdir(), "zombiecoder", "openai.sock"),
+    );
+    const { createUdsOpenAIServer } = require("./transport/uds-openai");
+    openaiUdsServer = createUdsOpenAIServer({
+      socketPath: openaiUdsPath,
+      handler: handleHttpRequest,
+      onListening: (p) => {
+        try {
+          openaiUdsIno = fs.statSync(p).ino;
+        } catch (_) { }
+        log("INFO", "OPENAI_UDS_LISTENING", { path: p, ino: openaiUdsIno });
+      },
+    });
+    openaiUdsServer.listen().catch((err) => {
+      log("WARN", "OPENAI_UDS_ERROR", { error: err.message });
+    });
+  }
+
+  // ── Optional in-process HTTPS — Caddy stays the edge when used ──
+  const httpsCert = process.env.HTTPS_CERT_PATH || "";
+  const httpsKey = process.env.HTTPS_KEY_PATH || "";
+  if (httpsCert && httpsKey && fs.existsSync(httpsCert) && fs.existsSync(httpsKey)) {
+    const httpsPort = parseInt(process.env.HTTPS_PORT || "5444", 10);
+    httpsServer = require("https").createServer(
+      { cert: fs.readFileSync(httpsCert), key: fs.readFileSync(httpsKey) },
+      handleHttpRequest,
+    );
+    httpsServer.on("error", (err) => log("WARN", "HTTPS_ERROR", { error: err.message }));
+    httpsServer.listen(httpsPort, "127.0.0.1", () =>
+      log("INFO", "HTTPS_LISTENING", { port: httpsPort }),
+    );
+  }
+
+  // ── gRPC (h2c + protobuf) — forwards to this same server ────
+  if (process.env.GRPC !== "0") {
+    const grpcPort = parseInt(process.env.GRPC_PORT || "5052", 10);
+    const { createGrpcServer } = require("./transport/grpc");
+    grpcServer = createGrpcServer({
+      port: grpcPort,
+      host: "127.0.0.1",
+      upstream: "http://127.0.0.1:" + PORT,
+    });
+    grpcServer.listen().then(
+      (p) => log("INFO", "GRPC_LISTENING", { port: p }),
+      (err) => log("WARN", "GRPC_ERROR", { error: err.message }),
+    );
+  }
 
   // ─── Startup: SQLite models DB + auto-sync ────────────────────
   // 1. Open/create the models database (node:sqlite, zero-dependency)
@@ -16923,54 +17426,6 @@ async function init() {
     console.log("[SSOT] apnar client-er project folder-e");
     console.log("[SSOT] .zombiecoder/SSOT.md auto-generate hobe!\n");
   });
-
-  // 🧟 BROKER AUTO-RUN — spawn the PHP broker server (php-broker-server.js)
-  // alongside sarver when running api.js directly (start.js already does this).
-  // Idempotent: only spawns if the broker port is NOT already listening, so
-  // `node start.js --start-all` (which spawns broker first) never double-spawns.
-  // Opt-out: set BROKER_AUTORUN=0 in .env to disable.
-  if (process.env.BROKER_AUTORUN !== "0") {
-    const brokerPort = parseInt(process.env.BROKER_PORT || "9998", 10);
-    const brokerPath = path.join(
-      __dirname,
-      "external tools",
-      "php-broker-server.js",
-    );
-    const trySpawnBroker = () => {
-      if (!fs.existsSync(brokerPath)) {
-        console.log("[BROKER] php-broker-server.js not found at:", brokerPath);
-        return;
-      }
-      const sock = net.connect(brokerPort, "127.0.0.1");
-      let connected = false;
-      sock.once("connect", () => {
-        connected = true;
-        sock.destroy();
-        console.log("[BROKER] already running on :" + brokerPort + " — skip spawn");
-      });
-      sock.once("error", () => {
-        if (connected) return;
-        // Port free → spawn broker
-        const { spawn } = require("child_process");
-        const broker = spawn(process.execPath, [brokerPath], {
-          stdio: "inherit",
-          env: process.env,
-        });
-        broker.on("error", (err) =>
-          console.error("[BROKER] spawn error:", err.message),
-        );
-        broker.on("exit", (code, signal) =>
-          console.log("[BROKER] exited code=" + code + " signal=" + signal),
-        );
-        console.log("[BROKER] spawned php-broker-server.js (pid " + broker.pid + ")");
-      });
-      sock.setTimeout(1500, () => {
-        if (!connected) sock.destroy();
-      });
-    };
-    // Non-blocking — fires after listen so startup is never delayed.
-    setTimeout(trySpawnBroker, 300);
-  }
 
   // 🧟 PHASE D: outbound MCP client — discover remote servers
   // (non-blocking, fires after listen so startup is never delayed).
@@ -18337,11 +18792,40 @@ function shutdown() {
   if (typeof udsServer !== "undefined" && udsServer) {
     udsServer.close();
   }
-  if (fs.existsSync(UDS_PATH)) {
-    try {
+  try {
+    const st = fs.statSync(UDS_PATH);
+    if (udsBoundIno && st.ino === udsBoundIno) {
       fs.unlinkSync(UDS_PATH);
-    } catch (_) { }
-    log("INFO", "UDS_CLEANUP", { path: UDS_PATH });
+      log("INFO", "UDS_CLEANUP", { path: UDS_PATH, ino: st.ino });
+    } else {
+      log("INFO", "UDS_CLEANUP_SKIP", {
+        path: UDS_PATH,
+        owned: udsBoundIno,
+        found: st.ino,
+      });
+    }
+  } catch (_) {
+    /* path already gone */
+  }
+  if (openaiUdsServer && typeof openaiUdsServer.close === "function") {
+    openaiUdsServer.close().catch(() => {});
+  }
+  if (openaiUdsPath && openaiUdsIno) {
+    try {
+      const st = fs.statSync(openaiUdsPath);
+      if (st.ino === openaiUdsIno) {
+        fs.unlinkSync(openaiUdsPath);
+        log("INFO", "OPENAI_UDS_CLEANUP", { path: openaiUdsPath, ino: st.ino });
+      } else {
+        log("INFO", "OPENAI_UDS_CLEANUP_SKIP", {
+          path: openaiUdsPath,
+          owned: openaiUdsIno,
+          found: st.ino,
+        });
+      }
+    } catch (_) {
+      /* path already gone */
+    }
   }
   // Close all SSE connections
   for (const [clientId, { res }] of sseClients) {

@@ -1,0 +1,83 @@
+{
+  "_comment": "External MCP servers for Mission Barisal. Every entry is loopback-bound. Ports are ${VAR} placeholders resolved from .env by lib/expand-env.js — change the port in .env, never here, or the spawner will pin a stale value.",
+  "_security": "2026-10-08: removed hardcoded remote DNS entry https://api.zombiecoder.my.id/mcp (was name:zombiecoder, autoConnect:true). All remaining servers are loopback-bound (127.0.0.1).",
+  "servers": [
+    {
+      "name": "ocr",
+      "url": "http://127.0.0.1:${OCR_MCP_PORT}",
+      "transport": "http",
+      "enabled": true,
+      "autoConnect": true,
+      "token": "",
+      "local": true,
+      "script": "external mcp/ocr-mcp.js",
+      "note": "OCR tool — image text extraction via Tesseract."
+    },
+    {
+      "name": "screen-recorder",
+      "url": "http://127.0.0.1:${SCREEN_MCP_PORT}",
+      "transport": "http",
+      "enabled": true,
+      "autoConnect": true,
+      "token": "",
+      "local": true,
+      "script": "external mcp/screen-recorder-mcp.js",
+      "note": "Screen recorder — screenshot + video recording via ffmpeg."
+    },
+    {
+      "name": "tts",
+      "url": "http://127.0.0.1:${TTS_MCP_PORT}",
+      "transport": "http",
+      "enabled": true,
+      "autoConnect": true,
+      "token": "",
+      "local": true,
+      "script": "external mcp/tts-mcp.js",
+      "note": "TTS — text to speech (Edge TTS) + playback via ffplay."
+    },
+    {
+      "name": "facebook-ads",
+      "url": "http://127.0.0.1:${FB_ADS_MCP_PORT}/mcp",
+      "transport": "http",
+      "enabled": true,
+      "autoConnect": true,
+      "token": "",
+      "local": true,
+      "script": "external mcp/facebook-ads-mcp.js",
+      "note": "Facebook Ads — 29 tools. Needs FB credentials; left disabled until configured."
+    },
+    {
+      "name": "public-api",
+      "url": "http://127.0.0.1:${PUBLIC_API_MCP_PORT}/mcp",
+      "transport": "http",
+      "enabled": true,
+      "autoConnect": true,
+      "token": "",
+      "local": true,
+      "script": "external mcp/public-api-mcp.js",
+      "note": "Public APIs (StackOverflow et al.) — 31 tools."
+    },
+    {
+      "name": "combined",
+      "url": "http://127.0.0.1:${COMBINED_MCP_PORT}/mcp",
+      "transport": "http",
+      "enabled": true,
+      "autoConnect": true,
+      "token": "",
+      "local": true,
+      "script": "external mcp/combined.js",
+      "note": "Gateway merging facebook-ads + public-api behind one port — 71 tools."
+    },
+    {
+      "name": "universal-adapter",
+      "url": "http://127.0.0.1:${ADAPTER_HTTP_PORT}/mcp",
+      "transport": "http",
+      "enabled": true,
+      "autoConnect": true,
+      "token": "",
+      "local": true,
+      "script": "universal-adapter/index.js",
+      "note": "Universal transport adapter — HTTP + HTTPS + stdio. Serves its own 9 sandboxed tools plus 145 pulled from the main server (see universal-adapter/main-sync.js)."
+    }
+  ]
+}

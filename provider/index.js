@@ -114,11 +114,18 @@ function configForId(id) {
   const m = /^custom_(\d+)$/i.exec(id);
   if (m) {
     const n = m[1];
+    // A CPU llama.cpp server can take far longer than the 60s default to
+    // prefill a large prompt. The timeout is per provider because a local
+    // box and a cloud API must not share one budget.
+    const timeout = parseInt(env["CUSTOM_PROVIDER_" + n + "_TIMEOUT_MS"] || "", 10);
+    const streamTimeout = parseInt(env["CUSTOM_PROVIDER_" + n + "_STREAM_TIMEOUT_MS"] || "", 10);
     return {
       id: id,
       baseUrl: env["CUSTOM_PROVIDER_" + n + "_URL"],
       key: env["CUSTOM_PROVIDER_" + n + "_KEY"],
       type: (env["CUSTOM_PROVIDER_" + n + "_TYPE"] || "openai").toLowerCase(),
+      ...(Number.isFinite(timeout) && timeout > 0 ? { timeout } : {}),
+      ...(Number.isFinite(streamTimeout) && streamTimeout > 0 ? { streamTimeout } : {}),
     };
   }
   return { id: id, baseUrl: "", key: "", type: "openai" };

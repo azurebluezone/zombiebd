@@ -22,7 +22,7 @@
 // Note the role rename: OpenAI `assistant` ⇄ Gemini `model`.
 
 const transport = require("./transport");
-const { normalize, createStreamNormalizer, asArgString } = require("../normalizer");
+const { normalize, createStreamNormalizer } = require("../normalizer");
 
 const DIALECT = "gemini";
 const GEMINI_DEFAULT_BASE = "https://generativelanguage.googleapis.com/v1beta";
@@ -314,26 +314,28 @@ async function chatStream(cfg, params, onDelta) {
         return;
       }
       const chunk = norm.normalize(frame);
-      if (chunk) { sawPayload = true; if (onDelta) onDelta(chunk); }
-
-      const cand = (frame.candidates && frame.candidates[0]) || {};
-      for (const p of (cand.content && cand.content.parts) || []) {
-        if (typeof p.text === "string") {
-          if (p.thought) reasoning += p.text; else content += p.text;
+      if (chunk) {
+        sawPayload = true;
+        if (onDelta) onDelta(chunk);
+        // Use the normalized call set so streamed and final ids match.
+        const d = (chunk.choices && chunk.choices[0] && chunk.choices[0].delta) || {};
+        if (d.content) content += d.content;
+        if (d.reasoning_content) reasoning += d.reasoning_content;
+        if (Array.isArray(d.tool_calls)) {
+          for (const tc of d.tool_calls) {
+            const i = typeof tc.index === "number" ? tc.index : calls.length;
+            if (!calls[i]) {
+              calls[i] = { id: "", type: "function", function: { name: "", arguments: "" } };
+            }
+            if (tc.id) calls[i].id = tc.id;
+            if (tc.function) {
+              if (tc.function.name) calls[i].function.name = tc.function.name;
+              if (tc.function.arguments) calls[i].function.arguments += tc.function.arguments;
+            }
+          }
         }
-        if (p.functionCall) {
-          calls.push({
-            index: calls.length,
-            id: "call_gemini_" + calls.length,
-            name: p.functionCall.name || "",
-            arguments: asArgString(p.functionCall.args),
-          });
-        }
-      }
-      if (cand.finishReason) {
-        finish = calls.length ? "tool_calls"
-          : ({ STOP: "stop", MAX_TOKENS: "length", SAFETY: "content_filter",
-               RECITATION: "content_filter", OTHER: "stop" }[cand.finishReason] || "stop");
+        const fr = chunk.choices && chunk.choices[0] && chunk.choices[0].finish_reason;
+        if (fr) finish = fr;
       }
     },
     { sse: true },

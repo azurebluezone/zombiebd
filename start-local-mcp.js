@@ -167,7 +167,12 @@ function spawnEntry(entry) {
     };
   }
 
-  const logDir = process.env.LOG_DIR || path.join(ROOT, "logs");
+  // Relative LOG_DIR (e.g. ./logs from .env) follows the project, not the
+  // caller's cwd, so a start from /tmp cannot create /tmp/logs.
+  const rawLogDir = process.env.LOG_DIR || "logs";
+  const logDir = path.isAbsolute(rawLogDir)
+    ? rawLogDir
+    : path.join(ROOT, rawLogDir);
   let logStream = null;
   try {
     fs.mkdirSync(logDir, { recursive: true });

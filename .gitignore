@@ -25,8 +25,8 @@ node_modules
 *.db-wal
 *.sock
 
-# ── এক্সটার্নাল MCP কনফিগ (ভবিষ্যতে টোকেন থাকতে পারে) ──
-external mcp/
+# ── এক্সটার্নাল MCP লোকাল কনফিগ (টোকেন থাকতে পারে) ──
+external mcp/servers.json
 
 # ── এডিটর/OS ──
 .vscode/
@@ -50,3 +50,4 @@ dist/
 *.swo
 __pycache__/
 *.pyc
+.mcp.json

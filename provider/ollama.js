@@ -220,24 +220,34 @@ async function chatStream(cfg, params, onDelta) {
         return;
       }
       const chunk = norm.normalize(frame);
-      if (chunk) { sawPayload = true; if (onDelta) onDelta(chunk); }
-
-      const m = frame.message || {};
-      if (m.content) content += m.content;
-      if (m.thinking) reasoning += m.thinking;
-      if (Array.isArray(m.tool_calls)) {
-        for (const t of m.tool_calls) {
-          const fn = t.function || {};
-          calls.push({
-            index: calls.length,
-            id: "call_ollama_" + calls.length,
-            name: fn.name || "",
-            arguments: JSON.stringify(asArgObject(fn.arguments)),
-          });
+      if (chunk) {
+        sawPayload = true;
+        if (onDelta) onDelta(chunk);
+        // Take the final call set from the normalized chunk so the streamed
+        // id/name/arguments are the SAME objects the caller already saw.
+        const d = (chunk.choices && chunk.choices[0] && chunk.choices[0].delta) || {};
+        if (d.content) content += d.content;
+        if (d.reasoning_content) reasoning += d.reasoning_content;
+        if (Array.isArray(d.tool_calls)) {
+          for (const tc of d.tool_calls) {
+            const i = typeof tc.index === "number" ? tc.index : calls.length;
+            if (!calls[i]) {
+              calls[i] = { id: "", type: "function", function: { name: "", arguments: "" } };
+            }
+            if (tc.id) calls[i].id = tc.id;
+            if (tc.function) {
+              if (tc.function.name) calls[i].function.name = tc.function.name;
+              if (tc.function.arguments) calls[i].function.arguments += tc.function.arguments;
+            }
+          }
         }
+        const fr = chunk.choices && chunk.choices[0] && chunk.choices[0].finish_reason;
+        if (fr) finish = fr;
       }
-      if (frame.done) finish = calls.length ? "tool_calls"
-        : (frame.done_reason === "length" ? "length" : "stop");
+      if (frame.done && !finish) {
+        finish = calls.length ? "tool_calls"
+          : (frame.done_reason === "length" ? "length" : "stop");
+      }
     },
     { ndjson: true },   // no "data:" prefix to strip
   );
