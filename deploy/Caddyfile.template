@@ -1,0 +1,92 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# deploy/Caddyfile.template — Caddy config template for ZombieCoder
+# ─────────────────────────────────────────────────────────────────────────────
+# Every {$VAR} is read from the environment by Caddy itself at load time.
+# Values live in .env — never hardcode a host or port in this file.
+#
+# Load .env, then validate / install:
+#   set -a; . ./.env; set +a
+#   caddy validate --config deploy/Caddyfile.template
+#   sudo cp deploy/Caddyfile.template /etc/caddy/Caddyfile
+#   sudo systemctl reload caddy
+#
+# Or render a fully literal file straight from .env + deploy/tools.json
+# (derives tool subdomains automatically):
+#   node scripts/caddy-render.js --out deploy/Caddyfile
+#
+# NOTE: .env sets CADDY_HTTP_PORT=80 — if Apache/nginx already owns port 80
+# on this machine, stop it first or change CADDY_HTTP_PORT, otherwise caddy
+# fails with a bind error. That swap needs its own approval; this template
+# does not touch running services.
+# ─────────────────────────────────────────────────────────────────────────────
+{
+	http_port {$CADDY_HTTP_PORT}
+	https_port {$CADDY_HTTPS_PORT}
+	# acme mode (TLS_MODE=acme) only — needs public DNS + inbound 80/443:
+	# email {$ACME_EMAIL}
+}
+
+# Main site → main server (PORT), TLS terminated here.
+# MAIN_HOST must be non-empty (set in .env; caddy-render derives it from
+# APP_URL automatically when you render instead).
+https://{$MAIN_HOST} {
+	# internal mode: local CA, works offline. For acme, comment this out.
+	tls internal
+	reverse_proxy 127.0.0.1:{$PORT} {
+		header_up Host {host}
+		header_up X-Real-IP {remote_host}
+		flush_interval -1
+	}
+}
+
+# ── Tool subdomains — active only when TOOL_BASE_DOMAIN is set ──────────────
+# One block per entry in deploy/tools.json. Same upstreams as the MCP servers
+# in "external mcp/servers.json", so a port change in .env flows through here.
+https://ocr.{$TOOL_BASE_DOMAIN} {
+	tls internal
+	reverse_proxy 127.0.0.1:{$OCR_MCP_PORT} {
+		flush_interval -1
+	}
+}
+
+https://screen.{$TOOL_BASE_DOMAIN} {
+	tls internal
+	reverse_proxy 127.0.0.1:{$SCREEN_MCP_PORT} {
+		flush_interval -1
+	}
+}
+
+https://tts.{$TOOL_BASE_DOMAIN} {
+	tls internal
+	reverse_proxy 127.0.0.1:{$TTS_MCP_PORT} {
+		flush_interval -1
+	}
+}
+
+https://ads.{$TOOL_BASE_DOMAIN} {
+	tls internal
+	reverse_proxy 127.0.0.1:{$FB_ADS_MCP_PORT} {
+		flush_interval -1
+	}
+}
+
+https://public.{$TOOL_BASE_DOMAIN} {
+	tls internal
+	reverse_proxy 127.0.0.1:{$PUBLIC_API_MCP_PORT} {
+		flush_interval -1
+	}
+}
+
+https://combined.{$TOOL_BASE_DOMAIN} {
+	tls internal
+	reverse_proxy 127.0.0.1:{$COMBINED_MCP_PORT} {
+		flush_interval -1
+	}
+}
+
+https://adapter.{$TOOL_BASE_DOMAIN} {
+	tls internal
+	reverse_proxy 127.0.0.1:{$ADAPTER_HTTP_PORT} {
+		flush_interval -1
+	}
+}

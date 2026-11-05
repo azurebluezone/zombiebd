@@ -1,0 +1,190 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mission-barisal.local/provider/schema.json",
+  "title": "Mission Barisal — normalized provider contract",
+  "description": "The ONE shape the API server consumes. provider/* speaks each official dialect (openai/groq/ollama/gemini/opencode) on the wire; normalizer/ converts every response into these definitions; api.js never sees a provider-native payload.",
+  "$defs": {
+    "toolCall": {
+      "type": "object",
+      "description": "Canonical OpenAI tool_call. `arguments` is ALWAYS a JSON string here — adapters coerce Ollama/Gemini object args via normalizer.asArgString.",
+      "required": ["id", "type", "function"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "type": { "const": "function" },
+        "function": {
+          "type": "object",
+          "required": ["name", "arguments"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "arguments": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        "index": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": true
+    },
+    "message": {
+      "type": "object",
+      "required": ["role"],
+      "properties": {
+        "role": { "enum": ["system", "user", "assistant", "tool"] },
+        "content": { "type": ["string", "null"] },
+        "reasoning_content": { "type": ["string", "null"] },
+        "tool_calls": { "type": "array", "items": { "$ref": "#/$defs/toolCall" } },
+        "tool_call_id": { "type": "string" },
+        "name": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "usage": {
+      "type": ["object", "null"],
+      "properties": {
+        "prompt_tokens": { "type": "number" },
+        "completion_tokens": { "type": "number" },
+        "total_tokens": { "type": "number" }
+      },
+      "additionalProperties": true
+    },
+    "chatCompletion": {
+      "type": "object",
+      "required": ["choices"],
+      "properties": {
+        "id": { "type": "string" },
+        "object": { "const": "chat.completion" },
+        "created": { "type": "number" },
+        "model": { "type": "string" },
+        "provider": { "type": "string" },
+        "choices": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["index", "message"],
+            "properties": {
+              "index": { "type": "integer" },
+              "message": { "$ref": "#/$defs/message" },
+              "finish_reason": {
+                "enum": ["stop", "length", "tool_calls", "content_filter", "function_call", "null", null]
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "usage": { "$ref": "#/$defs/usage" },
+        "raw_format": {
+          "type": "string",
+          "description": "which dialect produced this: openai | groq | ollama | gemini | unknown"
+        }
+      },
+      "additionalProperties": true
+    },
+    "chatCompletionChunk": {
+      "type": "object",
+      "required": ["choices"],
+      "properties": {
+        "object": { "const": "chat.completion.chunk" },
+        "choices": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["index", "delta"],
+            "properties": {
+              "index": { "type": "integer" },
+              "delta": {
+                "type": "object",
+                "properties": {
+                  "role": { "enum": ["assistant", "system", "user", "tool"] },
+                  "content": { "type": "string" },
+                  "reasoning_content": { "type": "string" },
+                  "tool_calls": { "type": "array", "items": { "$ref": "#/$defs/toolCall" } }
+                },
+                "additionalProperties": true
+              },
+              "finish_reason": {
+                "enum": ["stop", "length", "tool_calls", "content_filter", "function_call", "null", null]
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "chatRequest": {
+      "type": "object",
+      "description": "Canonical request as handed to provider.chat/chatStream by api.js. Adapters map this onto their official dialect (Gemini: contents/functionDeclarations; Ollama: native messages/options).",
+      "required": ["model", "messages"],
+      "properties": {
+        "model": { "type": "string", "minLength": 1 },
+        "apiModel": { "type": "string", "description": "wire model name (may differ from the public/alias name)" },
+        "messages": { "type": "array", "items": { "$ref": "#/$defs/message" } },
+        "temperature": { "type": ["number", "string", "null"] },
+        "tools": { "type": "array", "items": { "$ref": "#/$defs/toolDef" } },
+        "tool_choice": { "type": ["string", "object", "null"] },
+        "max_tokens": { "type": ["number", "null"] },
+        "top_p": { "type": ["number", "null"] },
+        "stop": { "type": ["string", "array", "null"] },
+        "user": { "type": ["string", "null"] },
+        "response_format": { "type": ["object", "null"] },
+        "stream": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "toolDef": {
+      "type": "object",
+      "description": "Canonical chat-style tool definition (OpenAI/Groq/Ollama all take it as-is; Gemini's adapter converts it to functionDeclarations with a Schema-subset sanitiser).",
+      "required": ["type", "function"],
+      "properties": {
+        "type": { "const": "function" },
+        "function": {
+          "type": "object",
+          "required": ["name"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "description": { "type": "string" },
+            "parameters": { "type": "object" },
+            "strict": { "type": "boolean" }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "providerModel": {
+      "type": "object",
+      "description": "One model a provider exposes. `name` is the PUBLIC/zombie name the agent sees; `apiModel` is the real upstream id. The gateway masks between them (api.js maskModelName) so agents never learn the true provider or model.",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "apiModel": { "type": "string" },
+        "enabled": { "type": "boolean" },
+        "priority": { "type": "integer", "minimum": 0 },
+        "contextWindow": { "type": "integer", "minimum": 0 },
+        "maxTokens": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": true
+    },
+    "providerConfig": {
+      "type": "object",
+      "description": "ONE provider entry as consumed by provider/index.js resolveProvider(). Despite many upstream vendors (ollama/groq/gemini/openai/opencode/custom_*), every agent-facing response is masked to the single provider name 'ZombieCoder' — the wire dialect and upstream identity are internal gateway concerns only.",
+      "required": ["id", "name"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "baseUrl": { "type": "string" },
+        "key": { "type": ["string", "null"] },
+        "dialect": { "type": "string" },
+        "socketPath": { "type": ["string", "null"] },
+        "priority": { "type": "integer", "minimum": 0 },
+        "enabled": { "type": "boolean" },
+        "models": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/providerModel" }
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

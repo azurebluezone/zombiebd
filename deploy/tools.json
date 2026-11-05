@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "tools": [
+    {
+      "name": "ocr",
+      "label": "OCR",
+      "subdomain": "ocr",
+      "hostEnv": "OCR_HOST",
+      "portEnv": "OCR_MCP_PORT"
+    },
+    {
+      "name": "screen-recorder",
+      "label": "Screen Recorder",
+      "subdomain": "screen",
+      "hostEnv": "SCREEN_HOST",
+      "portEnv": "SCREEN_MCP_PORT"
+    },
+    {
+      "name": "tts",
+      "label": "Text To Speech",
+      "subdomain": "tts",
+      "hostEnv": "TTS_HOST",
+      "portEnv": "TTS_MCP_PORT"
+    },
+    {
+      "name": "facebook-ads",
+      "label": "Facebook Ads",
+      "subdomain": "ads",
+      "hostEnv": "FB_ADS_HOST",
+      "portEnv": "FB_ADS_MCP_PORT"
+    },
+    {
+      "name": "public-api",
+      "label": "Public API",
+      "subdomain": "public",
+      "hostEnv": "PUBLIC_API_HOST",
+      "portEnv": "PUBLIC_API_MCP_PORT"
+    },
+    {
+      "name": "combined",
+      "label": "Combined Gateway",
+      "subdomain": "combined",
+      "hostEnv": "COMBINED_HOST",
+      "portEnv": "COMBINED_MCP_PORT"
+    },
+    {
+      "name": "universal-adapter",
+      "label": "Universal Adapter",
+      "subdomain": "adapter",
+      "hostEnv": "ADAPTER_HOST",
+      "portEnv": "ADAPTER_HTTP_PORT"
+    }
+  ]
+}
