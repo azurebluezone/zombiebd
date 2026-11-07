@@ -8,6 +8,19 @@
 # evidence for a public URL.
 set -uo pipefail
 
+# --remote proves a deployment that uses cloud providers only: Ollama and
+# llama.cpp are deliberately absent, so the native adapter probe is reported
+# as SKIP and the final line names the mode. The default mode stays the full
+# local-model gate from docs/EDGE-RUNTIME-SPEC.md.
+REMOTE_ONLY=0
+for arg in "$@"; do
+  case "$arg" in
+    --remote) REMOTE_ONLY=1 ;;
+    --quick|"") ;;
+    *) echo "unknown option: $arg" >&2; exit 2 ;;
+  esac
+done
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT" || exit 1
 
@@ -109,23 +122,33 @@ curl -sS -o "$TOOLS_BODY" -m 15 -X POST "$APP_URL/mcp" \
 TOOL_COUNT="$(node -e 'try{const j=require(process.argv[1]);process.stdout.write(String((j.result&&j.result.tools||[]).length))}catch(_){process.stdout.write("0")}' "$TOOLS_BODY" 2>/dev/null || echo 0)"
 if [ "$TOOL_COUNT" = "$EXPECTED_TOOLS" ]; then pass "tools=$TOOL_COUNT"; else fail "tools" "live=$TOOL_COUNT expected=$EXPECTED_TOOLS"; fi
 
-# 10. Provider registration: both llama.cpp dialects must be listed.
+# 10. Provider registration: both llama.cpp dialects must be listed. A
+# remote-only deployment instead proves a cloud provider owns a model.
 MODELS_BODY="$OUT/models.json"
 curl -sS -o "$MODELS_BODY" -m 15 "$APP_URL/api/v0/models" >>"$LOG" 2>&1 || true
-PROVIDER_OWNERS="$(node -e '
+if [ "$REMOTE_ONLY" = 1 ]; then
+  OWNER_RE='opencode|groq|gemini|custom_[0-9]'
+else
+  OWNER_RE='llama-cpu-openai|llama-native'
+fi
+PROVIDER_OWNERS="$(OWNER_RE="$OWNER_RE" node -e '
 try {
+  const re = new RegExp(process.env.OWNER_RE, "i");
   const j = require(process.argv[1]);
   const owners = new Set((j.data || []).map((m) => m && m.owned_by).filter(Boolean));
-  process.stdout.write([...owners].filter((o) => /llama-cpu-openai|llama-native/i.test(o)).sort().join(","));
+  process.stdout.write([...owners].filter((o) => re.test(o)).sort().join(","));
 } catch (_) { process.stdout.write(""); }
 ' "$MODELS_BODY" 2>/dev/null || true)"
 if [ -n "$PROVIDER_OWNERS" ]; then
   pass "providers=$PROVIDER_OWNERS"
 else
-  fail "providers" "neither llama-cpu-openai nor llama-native advertised"
+  fail "providers" "no registered provider matched $OWNER_RE"
 fi
 
 # 11. Native llama.cpp /completion adapter, real request.
+if [ "$REMOTE_ONLY" = 1 ]; then
+  say "SKIP native (remote-provider mode: llama.cpp is not part of this deployment)"
+else
 NATIVE_RESULT="$(node - <<'NODE' 2>>"$LOG" || true
 const { readEnvFile } = require("./lib/env");
 Object.assign(process.env, readEnvFile(".env"));
@@ -146,6 +169,7 @@ adapter.chat({ id: "custom_6", baseUrl: base, timeout: 120000 }, {
 NODE
 )"
 if [ "$NATIVE_RESULT" = "NATIVE_OK" ]; then pass "native=ok"; else fail "native" "${NATIVE_RESULT:-no_result}"; fi
+fi
 
 # 12. Database created and seeded with concrete models.
 DB_RESULT="$(node - "$DB_PATH" <<'NODE' 2>>"$LOG"
@@ -221,4 +245,8 @@ if [ -n "$FAILED" ]; then
   echo "RESULT: MISSION BARISAL FAIL missing=${FAILED# }"
   exit 1
 fi
-echo "RESULT: MISSION BARISAL PASS env=ok installer=ok node=24 kde=present tls=ok origins=ok tools=$EXPECTED_TOOLS providers=ok native=ok db=seed build=ok start=ok agents=9 workdir=ok reply=ok"
+if [ "$REMOTE_ONLY" = 1 ]; then
+  echo "RESULT: MISSION BARISAL PASS (remote-only) env=ok installer=ok node=24 kde=present tls=ok origins=ok tools=$EXPECTED_TOOLS providers=ok native=skipped db=seed build=ok start=ok agents=9 workdir=ok reply=ok"
+else
+  echo "RESULT: MISSION BARISAL PASS env=ok installer=ok node=24 kde=present tls=ok origins=ok tools=$EXPECTED_TOOLS providers=ok native=ok db=seed build=ok start=ok agents=9 workdir=ok reply=ok"
+fi

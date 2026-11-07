@@ -93,21 +93,47 @@ done < "$ENV_FILE"
 # ── Runtime state stays in the checkout, code comes from dist/ ──────────────
 # The build output is disposable (a rebuild replaces it), while data/models.db,
 # logs/ and .zombiecoder/ are the operator's state. Linking them keeps one
-# copy of each and makes a rebuild safe. On a machine without these paths the
-# app creates them inside dist/ on first boot.
+# copy of each and makes a rebuild safe.
+#
+# A boot that ran before the checkout directory existed left real state in
+# dist/ (dist/data/models.db), while .env and install-verify resolve the same
+# relative path from the checkout. That split is invisible until verification
+# opens an empty database. Move any such runtime state into the checkout once,
+# then replace the directory with a link so the next boot cannot re-split it.
 # skills/ is build output, not operator state; it stays inside dist/.
 for d in data logs cache locks .zombiecoder .missionbarisal; do
   src="$APP_DIR/$d"
   dst="$RUNTIME_DIR/$d"
-  [ -e "$src" ] || continue
+  mkdir -p "$src" 2>/dev/null || true
+  [ -e "$src" ] || { log "WARN $src is missing and cannot be created here — skipping link"; continue; }
   if [ -L "$dst" ]; then
     ln -sfn "$src" "$dst"
-  elif [ -d "$dst" ] && [ -z "$(ls -A "$dst" 2>/dev/null)" ]; then
-    # A build can leave an empty runtime directory behind; replace it so the
-    # operator's state is the only copy.
-    rmdir "$dst" 2>/dev/null && ln -s "$src" "$dst" || log "WARN could not link $dst"
+  elif [ -d "$dst" ]; then
+    if [ -n "$(ls -A "$dst" 2>/dev/null)" ]; then
+      for entry in "$dst"/* "$dst"/.[!.]* "$dst"/..?*; do
+        [ -e "$entry" ] || continue
+        base="$(basename "$entry")"
+        if [ -e "$src/$base" ]; then
+          if [ "$entry" -nt "$src/$base" ]; then
+            keep="$src/.migrated-$base.$(date +%s)"
+            mv "$src/$base" "$keep" 2>/dev/null && mv "$entry" "$src/$base" 2>/dev/null \
+              && log "REPLACED $src/$base with newer runtime copy (old kept at $keep)" \
+              || log "WARN could not replace $src/$base with $entry"
+          else
+            rm -rf "$entry" 2>/dev/null \
+              && log "REMOVED duplicate $entry (checkout copy $src/$base is newer)" \
+              || log "WARN could not remove duplicate $entry"
+          fi
+        elif mv "$entry" "$src/" 2>/dev/null; then
+          log "MIGRATED $entry -> $src/$base"
+        else
+          log "WARN could not migrate $entry"
+        fi
+      done
+    fi
+    rmdir "$dst" 2>/dev/null && ln -s "$src" "$dst" || log "WARN could not link $dst (still a real dir)"
   elif [ -e "$dst" ]; then
-    log "WARN $dst exists as a real path; leaving it untouched"
+    log "WARN $dst exists as a non-directory; leaving it untouched"
   else
     ln -s "$src" "$dst" || log "WARN could not link $dst"
   fi

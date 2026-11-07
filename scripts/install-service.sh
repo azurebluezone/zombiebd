@@ -40,6 +40,14 @@ esac
 
 mkdir -p "$UNIT_DIR" "$LOG_DIR"
 
+# ReadWritePaths= below requires every path to exist before the unit starts;
+# a missing one makes systemd fail the mount namespace. Create the operator
+# state dirs here (outside the unit's read-only home) so the launcher can link
+# them into dist/ instead of letting the app create a second copy under dist/.
+for state_dir in data logs cache locks .zombiecoder .missionbarisal; do
+  mkdir -p "$ROOT/$state_dir"
+done
+
 # ── the unit, with every path derived from $ROOT ─────────────────────────────
 cat > "$UNIT_FILE" <<EOF
 [Unit]

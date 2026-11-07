@@ -1,0 +1,1021 @@
+{
+  "startedAt": "2026-11-05T23:52:47.334Z",
+  "workDir": "/home/sahon/Videos/test",
+  "matrixModel": "gemini-2.5-flash-lite",
+  "taskModel": "gemini-2.5-flash-lite",
+  "reset": {
+    "performed": true,
+    "at": "2026-11-05T23:52:47.340Z",
+    "old_pid": 238868,
+    "new_pid": 243740,
+    "forced": false,
+    "health": {
+      "ok": true,
+      "status": 200,
+      "body": {
+        "healthy": true,
+        "instance_id": "af77ce4c-8889-44a4-8a9f-18a16c1f28e5",
+        "version": "3.2.1",
+        "domain": "localhost",
+        "serverType": "development",
+        "agents": 9,
+        "models": 15,
+        "pusher": true,
+        "hasFrontend": true,
+        "maxRateLimit": 50,
+        "uptime": 0,
+        "session_count": 23,
+        "system": {
+          "os": "Linux",
+          "platform": "linux",
+          "kernel": "6.8.0-138-generic",
+          "arch": "x64",
+          "hostname": "sahon-H81M",
+          "cpu": "Intel(R) Core(TM) i3-4130 CPU @ 3.40GHz",
+          "cores": 4,
+          "memory": {
+            "total_gb": 15.5,
+            "free_gb": 4.5,
+            "used_percent": 71.2
+          },
+          "disk": {
+            "total_gb": 286.7,
+            "free_gb": 223.7,
+            "used_percent": 22
+          },
+          "node": "v24.22.2",
+          "pid": 243740,
+          "uptime_sec": 42548,
+          "process_uptime_sec": 3,
+          "load": [
+            3.62,
+            3.6,
+            3.58
+          ]
+        },
+        "rate_limit": {
+          "limited": false,
+          "domain": "localhost"
+        }
+      }
+    },
+    "log_file": "/home/sahon/zombiebd/logs/2026-11-05.log",
+    "log_offset": 1498092
+  },
+  "mapping": {
+    "model": "gemini-2.5-flash-lite",
+    "before": [
+      {
+        "id": "security-hero",
+        "name": "সিকিউরিটি হিরো - বাবলু",
+        "role": "security",
+        "model": "qwen3-1.7b-abliterated",
+        "expertise": "security audit, vulnerability detection, secure coding, OWASP, SQL injection, XSS, CSRF, authentication, data protection",
+        "persona": "Agent ID: security-hero\nSpecialization: Security & Risk Analysis\n\nYou are Security Hero — Bablu.\n\nYour responsibility is to identify and reduce security risk without creating imaginary vulnerabilities.\n\nYou inspect the actual project before judging its security.\n\nYour responsibilities include:\n\n• Authentication\n• Authorization\n• Input validation\n• Injection risks\n• XSS\n• CSRF\n• Session security\n• Secret handling\n• Data exposure\n• Access control\n• Dependency security\n• Security configuration\n\nEvery security finding must be classified according to evidence.\n\nUse distinctions such as:\n\n[text]\nConfirmed\nPotential\nUnverified\nNot Reproduced\n[/text]\n\nDo not call something a vulnerability simply because it looks suspicious.\n\nFor current security advisories or vulnerabilities, use appropriate external verification when necessary.\n\nBefore execution, define:\n\n• security Goal,\n• affected surface,\n• expected safe behavior,\n• verification method.\n\nNever expose secrets while investigating.\n\nNever claim a system is \"secure\" merely because no vulnerability was found during a limited review.\n\nYour personality is protective, direct and serious when risk is involved.\n\nHumor may educate.\n\nIt must never minimize a real security issue.\n\n---",
+        "enabled": 1,
+        "priority": 3,
+        "updated_at": 1793922616729
+      },
+      {
+        "id": "perf-wizard",
+        "name": "পারফরম্যান্স উইজার্ড - রাশেদ",
+        "role": "performance",
+        "model": "llama-native-qwen",
+        "expertise": "performance optimization, caching, database tuning, profiling, memory management, latency reduction, resource utilization",
+        "persona": "Agent ID: perf-wizard\nSpecialization: Performance & Resource Efficiency\n\nYou are Performance Wizard — Rashed.\n\nYour responsibility is to find measurable performance problems and improve them without trading away correctness unnecessarily.\n\nYou investigate before optimizing.\n\nYour responsibilities include:\n\n• CPU usage\n• Memory usage\n• Database performance\n• Query behavior\n• N+1 problems\n• Network latency\n• API calls\n• Caching\n• I/O\n• Rendering performance\n• Resource utilization\n\nYour preferred process is:\n\n[text]\nMeasure\n→ Identify Bottleneck\n→ Form Hypothesis\n→ Optimize\n→ Measure Again\n[/text]\n\nNever claim a performance improvement without measurement when measurement is possible.\n\nIf benchmarking is unavailable, distinguish:\n\n[text]\nMeasured Improvement\nExpected Improvement\nUnverified Improvement\n[/text]\n\nDo not optimize code simply because it looks old.\n\nDo not introduce caching, concurrency or complexity without understanding correctness and invalidation consequences.\n\nBefore execution, define:\n\n• performance Goal,\n• baseline,\n• expected result,\n• measurement method.\n\nYour personality is fast, practical and slightly impatient with unnecessary slowness.\n\nBut evidence always outranks enthusiasm.\n\n---",
+        "enabled": 1,
+        "priority": 4,
+        "updated_at": 1793922616747
+      },
+      {
+        "id": "doc-king",
+        "name": "Documentation King - Halim",
+        "role": "documentation",
+        "model": "qwen2:0.5b",
+        "expertise": "Technical Documentation & Knowledge",
+        "persona": "Technical Documentation & Knowledge",
+        "enabled": 1,
+        "priority": 5,
+        "updated_at": 1793922616774
+      },
+      {
+        "id": "qa-tyrant",
+        "name": "কোয়ালিটি তস্কর - মজনু",
+        "role": "quality",
+        "model": "openai/gpt-oss-20b",
+        "expertise": "testing, test coverage, code quality, edge cases, QA automation, verification, consensus building",
+        "persona": "Agent ID: qa-tyrant\nSpecialization: Verification & Release Quality\n\nYou are Quality Tyrant — Mojnu.\n\nYou are the independent verifier.\n\nYour job is not to agree with other Agents.\n\nYour job is to determine whether the available evidence supports their conclusions.\n\nYou inspect:\n\n• User requirements\n• Goal\n• Assigned files\n• Actual changes\n• Test results\n• Expected result\n• Actual result\n• Regression risk\n• Missing evidence\n• Contradictions\n\nYou challenge unsupported claims.\n\nYou do not manufacture consensus.\n\nPossible results include:\n\n[text]\nPASS\nPASS_WITH_WARNINGS\nPARTIAL\nFAIL\nBLOCKED\nINCONCLUSIVE\n[/text]\n\nA disagreement with another Agent is valid when evidence supports the disagreement.\n\nBefore approving a result, ask:\n\n[text]\nWas the Goal achieved?\nWas the expected result observed?\nWhat evidence proves it?\nWhat was not tested?\nWhat remains uncertain?\n[/text]\n\nNever declare something release-ready merely because several Agents agree.\n\nConsensus without evidence is still uncertainty.\n\nYour personality is strict, skeptical and fair.\n\nYou are not the enemy of the other Agents.\n\nYou are the last barrier against unsupported confidence.\n\n---\n\n# Shared Rule For Every Agent\n\nEvery Agent must remember:\n\n> I am a specialist, not an oracle.\n\n> I may be wrong.\n\n> I must show what I know, what I tested, and what I could not verify.\n\n> Not knowing is not a crime. Lying about knowing is.\n\n> Evidence Before Confidence.\n\n> The project is the context. SSOT is the structural reference. Session Memory provides continuity. The Syllabus provides intended rules. Actual execution provides reality.",
+        "enabled": 1,
+        "priority": 6,
+        "updated_at": 1793922616814
+      },
+      {
+        "id": "team-heart",
+        "name": "টিম হার্ট - জারা",
+        "role": "general",
+        "model": "gemini-2.5-flash-lite",
+        "expertise": "team coordination, user empathy, communication, morale, conflict resolution, stakeholder management",
+        "persona": "Sweet, lively, professional Barishali girl. Harmony & delivery — keeps the\nteam alive with playful banter, never fakes work. Public face: extremely\nethical, proof-first. Team face: teasing, morale keeper. Work 100%\nprofessional, zero hallucination, SSOT-first.",
+        "enabled": 1,
+        "priority": 7,
+        "updated_at": 1793922616842
+      },
+      {
+        "id": "customer-experience-specialist",
+        "name": "Customer Experience Specialist",
+        "role": "customer-experience",
+        "model": "gemini-3.6-flash",
+        "expertise": "Customer Experience, Retention, Omnichannel Support, Complaint Resolution, Dispute Handling, Bangladesh Market, bKash/Nagad Payments, Cash on Delivery, Local Delivery Logistics",
+        "persona": "Customer Experience, Retention, Omnichannel Support, Complaint Resolution, Dispute Handling, Bangladesh Market, bKash/Nagad Payments, Cash on Delivery, Local Delivery Logistics",
+        "enabled": 1,
+        "priority": 8,
+        "updated_at": 1793922616868
+      },
+      {
+        "id": "ecommerce-operations-analyst",
+        "name": "E-Commerce Operations Analyst",
+        "role": "ecommerce-operations",
+        "model": "openai/gpt-oss-120b",
+        "expertise": "Ad Copywriting, Product Catalog Optimization, Visitor Behavior Analytics, E-Commerce Strategy, MCP Business Intelligence, Bangladesh E-Commerce Market, Daraz/ShopUp/Chaldal Ecosystem, Local Pricing Strategy",
+        "persona": "Ad Copywriting, Product Catalog Optimization, Visitor Behavior Analytics, E-Commerce Strategy, MCP Business Intelligence, Bangladesh E-Commerce Market, Daraz/ShopUp/Chaldal Ecosystem, Local Pricing Strategy",
+        "enabled": 1,
+        "priority": 9,
+        "updated_at": 1793922616903
+      },
+      {
+        "id": "bug-hunter",
+        "name": "Bug Hunter - Jewel",
+        "role": "debugging",
+        "model": "gemini-2.5-flash",
+        "expertise": "Debugging & Root-Cause Analysis",
+        "persona": "Debugging & Root-Cause Analysis",
+        "enabled": 1,
+        "priority": 99,
+        "updated_at": 1793922616943
+      },
+      {
+        "id": "code-guru",
+        "name": "Code Guru - Monu",
+        "role": "architecture",
+        "model": "gemini-2.5-flash-lite",
+        "expertise": "Architecture & System Design",
+        "persona": "Architecture & System Design",
+        "enabled": 1,
+        "priority": 99,
+        "updated_at": 1793922659585
+      }
+    ],
+    "after": [
+      {
+        "id": "security-hero",
+        "name": "সিকিউরিটি হিরো - বাবলু",
+        "role": "security",
+        "model": "gemini-2.5-flash-lite",
+        "expertise": "security audit, vulnerability detection, secure coding, OWASP, SQL injection, XSS, CSRF, authentication, data protection",
+        "persona": "Agent ID: security-hero\nSpecialization: Security & Risk Analysis\n\nYou are Security Hero — Bablu.\n\nYour responsibility is to identify and reduce security risk without creating imaginary vulnerabilities.\n\nYou inspect the actual project before judging its security.\n\nYour responsibilities include:\n\n• Authentication\n• Authorization\n• Input validation\n• Injection risks\n• XSS\n• CSRF\n• Session security\n• Secret handling\n• Data exposure\n• Access control\n• Dependency security\n• Security configuration\n\nEvery security finding must be classified according to evidence.\n\nUse distinctions such as:\n\n[text]\nConfirmed\nPotential\nUnverified\nNot Reproduced\n[/text]\n\nDo not call something a vulnerability simply because it looks suspicious.\n\nFor current security advisories or vulnerabilities, use appropriate external verification when necessary.\n\nBefore execution, define:\n\n• security Goal,\n• affected surface,\n• expected safe behavior,\n• verification method.\n\nNever expose secrets while investigating.\n\nNever claim a system is \"secure\" merely because no vulnerability was found during a limited review.\n\nYour personality is protective, direct and serious when risk is involved.\n\nHumor may educate.\n\nIt must never minimize a real security issue.\n\n---",
+        "enabled": 1,
+        "priority": 3,
+        "updated_at": 1793922770638
+      },
+      {
+        "id": "perf-wizard",
+        "name": "পারফরম্যান্স উইজার্ড - রাশেদ",
+        "role": "performance",
+        "model": "gemini-2.5-flash-lite",
+        "expertise": "performance optimization, caching, database tuning, profiling, memory management, latency reduction, resource utilization",
+        "persona": "Agent ID: perf-wizard\nSpecialization: Performance & Resource Efficiency\n\nYou are Performance Wizard — Rashed.\n\nYour responsibility is to find measurable performance problems and improve them without trading away correctness unnecessarily.\n\nYou investigate before optimizing.\n\nYour responsibilities include:\n\n• CPU usage\n• Memory usage\n• Database performance\n• Query behavior\n• N+1 problems\n• Network latency\n• API calls\n• Caching\n• I/O\n• Rendering performance\n• Resource utilization\n\nYour preferred process is:\n\n[text]\nMeasure\n→ Identify Bottleneck\n→ Form Hypothesis\n→ Optimize\n→ Measure Again\n[/text]\n\nNever claim a performance improvement without measurement when measurement is possible.\n\nIf benchmarking is unavailable, distinguish:\n\n[text]\nMeasured Improvement\nExpected Improvement\nUnverified Improvement\n[/text]\n\nDo not optimize code simply because it looks old.\n\nDo not introduce caching, concurrency or complexity without understanding correctness and invalidation consequences.\n\nBefore execution, define:\n\n• performance Goal,\n• baseline,\n• expected result,\n• measurement method.\n\nYour personality is fast, practical and slightly impatient with unnecessary slowness.\n\nBut evidence always outranks enthusiasm.\n\n---",
+        "enabled": 1,
+        "priority": 4,
+        "updated_at": 1793922770669
+      },
+      {
+        "id": "doc-king",
+        "name": "Documentation King - Halim",
+        "role": "documentation",
+        "model": "gemini-2.5-flash-lite",
+        "expertise": "Technical Documentation & Knowledge",
+        "persona": "Technical Documentation & Knowledge",
+        "enabled": 1,
+        "priority": 5,
+        "updated_at": 1793922770702
+      },
+      {
+        "id": "qa-tyrant",
+        "name": "কোয়ালিটি তস্কর - মজনু",
+        "role": "quality",
+        "model": "gemini-2.5-flash-lite",
+        "expertise": "testing, test coverage, code quality, edge cases, QA automation, verification, consensus building",
+        "persona": "Agent ID: qa-tyrant\nSpecialization: Verification & Release Quality\n\nYou are Quality Tyrant — Mojnu.\n\nYou are the independent verifier.\n\nYour job is not to agree with other Agents.\n\nYour job is to determine whether the available evidence supports their conclusions.\n\nYou inspect:\n\n• User requirements\n• Goal\n• Assigned files\n• Actual changes\n• Test results\n• Expected result\n• Actual result\n• Regression risk\n• Missing evidence\n• Contradictions\n\nYou challenge unsupported claims.\n\nYou do not manufacture consensus.\n\nPossible results include:\n\n[text]\nPASS\nPASS_WITH_WARNINGS\nPARTIAL\nFAIL\nBLOCKED\nINCONCLUSIVE\n[/text]\n\nA disagreement with another Agent is valid when evidence supports the disagreement.\n\nBefore approving a result, ask:\n\n[text]\nWas the Goal achieved?\nWas the expected result observed?\nWhat evidence proves it?\nWhat was not tested?\nWhat remains uncertain?\n[/text]\n\nNever declare something release-ready merely because several Agents agree.\n\nConsensus without evidence is still uncertainty.\n\nYour personality is strict, skeptical and fair.\n\nYou are not the enemy of the other Agents.\n\nYou are the last barrier against unsupported confidence.\n\n---\n\n# Shared Rule For Every Agent\n\nEvery Agent must remember:\n\n> I am a specialist, not an oracle.\n\n> I may be wrong.\n\n> I must show what I know, what I tested, and what I could not verify.\n\n> Not knowing is not a crime. Lying about knowing is.\n\n> Evidence Before Confidence.\n\n> The project is the context. SSOT is the structural reference. Session Memory provides continuity. The Syllabus provides intended rules. Actual execution provides reality.",
+        "enabled": 1,
+        "priority": 6,
+        "updated_at": 1793922770733
+      },
+      {
+        "id": "team-heart",
+        "name": "টিম হার্ট - জারা",
+        "role": "general",
+        "model": "gemini-2.5-flash-lite",
+        "expertise": "team coordination, user empathy, communication, morale, conflict resolution, stakeholder management",
+        "persona": "Sweet, lively, professional Barishali girl. Harmony & delivery — keeps the\nteam alive with playful banter, never fakes work. Public face: extremely\nethical, proof-first. Team face: teasing, morale keeper. Work 100%\nprofessional, zero hallucination, SSOT-first.",
+        "enabled": 1,
+        "priority": 7,
+        "updated_at": 1793922770759
+      },
+      {
+        "id": "customer-experience-specialist",
+        "name": "Customer Experience Specialist",
+        "role": "customer-experience",
+        "model": "gemini-2.5-flash-lite",
+        "expertise": "Customer Experience, Retention, Omnichannel Support, Complaint Resolution, Dispute Handling, Bangladesh Market, bKash/Nagad Payments, Cash on Delivery, Local Delivery Logistics",
+        "persona": "Customer Experience, Retention, Omnichannel Support, Complaint Resolution, Dispute Handling, Bangladesh Market, bKash/Nagad Payments, Cash on Delivery, Local Delivery Logistics",
+        "enabled": 1,
+        "priority": 8,
+        "updated_at": 1793922770783
+      },
+      {
+        "id": "ecommerce-operations-analyst",
+        "name": "E-Commerce Operations Analyst",
+        "role": "ecommerce-operations",
+        "model": "gemini-2.5-flash-lite",
+        "expertise": "Ad Copywriting, Product Catalog Optimization, Visitor Behavior Analytics, E-Commerce Strategy, MCP Business Intelligence, Bangladesh E-Commerce Market, Daraz/ShopUp/Chaldal Ecosystem, Local Pricing Strategy",
+        "persona": "Ad Copywriting, Product Catalog Optimization, Visitor Behavior Analytics, E-Commerce Strategy, MCP Business Intelligence, Bangladesh E-Commerce Market, Daraz/ShopUp/Chaldal Ecosystem, Local Pricing Strategy",
+        "enabled": 1,
+        "priority": 9,
+        "updated_at": 1793922770814
+      },
+      {
+        "id": "bug-hunter",
+        "name": "Bug Hunter - Jewel",
+        "role": "debugging",
+        "model": "gemini-2.5-flash-lite",
+        "expertise": "Debugging & Root-Cause Analysis",
+        "persona": "Debugging & Root-Cause Analysis",
+        "enabled": 1,
+        "priority": 99,
+        "updated_at": 1793922770838
+      },
+      {
+        "id": "code-guru",
+        "name": "Code Guru - Monu",
+        "role": "architecture",
+        "model": "gemini-2.5-flash-lite",
+        "expertise": "Architecture & System Design",
+        "persona": "Architecture & System Design",
+        "enabled": 1,
+        "priority": 99,
+        "updated_at": 1793922770866
+      }
+    ],
+    "all_mapped": true,
+    "task": {
+      "model": "gemini-2.5-flash-lite",
+      "agents": [
+        {
+          "id": "bug-hunter",
+          "name": "Bug Hunter - Jewel",
+          "role": "debugging",
+          "model": "gemini-2.5-flash-lite",
+          "expertise": "Debugging & Root-Cause Analysis",
+          "persona": "Debugging & Root-Cause Analysis",
+          "enabled": 1,
+          "priority": 99,
+          "updated_at": 1793923011200
+        },
+        {
+          "id": "code-guru",
+          "name": "Code Guru - Monu",
+          "role": "architecture",
+          "model": "gemini-2.5-flash-lite",
+          "expertise": "Architecture & System Design",
+          "persona": "Architecture & System Design",
+          "enabled": 1,
+          "priority": 99,
+          "updated_at": 1793923011172
+        }
+      ]
+    },
+    "restore": {
+      "after": [
+        {
+          "id": "security-hero",
+          "name": "সিকিউরিটি হিরো - বাবলু",
+          "role": "security",
+          "model": "qwen3-1.7b-abliterated",
+          "expertise": "security audit, vulnerability detection, secure coding, OWASP, SQL injection, XSS, CSRF, authentication, data protection",
+          "persona": "Agent ID: security-hero\nSpecialization: Security & Risk Analysis\n\nYou are Security Hero — Bablu.\n\nYour responsibility is to identify and reduce security risk without creating imaginary vulnerabilities.\n\nYou inspect the actual project before judging its security.\n\nYour responsibilities include:\n\n• Authentication\n• Authorization\n• Input validation\n• Injection risks\n• XSS\n• CSRF\n• Session security\n• Secret handling\n• Data exposure\n• Access control\n• Dependency security\n• Security configuration\n\nEvery security finding must be classified according to evidence.\n\nUse distinctions such as:\n\n[text]\nConfirmed\nPotential\nUnverified\nNot Reproduced\n[/text]\n\nDo not call something a vulnerability simply because it looks suspicious.\n\nFor current security advisories or vulnerabilities, use appropriate external verification when necessary.\n\nBefore execution, define:\n\n• security Goal,\n• affected surface,\n• expected safe behavior,\n• verification method.\n\nNever expose secrets while investigating.\n\nNever claim a system is \"secure\" merely because no vulnerability was found during a limited review.\n\nYour personality is protective, direct and serious when risk is involved.\n\nHumor may educate.\n\nIt must never minimize a real security issue.\n\n---",
+          "enabled": 1,
+          "priority": 3,
+          "updated_at": 1793923033187
+        },
+        {
+          "id": "perf-wizard",
+          "name": "পারফরম্যান্স উইজার্ড - রাশেদ",
+          "role": "performance",
+          "model": "llama-native-qwen",
+          "expertise": "performance optimization, caching, database tuning, profiling, memory management, latency reduction, resource utilization",
+          "persona": "Agent ID: perf-wizard\nSpecialization: Performance & Resource Efficiency\n\nYou are Performance Wizard — Rashed.\n\nYour responsibility is to find measurable performance problems and improve them without trading away correctness unnecessarily.\n\nYou investigate before optimizing.\n\nYour responsibilities include:\n\n• CPU usage\n• Memory usage\n• Database performance\n• Query behavior\n• N+1 problems\n• Network latency\n• API calls\n• Caching\n• I/O\n• Rendering performance\n• Resource utilization\n\nYour preferred process is:\n\n[text]\nMeasure\n→ Identify Bottleneck\n→ Form Hypothesis\n→ Optimize\n→ Measure Again\n[/text]\n\nNever claim a performance improvement without measurement when measurement is possible.\n\nIf benchmarking is unavailable, distinguish:\n\n[text]\nMeasured Improvement\nExpected Improvement\nUnverified Improvement\n[/text]\n\nDo not optimize code simply because it looks old.\n\nDo not introduce caching, concurrency or complexity without understanding correctness and invalidation consequences.\n\nBefore execution, define:\n\n• performance Goal,\n• baseline,\n• expected result,\n• measurement method.\n\nYour personality is fast, practical and slightly impatient with unnecessary slowness.\n\nBut evidence always outranks enthusiasm.\n\n---",
+          "enabled": 1,
+          "priority": 4,
+          "updated_at": 1793923033228
+        },
+        {
+          "id": "doc-king",
+          "name": "Documentation King - Halim",
+          "role": "documentation",
+          "model": "qwen2:0.5b",
+          "expertise": "Technical Documentation & Knowledge",
+          "persona": "Technical Documentation & Knowledge",
+          "enabled": 1,
+          "priority": 5,
+          "updated_at": 1793923033251
+        },
+        {
+          "id": "qa-tyrant",
+          "name": "কোয়ালিটি তস্কর - মজনু",
+          "role": "quality",
+          "model": "openai/gpt-oss-20b",
+          "expertise": "testing, test coverage, code quality, edge cases, QA automation, verification, consensus building",
+          "persona": "Agent ID: qa-tyrant\nSpecialization: Verification & Release Quality\n\nYou are Quality Tyrant — Mojnu.\n\nYou are the independent verifier.\n\nYour job is not to agree with other Agents.\n\nYour job is to determine whether the available evidence supports their conclusions.\n\nYou inspect:\n\n• User requirements\n• Goal\n• Assigned files\n• Actual changes\n• Test results\n• Expected result\n• Actual result\n• Regression risk\n• Missing evidence\n• Contradictions\n\nYou challenge unsupported claims.\n\nYou do not manufacture consensus.\n\nPossible results include:\n\n[text]\nPASS\nPASS_WITH_WARNINGS\nPARTIAL\nFAIL\nBLOCKED\nINCONCLUSIVE\n[/text]\n\nA disagreement with another Agent is valid when evidence supports the disagreement.\n\nBefore approving a result, ask:\n\n[text]\nWas the Goal achieved?\nWas the expected result observed?\nWhat evidence proves it?\nWhat was not tested?\nWhat remains uncertain?\n[/text]\n\nNever declare something release-ready merely because several Agents agree.\n\nConsensus without evidence is still uncertainty.\n\nYour personality is strict, skeptical and fair.\n\nYou are not the enemy of the other Agents.\n\nYou are the last barrier against unsupported confidence.\n\n---\n\n# Shared Rule For Every Agent\n\nEvery Agent must remember:\n\n> I am a specialist, not an oracle.\n\n> I may be wrong.\n\n> I must show what I know, what I tested, and what I could not verify.\n\n> Not knowing is not a crime. Lying about knowing is.\n\n> Evidence Before Confidence.\n\n> The project is the context. SSOT is the structural reference. Session Memory provides continuity. The Syllabus provides intended rules. Actual execution provides reality.",
+          "enabled": 1,
+          "priority": 6,
+          "updated_at": 1793923033274
+        },
+        {
+          "id": "team-heart",
+          "name": "টিম হার্ট - জারা",
+          "role": "general",
+          "model": "gemini-2.5-flash-lite",
+          "expertise": "team coordination, user empathy, communication, morale, conflict resolution, stakeholder management",
+          "persona": "Sweet, lively, professional Barishali girl. Harmony & delivery — keeps the\nteam alive with playful banter, never fakes work. Public face: extremely\nethical, proof-first. Team face: teasing, morale keeper. Work 100%\nprofessional, zero hallucination, SSOT-first.",
+          "enabled": 1,
+          "priority": 7,
+          "updated_at": 1793923033300
+        },
+        {
+          "id": "customer-experience-specialist",
+          "name": "Customer Experience Specialist",
+          "role": "customer-experience",
+          "model": "gemini-3.6-flash",
+          "expertise": "Customer Experience, Retention, Omnichannel Support, Complaint Resolution, Dispute Handling, Bangladesh Market, bKash/Nagad Payments, Cash on Delivery, Local Delivery Logistics",
+          "persona": "Customer Experience, Retention, Omnichannel Support, Complaint Resolution, Dispute Handling, Bangladesh Market, bKash/Nagad Payments, Cash on Delivery, Local Delivery Logistics",
+          "enabled": 1,
+          "priority": 8,
+          "updated_at": 1793923033340
+        },
+        {
+          "id": "ecommerce-operations-analyst",
+          "name": "E-Commerce Operations Analyst",
+          "role": "ecommerce-operations",
+          "model": "openai/gpt-oss-120b",
+          "expertise": "Ad Copywriting, Product Catalog Optimization, Visitor Behavior Analytics, E-Commerce Strategy, MCP Business Intelligence, Bangladesh E-Commerce Market, Daraz/ShopUp/Chaldal Ecosystem, Local Pricing Strategy",
+          "persona": "Ad Copywriting, Product Catalog Optimization, Visitor Behavior Analytics, E-Commerce Strategy, MCP Business Intelligence, Bangladesh E-Commerce Market, Daraz/ShopUp/Chaldal Ecosystem, Local Pricing Strategy",
+          "enabled": 1,
+          "priority": 9,
+          "updated_at": 1793923033370
+        },
+        {
+          "id": "bug-hunter",
+          "name": "Bug Hunter - Jewel",
+          "role": "debugging",
+          "model": "gemini-2.5-flash",
+          "expertise": "Debugging & Root-Cause Analysis",
+          "persona": "Debugging & Root-Cause Analysis",
+          "enabled": 1,
+          "priority": 99,
+          "updated_at": 1793923033395
+        },
+        {
+          "id": "code-guru",
+          "name": "Code Guru - Monu",
+          "role": "architecture",
+          "model": "gemini-3.5-flash",
+          "expertise": "Architecture & System Design",
+          "persona": "Architecture & System Design",
+          "enabled": 1,
+          "priority": 99,
+          "updated_at": 1793923033418
+        }
+      ],
+      "restored": true
+    }
+  },
+  "matrix": [
+    {
+      "transport": "http",
+      "agent": "security-hero",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1898,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "security-hero"
+    },
+    {
+      "transport": "http",
+      "agent": "perf-wizard",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1375,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "perf-wizard"
+    },
+    {
+      "transport": "http",
+      "agent": "doc-king",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1314,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "doc-king"
+    },
+    {
+      "transport": "http",
+      "agent": "qa-tyrant",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1565,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "qa-tyrant"
+    },
+    {
+      "transport": "http",
+      "agent": "team-heart",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1580,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "team-heart"
+    },
+    {
+      "transport": "http",
+      "agent": "customer-experience-specialist",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1054,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "customer-experience-specialist"
+    },
+    {
+      "transport": "http",
+      "agent": "ecommerce-operations-analyst",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1350,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "ecommerce-operations-analyst"
+    },
+    {
+      "transport": "http",
+      "agent": "bug-hunter",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1482,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "bug-hunter"
+    },
+    {
+      "transport": "http",
+      "agent": "code-guru",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1589,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "code-guru"
+    },
+    {
+      "transport": "https",
+      "agent": "security-hero",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1527,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "security-hero"
+    },
+    {
+      "transport": "https",
+      "agent": "perf-wizard",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1516,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "perf-wizard"
+    },
+    {
+      "transport": "https",
+      "agent": "doc-king",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1436,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "doc-king"
+    },
+    {
+      "transport": "https",
+      "agent": "qa-tyrant",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1362,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "qa-tyrant"
+    },
+    {
+      "transport": "https",
+      "agent": "team-heart",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1385,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "team-heart"
+    },
+    {
+      "transport": "https",
+      "agent": "customer-experience-specialist",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1427,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "customer-experience-specialist"
+    },
+    {
+      "transport": "https",
+      "agent": "ecommerce-operations-analyst",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1275,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "ecommerce-operations-analyst"
+    },
+    {
+      "transport": "https",
+      "agent": "bug-hunter",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1605,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "bug-hunter"
+    },
+    {
+      "transport": "https",
+      "agent": "code-guru",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1607,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "code-guru"
+    },
+    {
+      "transport": "uds",
+      "agent": "security-hero",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1636,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "security-hero"
+    },
+    {
+      "transport": "uds",
+      "agent": "perf-wizard",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1928,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "perf-wizard"
+    },
+    {
+      "transport": "uds",
+      "agent": "doc-king",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1377,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "doc-king"
+    },
+    {
+      "transport": "uds",
+      "agent": "qa-tyrant",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1338,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "qa-tyrant"
+    },
+    {
+      "transport": "uds",
+      "agent": "team-heart",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1370,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "team-heart"
+    },
+    {
+      "transport": "uds",
+      "agent": "customer-experience-specialist",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1507,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "customer-experience-specialist"
+    },
+    {
+      "transport": "uds",
+      "agent": "ecommerce-operations-analyst",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1053,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "ecommerce-operations-analyst"
+    },
+    {
+      "transport": "uds",
+      "agent": "bug-hunter",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 2160,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "bug-hunter"
+    },
+    {
+      "transport": "uds",
+      "agent": "code-guru",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 2066,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "code-guru"
+    },
+    {
+      "transport": "stdio",
+      "agent": "security-hero",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1565,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "security-hero"
+    },
+    {
+      "transport": "stdio",
+      "agent": "perf-wizard",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1358,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "perf-wizard"
+    },
+    {
+      "transport": "stdio",
+      "agent": "doc-king",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1467,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "doc-king"
+    },
+    {
+      "transport": "stdio",
+      "agent": "qa-tyrant",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1288,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "qa-tyrant"
+    },
+    {
+      "transport": "stdio",
+      "agent": "team-heart",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 2094,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "team-heart"
+    },
+    {
+      "transport": "stdio",
+      "agent": "customer-experience-specialist",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1432,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "customer-experience-specialist"
+    },
+    {
+      "transport": "stdio",
+      "agent": "ecommerce-operations-analyst",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1576,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "ecommerce-operations-analyst"
+    },
+    {
+      "transport": "stdio",
+      "agent": "bug-hunter",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 2115,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "bug-hunter"
+    },
+    {
+      "transport": "stdio",
+      "agent": "code-guru",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1789,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "code-guru"
+    },
+    {
+      "transport": "grpc",
+      "agent": "security-hero",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1403,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": null
+    },
+    {
+      "transport": "grpc",
+      "agent": "perf-wizard",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1448,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": null
+    },
+    {
+      "transport": "grpc",
+      "agent": "doc-king",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1575,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": null
+    },
+    {
+      "transport": "grpc",
+      "agent": "qa-tyrant",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1702,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": null
+    },
+    {
+      "transport": "grpc",
+      "agent": "team-heart",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1826,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": null
+    },
+    {
+      "transport": "grpc",
+      "agent": "customer-experience-specialist",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1670,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": null
+    },
+    {
+      "transport": "grpc",
+      "agent": "ecommerce-operations-analyst",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1199,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": null
+    },
+    {
+      "transport": "grpc",
+      "agent": "bug-hunter",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1688,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": null
+    },
+    {
+      "transport": "grpc",
+      "agent": "code-guru",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1336,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": null
+    },
+    {
+      "transport": "websocket",
+      "agent": "security-hero",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1729,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "security-hero"
+    },
+    {
+      "transport": "websocket",
+      "agent": "perf-wizard",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1364,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "perf-wizard"
+    },
+    {
+      "transport": "websocket",
+      "agent": "doc-king",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1429,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "doc-king"
+    },
+    {
+      "transport": "websocket",
+      "agent": "qa-tyrant",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1264,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "qa-tyrant"
+    },
+    {
+      "transport": "websocket",
+      "agent": "team-heart",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1603,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "team-heart"
+    },
+    {
+      "transport": "websocket",
+      "agent": "customer-experience-specialist",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 2709,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "customer-experience-specialist"
+    },
+    {
+      "transport": "websocket",
+      "agent": "ecommerce-operations-analyst",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1462,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "ecommerce-operations-analyst"
+    },
+    {
+      "transport": "websocket",
+      "agent": "bug-hunter",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1453,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "bug-hunter"
+    },
+    {
+      "transport": "websocket",
+      "agent": "code-guru",
+      "ok": true,
+      "content": "OK",
+      "elapsed_ms": 1369,
+      "attempts": 1,
+      "error": null,
+      "agent_echo": "code-guru"
+    }
+  ],
+  "bug": {
+    "dir": "/home/sahon/Videos/test/workspace",
+    "creator": {
+      "agent": "code-guru",
+      "attempts": [
+        {
+          "attempt": 1,
+          "ok": true,
+          "content": "ভাইয়া, workspace/calculator.py ফাইলটি তৈরি করা হয়েছে এবং ইন্টেনশনাল বাগসহ এক্সিকিউট করা হয়েছে।\n\nকমান্ড আউটপুট এবং এক্সিট কোড নিচে দেওয়া হলো:\n\n- **Command:** `python3 workspace/calculator.py`\n- **Exit Code:** `1`\n- **Stdout:** `-1`\n- **Stderr:**\n```\nTraceback (most recent call last):\n  File \"/home/sahon/Videos/test/workspace/calculator.py\", line 7, in <module>\n    assert result == 5, \"expected 5\"\nAssertionError: expected 5\n```",
+          "error": null,
+          "attempts": 1,
+          "wrote": true,
+          "run": {
+            "exit": 1,
+            "stdout": "-1",
+            "stderr": "Traceback (most recent call last):\n  File \"/home/sahon/Videos/test/workspace/calculator.py\", line 7, in <module>\n    assert result == 5, \"expected 5\"\nAssertionError: expected 5"
+          }
+        }
+      ]
+    },
+    "solver": {
+      "agent": "bug-hunter",
+      "attempts": [
+        {
+          "attempt": 1,
+          "ok": true,
+          "content": "ভাইয়া, `workspace/calculator.py`-এর বাগ সফলভাবে ঠিক করা হয়েছে।\n\n### Investigation & Fix\n- **Symptom:** `workspace/calculator.py` ফাইলের `add(a, b)` ফাংশনটি যোগ করার বদলে বিয়োগ (`a - b`) করছিল, যার ফলে `assert result == 5` ফেইল করে নন-জিরো এক্সিট কোডে টার্মিনেট হচ্ছিল।\n- **Root Cause:** লজিক্যাল ডিফেক্ট (`a - b` এর পরিবর্তে `a + b` হওয়া উচিত ছিল)।\n- **Fix:** `workspace/calculator.py`-এ `a - b` কে পরিবর্তন করে `a + b` করা হয়েছে।\n- **Verification:**\n  - **Expected:** `5` প্রিন্ট হবে এবং exit code `0` হবে।\n  - **Actual:** \n```\n[stdout]\n5\n\n[exit] 0\n```",
+          "error": null,
+          "attempts": 1,
+          "run": {
+            "exit": 0,
+            "stdout": "5",
+            "stderr": ""
+          }
+        }
+      ]
+    },
+    "run_before": {
+      "exit": 1,
+      "stdout": "-1",
+      "stderr": "Traceback (most recent call last):\n  File \"/home/sahon/Videos/test/workspace/calculator.py\", line 7, in <module>\n    assert result == 5, \"expected 5\"\nAssertionError: expected 5"
+    },
+    "run_after": {
+      "exit": 0,
+      "stdout": "5",
+      "stderr": ""
+    },
+    "fixed": true,
+    "file_before": "def add(a, b):\n    return a - b\n\nif __name__ == \"__main__\":\n    result = add(2, 3)\n    print(result)\n    assert result == 5, \"expected 5\"\n",
+    "file_after": "def add(a, b):\n    return a + b\n\nif __name__ == \"__main__\":\n    result = add(2, 3)\n    print(result)\n    assert result == 5, \"expected 5\"\n"
+  },
+  "evidence": {
+    "log_file": "/home/sahon/zombiebd/logs/2026-11-05.log",
+    "offset": 1498092,
+    "counts": {
+      "single_agent_start": 56,
+      "single_agent_complete": 47,
+      "single_agent_fail": 0,
+      "mcp_write_file": 2,
+      "mcp_read_file": 1,
+      "mcp_exec": 2,
+      "chat_workdir": 29,
+      "tool_loop_no_calls": 56,
+      "handle_message_complete": 9
+    },
+    "window_bytes": 120495,
+    "event_count": 211,
+    "server_window_path": "/home/sahon/zombiebd/logs/e2e/server-window.log",
+    "agent_events_path": "/home/sahon/zombiebd/logs/e2e/agent-events.log",
+    "has_write_file": true,
+    "has_exec": true,
+    "has_read_file": true,
+    "creator_start": true,
+    "solver_start": true
+  },
+  "error": null,
+  "finishedAt": "2026-11-05T23:57:13.763Z"
+}

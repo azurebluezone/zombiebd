@@ -234,8 +234,15 @@ async function chatImpl(opts) {
 
   // Boundary validation — reject provider output that does not match the
   // normalized contract (schema: provider/schema.json -> #/$defs/chatCompletion).
-  if (validator.enabled() && res.ok && res.normalized != null) {
-    const vRes = validator.validateResponse(res.normalized);
+  // `res.ok` without a normalized payload is unvalidated output, not a pass:
+  // it is rejected too, so no provider reply reaches api.js unchecked.
+  if (validator.enabled() && res.ok) {
+    const vRes = res.normalized == null
+      ? {
+          valid: false,
+          errors: ["$: normalized payload missing — response cannot be validated"],
+        }
+      : validator.validateResponse(res.normalized);
     if (!vRes.valid) {
       return {
         ok: false,
@@ -363,11 +370,11 @@ async function chatStreamImpl(opts, onDelta) {
     return { ok: false, error: e.message, provider: providerId, model: opts.model };
   }
 
-  // All frames rejected at the boundary → treat the stream as failed so the
-  // fallback chain runs instead of delivering an empty (lies-by-omission)
-  // stream to the caller.
-  const allFramesRejected =
-    deltaFrames > 0 && invalidFrames === deltaFrames;
+  // ANY frame rejected at the boundary makes the stream untrusted. One bad
+  // frame is enough to disown the reply; forwarding the rest would deliver
+  // content the contract never approved. Frames already handed to onDelta
+  // cannot be recalled, so the terminal result fails instead of passing.
+  const boundaryRejected = invalidFrames > 0;
 
   // Adapter-level tool_calls are flat {index,id,name,arguments}; the API
   // server consumes the OpenAI streaming shape {id,type,function:{…}}.
@@ -384,15 +391,17 @@ async function chatStreamImpl(opts, onDelta) {
     : null;
 
   return {
-    ok: !!res.ok,
+    ok: !!res.ok && !boundaryRejected,
     statusCode: res.statusCode,
     content: res.content || "",
     tool_calls: toolCalls,
     reasoning_content: res.reasoning_content || null,
     finish_reason: res.finish_reason || null,
-    error: res.error,
+    error: res.error || (boundaryRejected
+      ? "boundary_reject response: " + invalidFrames + " invalid stream frame(s)"
+      : undefined),
     rate_limited: !!res.rate_limited,
-    stream_error: !!res.stream_error || allFramesRejected,
+    stream_error: !!res.stream_error || boundaryRejected,
     boundary_dropped: invalidFrames,
     provider: providerId,
     dialect: adapter.dialect,

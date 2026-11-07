@@ -111,6 +111,7 @@ const {
 } = require("./tools/context-slimmer.js");
 const { makeAliasResolver } = require("./tools/model-alias.js");
 const { normalizeText } = require("./lib/text-integrity.js");
+const { chooseUsableModel } = require("./lib/model-choice.js");
 const { loadAgentFiles, getAgentById, listAgentIds, resolveAgentModel } = require("./agent");
 const systemInfo = require("./lib/system-info.js");
 const { SERVICE_PORTS, DEFAULTS } = require("./lib/env.js");
@@ -258,32 +259,32 @@ const UDS_PORT = parseInt(
   "5150",
   10,
 );
-function parseUdsCandidates(value) {
-  const list = String(value || "").split(",");
-  const out = [];
-  const seen = new Set();
-  for (const item of list) {
-    const text = String(item || "").trim();
-    if (!text) continue;
-    const resolved = path.resolve(PROJECT_ROOT, text);
-    if (seen.has(resolved)) continue;
-    seen.add(resolved);
-    out.push(resolved);
-  }
-  return out;
-}
+const { collectUdsPaths } = require("./transport/uds-gateway");
 
-// One option owns every inbound UDS path. Comma-separated candidates bind in
-// order: the first usable path wins and the next one is the immediate fallback.
-const UDS_PATHS = parseUdsCandidates(
-  process.env.UDS ||
-  process.env.UDS_PATH ||
-  path.join(os.tmpdir(), "zombiecoder", "mcp.sock"),
-);
+// One option owns every inbound UDS path. `collectUdsPaths` reads UDS_1..N
+// (dynamic, gaps allowed) plus the legacy comma list UDS/UDS_PATH/UDS_PATHS.
+// Order is fallback order: the first usable path wins, the next one is the
+// immediate fallback when a path is busy or cannot be bound.
+const UDS_PATHS = collectUdsPaths(process.env, PROJECT_ROOT);
+if (UDS_PATHS.length === 0) {
+  UDS_PATHS.push(path.join(os.tmpdir(), "zombiecoder", "mcp.sock"));
+}
 const UDS_PATH = UDS_PATHS[0];
 let udsServer = null; // legacy MCP-only UDS server
 let udsGateway = null; // unified MCP + OpenAI HTTP over one UDS
 let openaiUdsServer = null; // legacy separate OpenAI HTTP over UDS
+
+// Every model served by the gateway is reachable through the single inbound
+// UDS, so model lists carry an explicit transport tag. Clients use it to show
+// "UDS model" next to an entry; the model id itself never changes.
+function udsModelFields() {
+  const listening =
+    process.platform !== "win32" &&
+    ((udsGateway && udsGateway.listening) ||
+      (udsServer && udsServer.listening) ||
+      (openaiUdsServer && openaiUdsServer.server && openaiUdsServer.server.listening));
+  return listening ? { transport: "uds", transportLabel: "UDS model" } : {};
+}
 // Socket ownership is tracked by inode, not by path. On a restart the old
 // process can outlive the new listener for a few milliseconds; an unguarded
 // unlink then deletes the *new* socket path and leaves a live-but-unreachable
@@ -1540,6 +1541,14 @@ async function runNormalizerSync() {
       continue;
     }
     const fetched = await fetchProviderModels(id, p);
+    if (fetched.ok && fetched.models.length === 0 && p.local) {
+      // A reachable local server that reports no models (bridge with no
+      // upstream) must not keep stale rows alive: the user asked for "if it
+      // is not there, it is not there", not a phantom model.
+      p.models = [];
+      results[id] = { ok: true, fetched: 0, added: 0, total: 0, unavailable: true };
+      continue;
+    }
     if (fetched.ok && fetched.models.length > 0) {
       // Prune stale entries whose apiModel is no longer in the live API
       // (prevents dead mappings like llama-3.3-70b-versatile from persisting forever)
@@ -1571,6 +1580,34 @@ async function runNormalizerSync() {
   return { results, db };
 }
 
+// Local providers are the volatile ones: a model server can start or stop
+// while the gateway is running. Poll only those (never the cloud providers)
+// and rewrite the list + DB only when the live set actually changed, so the
+// model list follows reality without a restart and without API cost.
+async function refreshLocalProviders() {
+  let changed = false;
+  for (const [id, p] of Object.entries(PROVIDER_CONFIG)) {
+    if (!p.local || p.enabled === false) continue;
+    const fetched = await fetchProviderModels(id, p);
+    if (!fetched.ok) continue;
+    const live = fetched.models.filter(Boolean);
+    const current = p.models.map((m) => getApiModelName(m));
+    if (JSON.stringify(live) === JSON.stringify(current)) continue;
+    p.models = live;
+    changed = true;
+    log("INFO", "LOCAL_MODELS_REFRESHED", {
+      provider: id,
+      count: live.length,
+      models: live.slice(0, 12),
+    });
+  }
+  if (changed) {
+    syncModelsToDb();
+    refreshFreeModels();
+  }
+  return changed;
+}
+
 // Computed: flattened list of all public model names (masked)
 // NOTE: `let` + refreshFreeModels() — the list is recomputed after
 // loadModelsFromDb() and runNormalizerSync() so counts stay accurate
@@ -1582,11 +1619,82 @@ let FREE_MODELS = Object.values(PROVIDER_CONFIG)
 // Recompute FREE_MODELS from the current PROVIDER_CONFIG state.
 // Called after DB load and after every provider sync so that newly
 // discovered models are included in health/status counts.
+// The usable-model memo below depends on FREE_MODELS; a sync or a local
+// server starting/stopping must be able to change the answer.
+const _agentModelCache = new Map();
+
 function refreshFreeModels() {
   FREE_MODELS = Object.values(PROVIDER_CONFIG)
     .filter((p) => p.models.length > 0)
     .flatMap((p) => p.models.map(getModelName));
+  _agentModelCache.clear();
 }
+
+// ─── Provider-independent model choice ───────────────────────
+// A provider can be removed, a key can expire, a local server can be
+// stopped. Model names are preferences, not dependencies. The candidates
+// below are whatever the live catalog currently serves, ordered by provider
+// priority (lower number wins) and, at equal priority, cloud before local —
+// a stopped local server must never shadow a working cloud provider.
+function liveModelCandidates() {
+  const out = [];
+  const seen = new Set();
+  const providers = Object.entries(PROVIDER_CONFIG)
+    .filter(([, p]) => p.enabled !== false && p.models && p.models.length > 0)
+    .sort((a, b) => {
+      const pa = providerPriority(a[1]);
+      const pb = providerPriority(b[1]);
+      if (pa !== pb) return pa - pb;
+      return (a[1].local ? 1 : 0) - (b[1].local ? 1 : 0);
+    });
+  for (const [, p] of providers) {
+    for (const m of p.models) {
+      const name = getModelName(m);
+      if (!name || seen.has(name)) continue;
+      if (!resolveProvider(name)) continue;
+      seen.add(name);
+      out.push(name);
+    }
+  }
+  return out;
+}
+
+// Utility calls (intent extraction, alignment, proof checks) used to grab
+// FREE_MODELS[0], which silently depended on provider insertion order. They
+// now pick the best live model, overridable with UTILITY_MODEL.
+function pickUtilityModel() {
+  const forced = String(process.env.UTILITY_MODEL || "").trim();
+  if (forced && resolveProvider(forced)) return forced;
+  const candidates = liveModelCandidates();
+  return candidates.length ? candidates[0] : "";
+}
+
+// Agents are seeded with a model name, but that name must not pin the agent
+// to one provider forever. If the configured model has no live provider, the
+// agent falls back to the live catalog (AGENT_MODEL first, then priority
+// order). Proxy requests never take this path: a client that names a model
+// gets that model or an honest error.
+function usableAgentModel(agent) {
+  if (!agent || typeof agent !== "object") return "";
+  const configured = String(agent.model || "").trim();
+  const key = agent.id + "|" + configured;
+  if (_agentModelCache.has(key)) return _agentModelCache.get(key);
+  const usable = chooseUsableModel(
+    configured,
+    process.env.AGENT_MODEL,
+    liveModelCandidates(),
+  );
+  if (usable && usable !== configured) {
+    log("WARN", "AGENT_MODEL_FALLBACK", {
+      agent: agent.id,
+      from: configured || "(none)",
+      to: usable,
+    });
+  }
+  _agentModelCache.set(key, usable);
+  return usable;
+}
+
 
 // Computed: all public model -> provider mapping
 function getAllModels() {
@@ -4217,7 +4325,7 @@ async function autoWebSearch(agent, response, userInput) {
     searchText = "No search results found.";
   }
 
-  const refined = await callModel(agent.model, [
+  const refined = await callModel(usableAgentModel(agent), [
     {
       role: "system",
       content:
@@ -5640,6 +5748,15 @@ function callModelStream(
 ) {
   return new Promise((resolve) => {
     model = normalizeRoutingModel(model);
+    if (!model) {
+      resolve({
+        success: false,
+        error: "No model available: no configured provider is serving a model yet.",
+        errorCode: "no_model",
+        model: "",
+      });
+      return;
+    }
     // ─── Competition Router ────────────────────────────────
     // Use providerOverride if provided (fallback chain), otherwise
     // resolve through competition router (priority order).
@@ -5747,9 +5864,10 @@ function callModelStream(
 
         // Provider-hop first (<3 hops), then model-hop — same chain as before.
         const fallbackStream = function (errMsg) {
-          // Deterministic request-format rejections can NEVER succeed on
-          // retry — fail fast instead of hot-looping the fallback chain.
-          if (/^boundary_reject/.test(errMsg || "")) return false;
+          // A malformed *request* can never succeed on retry — fail fast
+          // instead of hot-looping the fallback chain. A malformed provider
+          // *response* is the provider's problem, so the chain continues.
+          if (/^boundary_reject request:/.test(errMsg || "")) return false;
           if (retry < 3) {
             const nextProvider = findNextProvider(model, providerId);
             if (nextProvider) {
@@ -5866,6 +5984,16 @@ function callModel(
 ) {
   return new Promise((resolve) => {
     model = normalizeRoutingModel(model);
+    if (!model) {
+      resolve({
+        success: false,
+        content: "",
+        error: "No model available: no configured provider is serving a model yet.",
+        errorCode: "no_model",
+        model: "",
+      });
+      return;
+    }
     // ─── Competition Router ────────────────────────────────
     // Use providerOverride if provided, otherwise resolve through competition router
     let providerId, config;
@@ -6005,8 +6133,10 @@ function callModel(
             "provider error" + (r.statusCode ? " (HTTP " + r.statusCode + ")" : "");
           // Deterministic request-format rejection — never retriable.
           // Fail fast (do NOT mark the provider failed for a client-side
-          // format error, and do NOT run the fallback chain).
-          if (/^boundary_reject/.test(errMsg)) {
+          // format error, and do NOT run the fallback chain). A rejected
+          // *response* means this provider answered with the wrong shape:
+          // that must fall through to the next provider, not kill the turn.
+          if (/^boundary_reject request:/.test(errMsg)) {
             resolve({
               success: false,
               error: errMsg,
@@ -6068,6 +6198,46 @@ function callModel(
           resolve(
             callModel(model, messages, temperature, undefined, undefined, retry + 1),
           );
+          return;
+        }
+
+        // A 200 whose body no normalizer dialect can convert is a provider
+        // failure, not a successful empty reply. Mark it, fail over, and when
+        // no provider is left, say exactly what came back.
+        const shapeError = !!(
+          normalized && normalized.error === "unrecognised_response_shape"
+        );
+        if (shapeError || (!content && !toolCalls)) {
+          const reason = shapeError ? "unrecognised_response_shape" : "empty_response";
+          const detail = (normalized && normalized.error_message) || "";
+          markProviderFailure(providerId, reason + (detail ? ": " + detail : ""));
+          const nextProvider = retry < 3 ? findNextProvider(model, providerId) : null;
+          if (nextProvider) {
+            log("WARN", "PROVIDER_FALLBACK_RESPONSE", {
+              from: providerId,
+              to: nextProvider.providerId,
+              reason,
+              error: detail || undefined,
+            });
+            resolve(
+              callModel(model, messages, temperature, tools, tool_choice,
+                retry + 1, nextProvider),
+            );
+            return;
+          }
+          resolve({
+            success: false,
+            error:
+              providerId + " returned HTTP " + (r.statusCode || 200) +
+              (shapeError
+                ? " with a response shape no normalizer dialect recognised"
+                : " with an empty response") +
+              (detail ? " (" + detail + ")" : ""),
+            errorCode: reason,
+            raw: r.raw,
+            model,
+            provider: providerId,
+          });
           return;
         }
 
@@ -6621,7 +6791,7 @@ async function phase1_initialResponse(
     };
 
     let response = await callModelWithTools(
-      agent.model,
+      usableAgentModel(agent),
       [sysMsg, usrMsg],
       undefined,
       tools,
@@ -6737,7 +6907,7 @@ async function phase2_intentCrossVerify(
     complexity: "moderate",
   };
   try {
-    const intentResult = await callModel(FREE_MODELS[0], [
+    const intentResult = await callModel(pickUtilityModel(), [
       { role: "system", content: INTENT_EXTRACT_PROMPT },
       { role: "user", content: userInput },
     ]);
@@ -6771,7 +6941,7 @@ async function phase2_intentCrossVerify(
           "Verifying " + stripEmoji(currentResult.agent.name) + "...",
         );
 
-      const check = await callModel(FREE_MODELS[0], [
+      const check = await callModel(pickUtilityModel(), [
         { role: "system", content: ALIGNMENT_CHECK_PROMPT },
         {
           role: "user",
@@ -6833,7 +7003,7 @@ async function phase2_intentCrossVerify(
           "Checking evidence: " + stripEmoji(currentResult.agent.name) + "...",
         );
 
-      const proofCheck = await callModel(FREE_MODELS[0], [
+      const proofCheck = await callModel(pickUtilityModel(), [
         { role: "system", content: PROOF_CHECK_PROMPT },
         {
           role: "user",
@@ -6904,7 +7074,7 @@ async function phase2_intentCrossVerify(
       }
 
       try {
-        const debateResult = await callModel(currentResult.agent.model, [
+        const debateResult = await callModel(usableAgentModel(currentResult.agent), [
           {
             role: "system",
             content:
@@ -7014,7 +7184,7 @@ async function phase2_intentCrossVerify(
 
       try {
         const defense = await callModel(
-          currentResult.agent.model,
+          usableAgentModel(currentResult.agent),
           [
             {
               role: "system",
@@ -7037,7 +7207,7 @@ async function phase2_intentCrossVerify(
         if (defense.success) {
           currentResult.response.content = defense.content;
           // Brief re-check after defense
-          const reProof = await callModel(FREE_MODELS[0], [
+          const reProof = await callModel(pickUtilityModel(), [
             { role: "system", content: PROOF_CHECK_PROMPT },
             {
               role: "user",
@@ -8877,6 +9047,10 @@ async function executeSingleAgent(
   const agent = AGENTS.find((a) => a.id === agentId);
   if (!agent) return { success: false, error: "Agent not found: " + agentId };
 
+  // Agent model is a preference. If its provider is gone, use the live
+  // catalog instead of failing the request on a name nothing answers.
+  const agentModel = usableAgentModel(agent);
+
   log("INFO", "SINGLE_AGENT_START", {
     agent: agent.id,
     name: agent.name,
@@ -8907,7 +9081,7 @@ async function executeSingleAgent(
     );
 
   // A provider may cap the prompt (local CPU models). 0 means "no cap".
-  const routing = resolveProvider(agent.model);
+  const routing = resolveProvider(agentModel);
   const promptBudget =
     (routing && routing.config && Number(routing.config.maxPromptChars)) || 0;
 
@@ -9044,7 +9218,7 @@ async function executeSingleAgent(
 
   if (stream) {
     const result = await callModelWithTools(
-      agent.model,
+      agentModel,
       augmentedMessages,
       undefined,
       tools,
@@ -9059,7 +9233,7 @@ async function executeSingleAgent(
       saveMemory(sessionId, "assistant", masked);
       updateSession(sessionId, {
         model: agentId,
-        provider: agent.model,
+        provider: agentModel,
         messages: (getSession(sessionId)?.messages || 0) + 1,
       });
       flushAllMemory();
@@ -9090,7 +9264,7 @@ async function executeSingleAgent(
 
   // Non-streaming
   let response = await callModelWithTools(
-    agent.model,
+    agentModel,
     augmentedMessages,
     undefined,
     tools,
@@ -9098,10 +9272,10 @@ async function executeSingleAgent(
 
   // Show error message when all providers fail
   if (!response || !response.success) {
-    const provInfo = response?.provider || "resolve(" + agent.model + ")";
+    const provInfo = response?.provider || "resolve(" + agentModel + ")";
     log("WARN", "SINGLE_AGENT_FAIL", {
       agent: agent.id,
-      model: agent.model,
+      model: agentModel,
       provider: provInfo,
       error: response?.error || "unknown",
     });
@@ -9109,7 +9283,7 @@ async function executeSingleAgent(
       success: false,
       content:
         "\u09ad\u09be\u0987\u09af\u09bc\u09be! \u09b8\u09ac provider \u09ac\u09cd\u09af\u09b0\u09cd\u09a5 \u09b9\u09af\u09bc\u09c7\u099b\u09c7। [model: " +
-        agent.model +
+        agentModel +
         ", provider: " +
         provInfo +
         "] " +
@@ -9132,7 +9306,7 @@ async function executeSingleAgent(
     saveMemory(sessionId, "assistant", response.content || "");
     updateSession(sessionId, {
       model: agentId,
-      provider: agent.model,
+      provider: agentModel,
       messages: (getSession(sessionId)?.messages || 0) + 1,
     });
     flushAllMemory();
@@ -11577,7 +11751,7 @@ async function executeAgentCall(
   ];
 
   const result = await callModelWithTools(
-    targetAgent.model,
+    usableAgentModel(targetAgent),
     callMessages,
     undefined,
     tools,
@@ -12792,6 +12966,7 @@ const handleHttpRequest = async (req, res) => {
             paths: udsPaths,
             bound_path: boundUds,
             fallback_used: !!(udsGateway && udsGateway.fallbackUsed) || udsFallbackUsed,
+            attempts: udsGateway ? udsGateway.attempts : [],
             protocols: openaiOnUds ? ["mcp", "openai"] : ["mcp"],
             commands: { mcp: mcpUds, openai: openaiUds },
           },
@@ -12917,6 +13092,7 @@ const handleHttpRequest = async (req, res) => {
         object: "model",
         created: Math.floor(Date.now() / 1000),
         owned_by: "mission-barisal",
+        ...udsModelFields(),
       }));
 
       // Add "mission" as a special model
@@ -12925,6 +13101,7 @@ const handleHttpRequest = async (req, res) => {
         object: "model",
         created: Math.floor(Date.now() / 1000),
         owned_by: "mission-barisal",
+        ...udsModelFields(),
       });
 
       log("INFO", "REQUEST", {
@@ -12947,11 +13124,15 @@ const handleHttpRequest = async (req, res) => {
       // 1. Add real provider models (what JetBrains needs to see)
       for (const [id, p] of Object.entries(PROVIDER_CONFIG)) {
         if (p.models.length === 0) {
+          // A reachable local provider with no model is omitted; advertising
+          // a wildcard placeholder would be a model that cannot answer.
+          if (p.local) continue;
           allModels.push({
             id: `${id}:default`,
             object: "model",
             created: Math.floor(Date.now() / 1000),
             owned_by: p.name,
+            ...udsModelFields(),
           });
         } else {
           for (const m of p.models) {
@@ -12960,6 +13141,7 @@ const handleHttpRequest = async (req, res) => {
               object: "model",
               created: Math.floor(Date.now() / 1000),
               owned_by: p.name,
+              ...udsModelFields(),
             });
           }
         }
@@ -12971,6 +13153,7 @@ const handleHttpRequest = async (req, res) => {
         object: "model",
         created: Math.floor(Date.now() / 1000),
         owned_by: "mission-barisal",
+        ...udsModelFields(),
       });
       for (const a of AGENTS) {
         allModels.push({
@@ -12978,6 +13161,7 @@ const handleHttpRequest = async (req, res) => {
           object: "model",
           created: Math.floor(Date.now() / 1000),
           owned_by: "mission-barisal",
+          ...udsModelFields(),
         });
       }
 
@@ -13001,6 +13185,7 @@ const handleHttpRequest = async (req, res) => {
       const providerModels = [];
       for (const [id, p] of Object.entries(PROVIDER_CONFIG)) {
         if (p.models.length === 0) {
+          if (p.local) continue;
           providerModels.push({
             id: "*",
             provider: id,
@@ -13011,6 +13196,7 @@ const handleHttpRequest = async (req, res) => {
             object: "model",
             created: Math.floor(Date.now() / 1000),
             owned_by: p.name,
+            ...udsModelFields(),
           });
         } else {
           for (const m of p.models) {
@@ -13024,6 +13210,7 @@ const handleHttpRequest = async (req, res) => {
               object: "model",
               created: Math.floor(Date.now() / 1000),
               owned_by: p.name,
+              ...udsModelFields(),
             });
           }
         }
@@ -14442,7 +14629,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
             created: baseTs,
             model: "mission",
             choices: [
-              { index: 0, delta: { content: "" }, finish_reason: null },
+              { index: 0, delta: { role: "assistant", content: "" }, finish_reason: null },
             ],
             session_id: sessionId,
             conversation_id: currentSession?.conversation_id || sessionId,
@@ -14999,7 +15186,8 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
         }
         const conversation = messages.filter((m) => m.role !== "system");
 
-        const agentProviderInfo = resolveProvider(agent.model, true);
+        const agentModel = usableAgentModel(agent);
+        const agentProviderInfo = resolveProvider(agentModel, true);
         const agentProviderId = agentProviderInfo?.providerId || "";
         const isLocalAgent =
           !!agentProviderInfo?.config?.local || /^custom_/.test(agentProviderId);
@@ -15089,7 +15277,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
 
         // First attempt: with tools
         await callModelStream(
-          agent.model,
+          agentModel,
           augmentedMessages,
           temperature,
           streamCallback,
@@ -15145,7 +15333,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
           saveMemory(sessionId, "assistant", fullContent);
           updateSession(sessionId, {
             model: agentId,
-            provider: agent.model,
+            provider: agentModel,
             messages: (getSession(sessionId)?.messages || 0) + 1,
           });
           flushAllMemory();
@@ -16162,7 +16350,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
       // Reproduced with zero credentials before the fix:
       //   curl -X POST .../api/connect -d '{"action":"handshake","client":"evil"}'
       //     -> {"status":"ok","identity":{"verified":true,"local":true},...}
-      //   curl -X POST .../api/connect -d '{"action":"read_file","path":"/home/xubuntu/zvslast/.env"}'
+      //   curl -X POST .../api/connect -d '{"action":"read_file","path":"<project>/.env"}'
       //     -> {"status":"ok","content":"OPENCODE_API_KEY=oc_sk_..."}   ← every key
       //   curl -X POST .../api/connect \
       //     -d '{"action":"write_file","path":"/tmp/x","content":"..."}'
@@ -17037,6 +17225,15 @@ async function init() {
       .catch((e) => log("WARN", "AUTO_SYNC_FAIL", { error: e.message }));
   }, 500);
 
+  // Local model servers come and go. Re-check only local providers on a
+  // timer so a server started after boot appears (and a stopped one leaves)
+  // without a restart. Unref'd: the timer never keeps the process alive.
+  setInterval(() => {
+    refreshLocalProviders().catch((e) =>
+      log("WARN", "LOCAL_MODELS_REFRESH_FAIL", { error: e.message }),
+    );
+  }, parseInt(process.env.LOCAL_MODELS_REFRESH_MS || "20000", 10)).unref();
+
   // PRINCIPLED BIND — BIND_HOST wins; the domain heuristic is only a fallback.
   //   BIND_HOST=127.0.0.1 → loopback only (required when Caddy is the edge)
   //   unset + loopback domain → 127.0.0.1
@@ -17223,7 +17420,11 @@ async function init() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const LOCAL_UDS_PATH =
-  process.env.ZOMBIE_UDS_PATH || "/tmp/zombie_coder.sock";
+  process.env.ZOMBIE_UDS_PATH ||
+  path.join(
+    process.env.XDG_RUNTIME_DIR || os.tmpdir(),
+    "zombie_coder.sock",
+  );
 const LOCAL_UDS_TIMEOUT = parseInt(process.env.LOCAL_UDS_TIMEOUT || "30000");
 let _udsAvailable = null;
 

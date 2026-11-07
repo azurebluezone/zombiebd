@@ -98,17 +98,47 @@ function findLlamaServer() {
   }
 }
 
+// Local servers the user may already be running. Probing is cheap and
+// bounded; a missing server is a non-event, not a boot failure.
+const DEFAULT_PROBE_PORTS = [11434, 9932, 8080, 1234, 8000];
+
+// "name=url,url" — one entry per upstream. The name is only for logs and
+// owned_by; routing is by the model ids each upstream reports.
+function parseUpstreamList(value) {
+  return String(value || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) => {
+      const eq = item.indexOf("=");
+      if (eq > 0) {
+        return { name: item.slice(0, eq).trim(), baseUrl: item.slice(eq + 1).trim() };
+      }
+      return { name: "", baseUrl: item };
+    })
+    .filter((u) => /^https?:\/\//i.test(u.baseUrl));
+}
+
 const CFG = {
-  backend: (process.env.BRIDGE_BACKEND || "ollama").toLowerCase(),
+  // "auto" is the default: every reachable OpenAI-compatible local server is
+  // used. "llama" additionally spawns a bundled llama-server when one exists.
+  backend: (process.env.BRIDGE_BACKEND || "auto").toLowerCase(),
   llamaBin: findLlamaServer(),
   gguf: detectGguf(),
-  model: process.env.BRIDGE_MODEL || "ollama-local",
+  preferredModel: String(
+    process.env.BRIDGE_UPSTREAM_MODEL || process.env.BRIDGE_MODEL || "",
+  ).trim(),
+  alias: String(process.env.BRIDGE_MODEL || "local-model").trim() || "local-model",
   port: parseInt(process.env.BRIDGE_PORT || "11437", 10),
   socket: process.env.BRIDGE_SOCKET || "",
   internalPort: parseInt(process.env.BRIDGE_INTERNAL_PORT || "11434", 10),
-  upstreamModel:
-    process.env.BRIDGE_UPSTREAM_MODEL || process.env.BRIDGE_MODEL || "ollama-local",
-  ollamaUrl: process.env.BRIDGE_OLLAMA_URL || "http://127.0.0.1:11434",
+  explicitUpstreams: parseUpstreamList(process.env.BRIDGE_UPSTREAMS || ""),
+  // Legacy single-target knob: honoured, but it no longer decides the only
+  // upstream. Ollama, llama.cpp, LM Studio and vLLM can answer together.
+  configuredUrl: String(process.env.BRIDGE_OLLAMA_URL || "").trim(),
+  probeTimeoutMs: parseInt(process.env.BRIDGE_PROBE_TIMEOUT_MS || "1200", 10),
+  probeDefaults: process.env.BRIDGE_PROBE_DEFAULTS !== "0",
+  refreshMs: Math.max(3000, parseInt(process.env.BRIDGE_REFRESH_MS || "15000", 10)),
   ctx: parseInt(process.env.BRIDGE_CTX || "512", 10),
   // TIMEOUT_FIX: this key was missing while upstreamChat()/chatStream()
   // already read `timeout: CFG.timeoutMs`. Undefined made every outbound
@@ -118,32 +148,214 @@ const CFG = {
   //   200-word prompt → timeout: undefined = 5010ms ERROR
   //                     timeout: 200000    =  546ms OK
   // BRIDGE_TIMEOUT_MS was already in .env but nothing read it.
-  // NOTE: ctx above is ONLY used by spawnLlamaServer(); with BRIDGE_BACKEND=
-  // ollama the real window is whatever Ollama itself allows, not this number.
   timeoutMs: parseInt(process.env.BRIDGE_TIMEOUT_MS || "120000", 10),
   threads: parseInt(process.env.BRIDGE_THREADS || String(os.cpus().length), 10),
   // socket permission — default owner rw only (0o600); override via env
   socketMode: parseInt(process.env.BRIDGE_SOCKET_MODE || "600", 8),
 };
 
-const UPSTREAM_BASE =
-  CFG.backend === "ollama"
-    ? CFG.ollamaUrl.replace(/\/$/, "")
-    : "http://127.0.0.1:" + CFG.internalPort;
-
 let child = null;
 let shuttingDown = false;
 
-// Installed models are discovered from the backend, never guessed. A stale
-// BRIDGE_MODEL/BRIDGE_UPSTREAM_MODEL used to make every request fail with an
-// upstream 404 even though a perfectly good model was installed.
+// Installed models are discovered from live upstreams, never guessed. The
+// old build shipped a fake "ollama-local" entry when nothing was installed,
+// so every client saw a model that could never answer.
 const MODEL_STATE = {
-  configured: CFG.upstreamModel,
+  configured: CFG.preferredModel,
   installed: [],
-  selected: CFG.upstreamModel,
+  selected: CFG.preferredModel,
   source: "configured",
   error: "",
 };
+
+const DISCOVERY = {
+  upstreams: [],
+  models: [],
+  byModel: new Map(),
+  defaultModel: "",
+  at: 0,
+  error: "",
+  signature: "",
+  inflight: null,
+};
+
+function baseOf(url) {
+  return String(url || "").replace(/\/+$/, "");
+}
+
+// Candidate list = explicit env entries, the legacy single URL, an optional
+// spawned llama-server, then the conventional local ports. Self-references
+// are dropped so the bridge can never proxy itself into a loop.
+function candidateUpstreams() {
+  const out = [];
+  const seen = new Set();
+  const add = (name, rawUrl) => {
+    const base = baseOf(rawUrl);
+    if (!/^https?:\/\//i.test(base)) return;
+    try {
+      const u = new URL(base);
+      const loopback = u.hostname === "127.0.0.1" || u.hostname === "localhost";
+      if (loopback && Number(u.port || 80) === CFG.port) return;
+    } catch (_) {
+      return;
+    }
+    if (seen.has(base)) return;
+    seen.add(base);
+    out.push({ name: name || base, baseUrl: base });
+  };
+
+  for (const u of CFG.explicitUpstreams) add(u.name || "explicit", u.baseUrl);
+  if (CFG.configuredUrl) add("configured", CFG.configuredUrl);
+  if (CFG.backend === "llama") add("llama-server", "http://127.0.0.1:" + CFG.internalPort);
+  // BRIDGE_PROBE_DEFAULTS=0 pins discovery to explicit upstreams only; tests
+  // use it to prove the absent-server path on a machine that happens to have
+  // a local model server running.
+  if (CFG.probeDefaults) {
+    for (const port of DEFAULT_PROBE_PORTS) {
+      add("local-" + port, "http://127.0.0.1:" + port);
+    }
+  }
+  return out;
+}
+
+async function discoverUpstreams() {
+  if (DISCOVERY.inflight) return DISCOVERY.inflight;
+
+  DISCOVERY.inflight = Promise.all(
+    candidateUpstreams().map(async (candidate) => {
+      const res = await fetchJson(candidate.baseUrl + "/v1/models", CFG.probeTimeoutMs);
+      if (!res.ok) {
+        return Object.assign({}, candidate, {
+          ok: false,
+          models: [],
+          error: res.error || "HTTP " + res.status,
+        });
+      }
+      const models = (res.json && Array.isArray(res.json.data) ? res.json.data : [])
+        .map((m) => m && m.id)
+        .filter((id) => typeof id === "string" && id.length > 0);
+      const name =
+        candidate.name && candidate.name !== "explicit"
+          ? candidate.name
+          : (res.json && res.json.data && res.json.data[0] && res.json.data[0].owned_by) ||
+            candidate.name;
+      return Object.assign({}, candidate, { name, ok: true, models });
+    }),
+  )
+    .then((probed) => {
+      const live = probed.filter((u) => u.ok && u.models.length > 0);
+      const byModel = new Map();
+      const models = [];
+      for (const upstream of live) {
+        for (const id of upstream.models) {
+          if (byModel.has(id)) continue;
+          byModel.set(id, upstream);
+          models.push(id);
+        }
+      }
+      const selected =
+        [CFG.preferredModel, CFG.alias].find((m) => m && byModel.has(m)) || models[0] || "";
+
+      DISCOVERY.upstreams = live;
+      DISCOVERY.models = models;
+      DISCOVERY.byModel = byModel;
+      DISCOVERY.defaultModel = selected;
+      DISCOVERY.at = Date.now();
+      DISCOVERY.error = live.length
+        ? ""
+        : "no local OpenAI-compatible upstream answered /v1/models";
+
+      MODEL_STATE.installed = models;
+      MODEL_STATE.selected = selected;
+      MODEL_STATE.error = DISCOVERY.error;
+      MODEL_STATE.source = !selected
+        ? "none-installed"
+        : selected === CFG.preferredModel
+          ? "configured"
+          : selected === CFG.alias
+            ? "configured-alias"
+            : "autoselect";
+      MODEL_STATE.configured = CFG.preferredModel;
+
+      // Log only when the set of upstreams/models changes; a 15s refresh
+      // must not flood the log while the machine is idle.
+      const signature = JSON.stringify(live.map((u) => [u.baseUrl, u.models]));
+      if (signature !== DISCOVERY.signature) {
+        DISCOVERY.signature = signature;
+        log(live.length ? "INFO" : "WARN", "UPSTREAM_DISCOVERY", {
+          upstreams: live.map((u) => ({
+            name: u.name,
+            baseUrl: u.baseUrl,
+            models: u.models.length,
+          })),
+          models,
+          selected,
+          unreachable: probed
+            .filter((u) => !u.ok)
+            .map((u) => ({ baseUrl: u.baseUrl, error: u.error })),
+        });
+      }
+      return DISCOVERY;
+    })
+    .catch((err) => {
+      DISCOVERY.error = err.message;
+      MODEL_STATE.error = err.message;
+      log("WARN", "UPSTREAM_DISCOVERY_FAIL", { error: err.message });
+      return DISCOVERY;
+    })
+    .finally(() => {
+      DISCOVERY.inflight = null;
+    });
+
+  return DISCOVERY.inflight;
+}
+
+// Compatibility name used by health and the static wiring check.
+async function refreshModelState() {
+  return discoverUpstreams();
+}
+
+function resolveTarget(requested) {
+  const want = typeof requested === "string" ? requested.trim() : "";
+  if (want && DISCOVERY.byModel.has(want)) {
+    return { upstream: DISCOVERY.byModel.get(want), model: want, aliased: false };
+  }
+  // Agent fallbacks such as "llama-local" are aliases, not real tags. Map any
+  // unknown name to a discovered model instead of forwarding a 404 upstream.
+  const fallback = DISCOVERY.defaultModel;
+  if (fallback && DISCOVERY.byModel.has(fallback)) {
+    return {
+      upstream: DISCOVERY.byModel.get(fallback),
+      model: fallback,
+      aliased: want !== fallback,
+    };
+  }
+  return { upstream: null, model: want || fallback, aliased: false };
+}
+
+function resolveRequestModel(requested) {
+  return resolveTarget(requested).model;
+}
+
+async function ensureUpstream(requested) {
+  let target = resolveTarget(requested);
+  if (target.upstream) return target;
+  await refreshModelState();
+  target = resolveTarget(requested);
+  return target;
+}
+
+function noUpstreamResult(requested) {
+  const message =
+    DISCOVERY.error ||
+    "no local LLM upstream found; start Ollama, llama.cpp, LM Studio or vLLM, or set BRIDGE_UPSTREAMS";
+  return {
+    ok: false,
+    status: 503,
+    message: message + (requested ? " [model: " + requested + "]" : ""),
+    type: "no_upstream",
+  };
+}
 
 function fetchJson(url, timeoutMs) {
   return new Promise((resolve) => {
@@ -168,60 +380,6 @@ function fetchJson(url, timeoutMs) {
       resolve({ ok: false, status: 0, error: "timeout", body: "" });
     });
   });
-}
-
-async function refreshModelState() {
-  if (CFG.backend !== "ollama") {
-    MODEL_STATE.selected = CFG.upstreamModel;
-    MODEL_STATE.source = "backend:" + CFG.backend;
-    return MODEL_STATE;
-  }
-  const base = CFG.ollamaUrl.replace(/\/$/, "");
-  const result = await fetchJson(base + "/api/tags", 3000);
-  if (!result.ok) {
-    MODEL_STATE.error = result.error;
-    log("WARN", "MODEL_DISCOVERY_FAIL", { url: base + "/api/tags", error: result.error });
-    return MODEL_STATE;
-  }
-  const names = (result.json.models || [])
-    .map((m) => m && m.name)
-    .filter((n) => typeof n === "string" && n.length > 0);
-  MODEL_STATE.installed = names;
-  MODEL_STATE.error = "";
-  const wanted = CFG.upstreamModel;
-  if (names.includes(wanted)) {
-    MODEL_STATE.selected = wanted;
-    MODEL_STATE.source = "configured";
-  } else if (names.includes(CFG.model)) {
-    MODEL_STATE.selected = CFG.model;
-    MODEL_STATE.source = "configured-alias";
-  } else if (names.length > 0) {
-    MODEL_STATE.selected = names[0];
-    MODEL_STATE.source = "autoselect";
-  } else {
-    MODEL_STATE.selected = wanted;
-    MODEL_STATE.source = "none-installed";
-  }
-  CFG.upstreamModel = MODEL_STATE.selected || CFG.upstreamModel;
-  CFG.model = MODEL_STATE.selected || CFG.model;
-  log("INFO", "MODEL_STATE", {
-    configured: MODEL_STATE.configured,
-    selected: MODEL_STATE.selected,
-    source: MODEL_STATE.source,
-    installed: names,
-  });
-  return MODEL_STATE;
-}
-
-function resolveRequestModel(requested) {
-  const want = typeof requested === "string" ? requested.trim() : "";
-  if (!want) return CFG.upstreamModel;
-  if (CFG.backend !== "ollama") return want;
-  if (MODEL_STATE.installed.includes(want)) return want;
-  // Agent fallbacks such as "llama-local" are aliases, not Ollama tags. The
-  // bridge is the compatibility layer: map any unknown alias to the installed
-  // model instead of forwarding a name the backend cannot serve.
-  return CFG.upstreamModel;
 }
 
 // ── Logging ───────────────────────────────────────────────────
@@ -447,15 +605,19 @@ function extractJson(text) {
 }
 
 // ── Network & Upstream Communication ─────────────────────────
-function upstreamChat(payload) {
+function upstreamChat(payload, upstream) {
   return new Promise((resolve) => {
+    if (!upstream) {
+      resolve({ status: 503, body: JSON.stringify({ error: { message: "no local upstream" } }) });
+      return;
+    }
     const body = JSON.stringify(payload);
-    const targetUrl = new URL(UPSTREAM_BASE + "/v1/chat/completions");
+    const targetUrl = new URL(upstream.baseUrl + "/v1/chat/completions");
 
     const req = http.request(
       {
         hostname: targetUrl.hostname,
-        port: targetUrl.port || 5050,
+        port: targetUrl.port || 80,
         path: targetUrl.pathname,
         method: "POST",
         timeout: CFG.timeoutMs,
@@ -482,10 +644,11 @@ function upstreamChat(payload) {
   });
 }
 
-function upstreamHealth() {
+function upstreamHealth(upstream) {
   return new Promise((resolve) => {
-    const targetUrl = new URL(UPSTREAM_BASE + (CFG.backend === "ollama" ? "/api/tags" : "/health"));
-    const req = http.get(targetUrl, { timeout: 3000 }, (res) => {
+    if (!upstream) return resolve({ ok: false, body: "" });
+    const targetUrl = new URL(upstream.baseUrl + "/v1/models");
+    const req = http.get(targetUrl, { timeout: CFG.probeTimeoutMs }, (res) => {
       let buf = "";
       res.on("data", (d) => (buf += d));
       res.on("end", () => resolve({ ok: res.statusCode === 200, body: buf }));
@@ -508,7 +671,7 @@ function spawnLlamaServer() {
     "-t", String(CFG.threads),
     "--host", "127.0.0.1",
     "--port", String(CFG.internalPort),
-    "--alias", CFG.model,
+    "--alias", CFG.alias,
     "--jinja",
     "--no-webui",
   ];
@@ -518,16 +681,6 @@ function spawnLlamaServer() {
     child = null;
     if (!shuttingDown) setTimeout(spawnLlamaServer, 3000);
   });
-}
-
-async function waitUpstreamReady(ms) {
-  const t0 = Date.now();
-  while (Date.now() - t0 < ms) {
-    const h = await upstreamHealth();
-    if (h.ok) return true;
-    await new Promise((r) => setTimeout(r, 1000));
-  }
-  return false;
 }
 
 // ── HTTP Utility Helpers ─────────────────────────────────────
@@ -585,9 +738,9 @@ function readBody(req, max = 8 * 1024 * 1024) {
   });
 }
 
-function buildPayload(body, stream) {
+function buildPayload(body, stream, model) {
   const p = {
-    model: resolveRequestModel(body.model),
+    model: model || resolveRequestModel(body.model),
     messages: body.messages,
     stream: !!stream,
     temperature: typeof body.temperature === "number" ? body.temperature : 0.7,
@@ -648,18 +801,20 @@ function normalizeUpstream(parsed) {
 // ── Handlers (Non-Stream & Stream) ───────────────────────────
 async function chatNonStream(body, transport) {
   const t0 = Date.now();
-  const wantModel = resolveRequestModel(body.model);
+  const target = await ensureUpstream(body.model);
+  if (!target.upstream) return noUpstreamResult(body.model);
+  const wantModel = target.model;
   const hadTools = Array.isArray(body.tools) && body.tools.length > 0;
-  const payload0 = buildPayload(body, false);
+  const payload0 = buildPayload(body, false, wantModel);
 
-  let up = await upstreamChat(payload0);
+  let up = await upstreamChat(payload0, target.upstream);
   let payloadUsed = payload0;
 
   if (up.status !== 200 && hadTools) {
-    const p2 = buildPayload({ ...body, tools: undefined, tool_choice: undefined }, false);
+    const p2 = buildPayload({ ...body, tools: undefined, tool_choice: undefined }, false, wantModel);
     p2.messages = [{ role: "system", content: toolHintSystem(body.tools) }].concat(body.messages);
     payloadUsed = p2;
-    up = await upstreamChat(p2);
+    up = await upstreamChat(p2, target.upstream);
   }
 
   if (up.status !== 200) {
@@ -681,9 +836,9 @@ async function chatNonStream(body, transport) {
   let norm = normalizeUpstream(parsed);
 
   if (!norm.content && !norm.toolCalls && hadTools) {
-    const p2 = buildPayload({ ...body, tools: undefined, tool_choice: undefined }, false);
+    const p2 = buildPayload({ ...body, tools: undefined, tool_choice: undefined }, false, wantModel);
     payloadUsed = p2;
-    const up2 = await upstreamChat(p2);
+    const up2 = await upstreamChat(p2, target.upstream);
     if (up2.status === 200) {
       try {
         const p = JSON.parse(up2.body);
@@ -740,13 +895,19 @@ async function chatNonStream(body, transport) {
 
 async function chatStream(body, req, res, transport) {
   const t0 = Date.now();
-  const wantModel = resolveRequestModel(body.model);
-  const payload = buildPayload(body, true);
+  const target = await ensureUpstream(body.model);
+  if (!target.upstream) {
+    const missing = noUpstreamResult(body.model);
+    openaiError(req, res, missing.status, missing.message, missing.type);
+    return;
+  }
+  const wantModel = target.model;
+  const payload = buildPayload(body, true, wantModel);
   const bodyStr = JSON.stringify(payload);
   const stamp = "chatcmpl-bridge-" + crypto.randomBytes(8).toString("hex");
   const now = Math.floor(Date.now() / 1000);
 
-  const targetUrl = new URL(UPSTREAM_BASE + "/v1/chat/completions");
+  const targetUrl = new URL(target.upstream.baseUrl + "/v1/chat/completions");
 
   const upReq = http.request(
     {
@@ -867,23 +1028,35 @@ async function handler(req, res) {
   }
 
   if (req.method === "GET" && (url === "/health" || url === "/v1/health")) {
-    if (CFG.backend === "ollama" && MODEL_STATE.installed.length === 0) {
+    // Never block on a missing upstream: discovery is bounded and cached, so
+    // the app always gets an answer and a later-started server is picked up
+    // by the refresh timer without a restart.
+    if (!DISCOVERY.at || Date.now() - DISCOVERY.at > CFG.refreshMs) {
       await refreshModelState();
     }
-    const h = await upstreamHealth();
+    const ready = DISCOVERY.upstreams.length > 0;
     cors(req, res);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(
       JSON.stringify({
-        status: h.ok ? "ok" : "degraded",
+        status: ready ? "ok" : "no-upstream",
         bridge: "local-llm-bridge",
         backend: CFG.backend,
-        model: CFG.model,
+        model: MODEL_STATE.selected,
         configured_model: MODEL_STATE.configured,
         model_source: MODEL_STATE.source,
         installed_models: MODEL_STATE.installed,
         model_error: MODEL_STATE.error || undefined,
-        upstream: { base: UPSTREAM_BASE, ready: h.ok },
+        upstream: {
+          base: ready ? DISCOVERY.upstreams[0].baseUrl : "",
+          ready,
+        },
+        upstreams: DISCOVERY.upstreams.map((u) => ({
+          name: u.name,
+          base: u.baseUrl,
+          models: u.models,
+        })),
+        discovered_at: DISCOVERY.at || null,
         transports: { unix_socket: CFG.socket, tcp: "127.0.0.1:" + CFG.port },
       })
     );
@@ -891,24 +1064,26 @@ async function handler(req, res) {
   }
 
   if (req.method === "GET" && (url === "/v1/models" || url === "/models")) {
-    const ids = MODEL_STATE.installed.length
-      ? MODEL_STATE.installed.slice()
-      : [CFG.model];
-    if (!ids.includes(CFG.model)) ids.unshift(CFG.model);
+    // Only models a live upstream actually reports. An empty list is the
+    // honest answer when nothing is running; no invented placeholder model.
+    if (!DISCOVERY.at) await refreshModelState();
     cors(req, res);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(
       JSON.stringify({
         object: "list",
-        data: ids.map((id) => ({
-          id,
-          object: "model",
-          created: Math.floor(Date.now() / 1000),
-          owned_by: "local-llm-bridge",
-          permission: [],
-          root: CFG.gguf ? path.basename(CFG.gguf) : id,
-          parent: null,
-        })),
+        data: DISCOVERY.models.map((id) => {
+          const upstream = DISCOVERY.byModel.get(id);
+          return {
+            id,
+            object: "model",
+            created: Math.floor(Date.now() / 1000),
+            owned_by: (upstream && upstream.name) || "local-llm-bridge",
+            permission: [],
+            root: id,
+            parent: null,
+          };
+        }),
       })
     );
     return;
@@ -986,17 +1161,14 @@ process.on("uncaughtException", (err) => {
 async function main() {
   log("INFO", "STARTING local-llm-bridge", {
     backend: CFG.backend,
-    model: CFG.model,
+    preferred_model: CFG.preferredModel || "(auto)",
     port: CFG.port,
     socket: CFG.socket,
   });
 
-  if (CFG.backend === "llama") {
-    spawnLlamaServer();
-    await waitUpstreamReady(30000);
-  } else {
-    await refreshModelState();
-  }
+  // A bundled llama-server is optional. Spawn it when configured, then let
+  // discovery find it when it is actually ready — never block the listener.
+  if (CFG.backend === "llama") spawnLlamaServer();
 
   const tcpServer = http.createServer(handler);
   tcpServer.listen(CFG.port, "127.0.0.1", () => {
@@ -1018,6 +1190,18 @@ async function main() {
       log("INFO", "UDS_SERVER_LISTENING", { socket: CFG.socket });
     });
   }
+
+  // Discovery runs after the listener is up: a machine with no Ollama,
+  // llama.cpp, LM Studio or vLLM still gets a working bridge that reports
+  // "no-upstream", and picks up a server the user starts later.
+  refreshModelState().catch((err) => {
+    log("WARN", "DISCOVERY_BOOT_FAIL", { error: err.message });
+  });
+  setInterval(() => {
+    refreshModelState().catch((err) => {
+      log("WARN", "DISCOVERY_REFRESH_FAIL", { error: err.message });
+    });
+  }, CFG.refreshMs).unref();
 }
 
 main().catch((err) => {

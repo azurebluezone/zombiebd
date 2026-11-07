@@ -246,7 +246,8 @@ trust_local_ca() {
     warn "Caddy local root CA not found; HTTPS verification will fail until it is trusted"
     return 0
   fi
-  local target="/usr/local/share/ca-certificates/caddy-local-root.crt"
+  local ca_dir="${CA_TRUST_DIR:-/usr/local/share/ca-certificates}"
+  local target="$ca_dir/caddy-local-root.crt"
   if as_root test -f "$target" && [ "$(as_root sha256sum "$target" | awk '{print $1}')" = "$(as_root sha256sum "$root_crt" | awk '{print $1}')" ]; then
     ok "Caddy local root CA already trusted"
     return 0

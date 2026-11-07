@@ -374,8 +374,7 @@ function getDefaultConfig() {
     serverPort: Number(process.env.SERVER_PORT) || Number(process.env.PORT) || 5050,
     udsPort: Number(process.env.UDS_PORT) || 5150,
     udsPath:
-      String(process.env.UDS || "").split(",")[0].trim() ||
-      process.env.ZOMBIECODER_UDS_PATH ||
+      require("./transport/uds-gateway").collectUdsPaths(process.env, process.cwd())[0] ||
       path.join(os.tmpdir(), "zombiecoder", "mcp.sock"),
     workingDir: process.cwd(),
     homeDir: os.homedir(),
@@ -688,9 +687,13 @@ async function startBridge() {
   const port = bridgePort();
   const existing = await httpGetJson(port, "/health", 1200);
   if (existing.ok) {
-    const model = existing.json && existing.json.model ? existing.json.model : "unknown";
-    console.log("[BRIDGE] already running on :" + port + " model=" + model + " — skip spawn");
-    return { started: false, port, model, healthy: true };
+    const model = existing.json && existing.json.model ? existing.json.model : "";
+    const upstreamReady = !!(existing.json && existing.json.upstream && existing.json.upstream.ready);
+    console.log(
+      "[BRIDGE] already running on :" + port +
+      (upstreamReady ? " model=" + model : " (no local upstream yet)") + " — skip spawn",
+    );
+    return { started: false, port, model, healthy: true, upstreamReady };
   }
   if (await tcpOpen(port, "127.0.0.1", 500)) {
     console.warn(
@@ -726,19 +729,30 @@ async function startBridge() {
     bridgeChild = null;
   });
 
-  const ready = await waitFor(async () => {
+  // Wait only for the bridge listener, never for an LLM upstream. A machine
+  // without Ollama/llama.cpp must still boot; the bridge discovers a server
+  // started later and reports upstream.ready=false until then.
+  const listening = await waitFor(async () => {
     const r = await httpGetJson(port, "/health", 900);
-    return r.ok && r.json && r.json.upstream && r.json.upstream.ready === true;
-  }, 15000, 350);
+    return r.ok === true;
+  }, 6000, 250);
 
-  if (!ready) {
-    console.warn("[BRIDGE] did not become healthy within 15s — check BRIDGE_OLLAMA_URL");
+  if (!listening) {
+    console.warn("[BRIDGE] did not answer on :" + port + " — check logs/bridge output");
     return { started: true, port, healthy: false };
   }
-  const health = await httpGetJson(port, "/health", 1200);
-  const model = health.json && health.json.model ? health.json.model : "unknown";
-  console.log("[BRIDGE] healthy on :" + port + " model=" + model);
-  return { started: true, port, model, healthy: true };
+  const health = await httpGetJson(port, "/health", 1500);
+  const model = health.json && health.json.model ? health.json.model : "";
+  const upstreamReady = !!(health.json && health.json.upstream && health.json.upstream.ready);
+  if (upstreamReady) {
+    console.log("[BRIDGE] listening on :" + port + " model=" + model);
+  } else {
+    console.log(
+      "[BRIDGE] listening on :" + port +
+      " — no local model server found; bridge stays idle and keeps probing",
+    );
+  }
+  return { started: true, port, model, healthy: true, upstreamReady };
 }
 
 process.on("exit", stopBridge);

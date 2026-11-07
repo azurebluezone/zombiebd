@@ -38,6 +38,26 @@ function detect(raw) {
 // OpenAI:   tool_calls[].function.arguments is a JSON *string*
 // Ollama:   message.tool_calls[].function.arguments is a JSON *object*
 // Gemini:   candidates[].content.parts[].functionCall = {name, args}
+// Some OpenAI-compatible servers return `content` as an array of parts
+// (Anthropic-style proxies, newer OpenAI multimodal responses). Downstream
+// consumers only handle a string, so every dialect coerces here.
+function contentText(value) {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    return value
+      .map(function (part) {
+        if (typeof part === "string") return part;
+        if (part && typeof part.text === "string") return part.text;
+        if (part && typeof part.content === "string") return part.content;
+        return "";
+      })
+      .join("");
+  }
+  if (typeof value === "object" && typeof value.text === "string") return value.text;
+  return String(value);
+}
+
 function asArgString(args) {
   if (typeof args === "string") return args;
   if (args && typeof args === "object") {
@@ -71,9 +91,13 @@ function nextToolId(prefix) {
 
 // ─── OpenAI dialect ───────────────────────────────────────────────────
 function fromOpenAI(raw) {
+  // A body without a choices array is not an OpenAI reply, even when the
+  // adapter declared this dialect. Returning an empty "success" here is what
+  // used to hide provider errors from the failover policy.
+  if (!raw || !Array.isArray(raw.choices) || raw.choices.length === 0) return null;
   const choice = (raw.choices && raw.choices[0]) || {};
   const msg = choice.message || {};
-  const content = msg.content == null ? "" : msg.content;
+  const content = contentText(msg.content);
   const toolCalls = Array.isArray(msg.tool_calls) && msg.tool_calls.length
     ? msg.tool_calls.map(function (t, i) {
         const fn = t.function || {};
@@ -106,6 +130,7 @@ function fromOpenAI(raw) {
       message: Object.assign(
         { role: "assistant", content: content },
         toolCalls ? { tool_calls: toolCalls } : {},
+        msg.refusal ? { refusal: msg.refusal } : {},
         msg.reasoning_content ? { reasoning_content: msg.reasoning_content } :
           (msg.reasoning ? { reasoning_content: msg.reasoning } : {}),
         msg.reasoning ? { reasoning: msg.reasoning } : {},
@@ -124,6 +149,7 @@ function fromOpenAI(raw) {
 
 function fromGroq(raw) {
   const out = fromOpenAI(raw);
+  if (!out) return null;
   out.raw_format = "groq";
   // Groq-specific, but harmless to keep: https://console.groq.com/docs/api-reference
   if (raw.x_groq) out.x_groq = raw.x_groq;
@@ -134,8 +160,9 @@ function fromGroq(raw) {
 // ─── Ollama dialect ───────────────────────────────────────────────────
 // https://docs.ollama.com/api/chat — ChatResponse / ChatStreamEvent
 function fromOllama(raw) {
+  if (!raw || typeof raw !== "object" || !raw.message) return null;
   const msg = raw.message || {};
-  const content = msg.content == null ? "" : msg.content;
+  const content = contentText(msg.content);
   const toolCalls = Array.isArray(msg.tool_calls) && msg.tool_calls.length
     ? msg.tool_calls.map(function (t, i) {
         const fn = t.function || {};
@@ -178,6 +205,9 @@ function fromOllama(raw) {
 //   candidates[].content.parts[].text
 //   candidates[].content.parts[].functionCall = {name, args}
 function fromGemini(raw) {
+  // promptFeedback-only bodies (blocked prompt) and errors carry no candidate;
+  // treat them as an unrecognised reply so the caller fails over or reports.
+  if (!raw || !Array.isArray(raw.candidates) || raw.candidates.length === 0) return null;
   const cand = (raw.candidates && raw.candidates[0]) || {};
   const parts = (cand.content && cand.content.parts) || [];
   let text = "";
@@ -217,6 +247,9 @@ function fromGemini(raw) {
     : (cand.finishReason ? (finishMap[cand.finishReason] || "stop") : "stop");
 
   const u = raw.usageMetadata || {};
+  // Gemini reports thinking tokens separately; total already includes them.
+  const completionTokens =
+    (u.candidatesTokenCount || 0) + (u.thoughtsTokenCount || 0);
   return {
     choices: [{
       index: 0,
@@ -230,11 +263,12 @@ function fromGemini(raw) {
     }],
     usage: {
       prompt_tokens: u.promptTokenCount || 0,
-      completion_tokens: u.candidatesTokenCount || 0,
+      completion_tokens: completionTokens,
       total_tokens: u.totalTokenCount ||
-        (u.promptTokenCount || 0) + (u.candidatesTokenCount || 0),
+        (u.promptTokenCount || 0) + completionTokens,
     },
-    model: raw.model || undefined,
+    // Gemini's generateContent answer carries modelVersion, not model.
+    model: raw.model || raw.modelVersion || undefined,
     provider: "gemini",
     raw_format: "gemini",
   };
@@ -282,13 +316,21 @@ function normalize(raw, opts) {
   }
 
   if (!out || !out.choices || !out.choices.length) {
+    // A 200 that no dialect recognised is a provider failure, not a reply.
+    // Carry the provider's own error text (when present) so the caller can
+    // fail over with a real reason instead of an empty "success".
+    const providerError =
+      raw && raw.error
+        ? (typeof raw.error === "string" ? raw.error : raw.error.message || "")
+        : "";
     return {
       choices: [],
       usage: null,
-      model: (raw && raw.model) || undefined,
+      model: (raw && (raw.model || raw.modelVersion)) || undefined,
       provider: opts.provider,
       raw_format: dialect,
       error: "unrecognised_response_shape",
+      ...(providerError ? { error_message: String(providerError) } : {}),
       raw: raw,
     };
   }
@@ -308,6 +350,7 @@ function createStreamNormalizer(opts) {
   const dialect = opts.dialect || "openai";
   let content = "";
   let reasoning = "";
+  let refusal = "";
   let finish = null;
   const calls = [];               // {index, id, name, args}
   const emittedIds = new Set();
@@ -319,7 +362,8 @@ function createStreamNormalizer(opts) {
     // ── Ollama NDJSON frame ─────────────────────────────────────────
     if (dialect === "ollama" || (frame.message && typeof frame.done === "boolean")) {
       const m = frame.message || {};
-      if (typeof m.content === "string" && m.content) content += m.content;
+      const deltaText = contentText(m.content);
+      if (deltaText) content += deltaText;
       if (typeof m.thinking === "string" && m.thinking) reasoning += m.thinking;
       if (Array.isArray(m.tool_calls)) {
         for (const t of m.tool_calls) {
@@ -373,7 +417,9 @@ function createStreamNormalizer(opts) {
     // ── OpenAI / Groq SSE frame ─────────────────────────────────────
     const choice = (frame.choices && frame.choices[0]) || {};
     const d = choice.delta || {};
-    if (typeof d.content === "string" && d.content) content += d.content;
+    const deltaText = contentText(d.content);
+    if (deltaText) content += deltaText;
+    if (typeof d.refusal === "string" && d.refusal) refusal += d.refusal;
     if (typeof d.reasoning_content === "string") reasoning += d.reasoning_content;
     if (typeof d.reasoning === "string") reasoning += d.reasoning;
     if (Array.isArray(d.tool_calls)) {
@@ -418,8 +464,9 @@ function createStreamNormalizer(opts) {
     }
     if (content) { delta.content = content; content = ""; }
     if (reasoning) { delta.reasoning_content = reasoning; reasoning = ""; }
+    if (refusal) { delta.refusal = refusal; refusal = ""; }
 
-    const hasPayload = delta.content || delta.reasoning_content || delta.role;
+    const hasPayload = delta.content || delta.reasoning_content || delta.refusal || delta.role;
 
     // Tool calls are NOT emitted incrementally: OpenAI and Ollama both
     // fragment `arguments` across frames, so emitting on first sight would
@@ -461,7 +508,7 @@ function createStreamNormalizer(opts) {
 
   // Flush: called at end-of-stream so nothing buffered is lost.
   function flush() {
-    if (!content && !reasoning && !finish && !calls.length) return null;
+    if (!content && !reasoning && !refusal && !finish && !calls.length) return null;
     if (!finish) finish = calls.length ? "tool_calls" : "stop";
     return buildChunk() || {
       id: "chatcmpl_stream",
@@ -485,4 +532,5 @@ module.exports = {
   asArgObject,
   joinedArgs,
   nextToolId,
+  contentText,
 };

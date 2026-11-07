@@ -30,6 +30,39 @@ function normalizePaths(value) {
   return out;
 }
 
+// One env var per candidate (`UDS_1`..`UDS_N`), plus the legacy comma list
+// (`UDS`, `UDS_PATH`, `UDS_PATHS`). Numbered keys are read dynamically: adding
+// UDS_4 needs no code change, and gaps are fine (UDS_1, UDS_3 still work).
+// Order decides fallback: the first usable path wins, the next one is the
+// immediate fallback when a path is busy or cannot be bound.
+function collectUdsPaths(env, root) {
+  const source = env || process.env;
+  const base = path.resolve(root || process.cwd());
+  const raw = [];
+
+  for (const key of ["UDS", "UDS_PATH", "UDS_PATHS"]) {
+    raw.push(...String(source[key] || "").split(","));
+  }
+
+  const numbered = Object.keys(source)
+    .map((key) => ({ key, match: /^UDS(?:_PATH)?_(\d+)$/.exec(key) }))
+    .filter((item) => item.match && String(source[item.key] || "").trim())
+    .sort((a, b) => Number(a.match[1]) - Number(b.match[1]));
+  for (const item of numbered) raw.push(source[item.key]);
+
+  const seen = new Set();
+  const out = [];
+  for (const item of raw) {
+    const text = String(item || "").trim();
+    if (!text) continue;
+    const resolved = path.resolve(base, text);
+    if (seen.has(resolved)) continue;
+    seen.add(resolved);
+    out.push(resolved);
+  }
+  return out;
+}
+
 function canConnect(socketPath) {
   return new Promise((resolve) => {
     const socket = net.createConnection({ path: socketPath });
@@ -210,4 +243,4 @@ function createUdsGateway(options) {
   };
 }
 
-module.exports = { createUdsGateway, normalizePaths };
+module.exports = { createUdsGateway, collectUdsPaths, normalizePaths };

@@ -15,6 +15,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# Scratch space follows the environment: $TMPDIR when set, /tmp otherwise.
+# Nothing here assumes this machine's layout.
+EDGE_TMP="${TMPDIR:-/tmp}/zombiecoder-edge"
+mkdir -p "$EDGE_TMP"
+
 DRY_RUN=0
 KEEP_APACHE=0
 for arg in "$@"; do
@@ -62,15 +67,15 @@ fi
 
 RENDER_TARGET="${CADDYFILE_PATH:-/etc/caddy/Caddyfile}"
 if [ "$DRY_RUN" = "1" ]; then
-  mkdir -p /tmp/opencode
-  RENDER_TARGET="/tmp/opencode/Caddyfile.edge.$$"
+  mkdir -p "$EDGE_TMP"
+  RENDER_TARGET="$EDGE_TMP/Caddyfile.edge.$$"
 fi
 
 say "rendering $RENDER_TARGET from .env ..."
 node scripts/caddy-render.js --out "$RENDER_TARGET" >/dev/null || fail "caddy-render.js failed"
 
 say "validating $RENDER_TARGET ..."
-VALIDATE_LOG="/tmp/opencode/caddy-validate.$$.log"
+VALIDATE_LOG="$EDGE_TMP/caddy-validate.$$.log"
 if ! VALIDATE_OUT="$(caddy validate --config "$RENDER_TARGET" --adapter caddyfile 2>&1)"; then
   printf '%s\n' "$VALIDATE_OUT" >&2
   fail "caddy validate rejected the rendered config"
@@ -177,7 +182,7 @@ systemctl is-active --quiet caddy || {
 HTTP_CODE=""
 HTTPS_CODE=""
 HTTPS_BODY=""
-HEALTH_FILE="/tmp/opencode/edge-health.$$.json"
+HEALTH_FILE="$EDGE_TMP/edge-health.$$.json"
 for _ in $(seq 1 40); do
   HTTP_CODE="$(curl -sS -o /dev/null -w '%{http_code}' -m 5 -H "Host: $MAIN_HOST" http://127.0.0.1/health 2>/dev/null || true)"
   HTTPS_CODE="$(curl -k -sS -o "$HEALTH_FILE" -w '%{http_code}' -m 5 --resolve "$MAIN_HOST:443:127.0.0.1" "https://$MAIN_HOST/health" 2>/dev/null || true)"

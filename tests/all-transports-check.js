@@ -36,10 +36,13 @@ const {
 } = require("./transport-helpers.js");
 const { normalizeText } = require("../lib/text-integrity.js");
 
-const MODEL = process.env.TRANSPORT_CHECK_MODEL || "qwen2:0.5b";
+// No provider and no model name is baked in: the audit asks the live
+// catalog which model to use. TRANSPORT_CHECK_MODEL overrides for a specific
+// run; EXPECTED_TOOLS pins the tool count instead of hardcoding today's 153.
+let MODEL = String(process.env.TRANSPORT_CHECK_MODEL || "").trim();
+let EXPECTED_TOOLS = Number(process.env.EXPECTED_TOOLS || 0) || 0;
 const ALLOWED_ORIGIN = "https://" + MAIN_HOST;
 const DENIED_ORIGIN = "https://evil.example";
-const EXPECTED_TOOLS = 153;
 const failures = [];
 const transportChecks = [];
 
@@ -107,6 +110,24 @@ async function main() {
   console.log("=== live transport audit ===");
   console.log("api=" + PORTS.api + " grpc=" + PORTS.grpc + " caddy=" + PORTS.caddy_https + " host=" + MAIN_HOST);
 
+  // Resolve the wire-format model from the live catalog. "mission" is the
+  // gateway's own router id and is always present; whatever comes first is
+  // what a client would pick. No provider is assumed to exist.
+  if (!MODEL) {
+    const catalog = await httpJson("/v1/models");
+    const ids = ((catalog.json && catalog.json.data) || [])
+      .map((m) => m && m.id)
+      .filter(Boolean);
+    MODEL = ids[0] || "";
+  }
+  if (!MODEL) {
+    fail("model-resolution", "live /v1/models returned no model and TRANSPORT_CHECK_MODEL is unset");
+    console.log("RESULT: ALL TRANSPORTS FAIL model-resolution");
+    process.exitCode = 1;
+    return;
+  }
+  console.log("model=" + MODEL);
+
   // 1. Plain HTTP.
   const health = await httpJson("/health");
   checkTransport(
@@ -134,10 +155,16 @@ async function main() {
     { Origin: ALLOWED_ORIGIN },
   );
   const toolsHttp = mcpHttp.json && mcpHttp.json.result && mcpHttp.json.result.tools;
+  // First response defines the reference count; every later transport must
+  // agree. EXPECTED_TOOLS still wins when the caller pins it.
+  if (!EXPECTED_TOOLS && Array.isArray(toolsHttp) && toolsHttp.length) {
+    EXPECTED_TOOLS = toolsHttp.length;
+  }
   checkTransport(
     "mcp-http",
     mcpHttp.status === 200 && Array.isArray(toolsHttp) && toolsHttp.length === EXPECTED_TOOLS,
-    "status=" + mcpHttp.status + " tools=" + (Array.isArray(toolsHttp) ? toolsHttp.length : "bad"),
+    "status=" + mcpHttp.status + " tools=" + (Array.isArray(toolsHttp) ? toolsHttp.length : "bad") +
+      " expected=" + EXPECTED_TOOLS,
   );
 
   // 4. MCP over HTTPS through Caddy.

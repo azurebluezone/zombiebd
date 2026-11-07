@@ -52,6 +52,7 @@ const state = {
   probes: 0,
   edge: false,
   edgeMode: "not-checked",
+  skipped: [],
 };
 
 let failures = 0;
@@ -273,12 +274,30 @@ function check(name, fn) {
       return true;
     })
     .catch((err) => {
+      if (err && err.skip) {
+        state.skipped.push(name);
+        console.log("SKIP " + name + " — " + err.message);
+        return true;
+      }
       fail(name + " — " + err.message);
       return false;
     });
 }
 
 async function bridgeAutoSelect() {
+  // Model auto-select is a property of the Ollama bridge. A host that runs
+  // remote providers only has no /api/tags to discover, so this probe is
+  // honestly skipped instead of failing the whole readiness gate.
+  const tags = await request(OLLAMA + "/api/tags", { timeoutMs: 2500 });
+  const installed = tags.json && Array.isArray(tags.json.models) ? tags.json.models : [];
+  if (tags.status !== 200 || installed.length === 0) {
+    throw {
+      skip: true,
+      message:
+        "ollama not reachable at " + OLLAMA + " (status=" + tags.status + " models=" + installed.length + ")",
+    };
+  }
+
   const port = await freePort();
   const socket = path.join(SCRATCH, "readiness-bridge-" + process.pid + ".sock");
   const child = spawn(process.execPath, [path.join(ROOT, "local-llm-bridge.js")], {
@@ -697,7 +716,8 @@ async function main() {
         " probes=" +
         state.probes +
         " edge=" +
-        (state.edgeMode === "live" ? "live" : "ready"),
+        (state.edgeMode === "live" ? "live" : "ready") +
+        (state.skipped.length ? " skipped=" + state.skipped.length : ""),
     );
     console.log("EDGE_MODE: " + state.edgeMode);
     process.exitCode = 0;

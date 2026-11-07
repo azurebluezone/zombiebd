@@ -259,12 +259,43 @@ agent file's concrete fallback instead of forwarding the sentinel to a cloud
 provider. Database edits are loaded into memory at boot; restart the gateway
 after changing agent models.
 
+### Model choice is a preference, not a provider lock
+
+Model names come from the live catalog, so removing a provider, letting a key
+expire, or stopping a local server degrades service instead of breaking it:
+
+| Caller | Resolution order |
+|--------|------------------|
+| agent chat | agent DB model → `AGENT_MODEL` → first usable live model |
+| utility calls (intent, alignment, proof) | `UTILITY_MODEL` → first usable live model |
+| streaming proxy | requested model, then the next provider that serves it |
+
+`lib/model-choice.js` holds the shared rule (`chooseUsableModel`). The live
+candidate list is ordered by provider priority, and at equal priority cloud
+before local, so a stopped local server never shadows a working cloud provider.
+
+A 200 response whose body no normalizer dialect recognises is a provider
+failure: it is marked, the next provider is tried, and when none is left the
+caller gets the provider's own error text instead of an empty success.
+
+```bash
+node tests/provider-independence-check.js   # RESULT: PROVIDER INDEPENDENCE PASS
+```
+
 ---
 
 ## Install verification
 
 ```bash
 bash scripts/install-verify.sh
+```
+
+A deployment that uses remote providers only has no llama.cpp to probe. Run
+the same gate with `--remote`; it reports the native adapter as `SKIP` instead
+of inventing a result and keeps the rest of the checks live:
+
+```bash
+bash scripts/install-verify.sh --remote
 ```
 
 Every field in the final line is a live check:
@@ -279,7 +310,7 @@ Every field in the final line is a live check:
 | `origins=ok` | allowed origin 200, hostile origin 401 |
 | `tools=153` | live `tools/list` count |
 | `providers=...` | `llama-cpu-openai` and `llama-native` in the live catalogue |
-| `native=ok` | real llama.cpp `/completion` request through `provider/llamacpp.js` |
+| `native=ok` | real llama.cpp `/completion` request through `provider/llamacpp.js` (default gate; `--remote` reports `native=skipped`) |
 | `db=seed` | 9 agent rows, no `MODELS_DB` sentinel |
 | `build=ok` | `scripts/build.js` produced `dist/manifest.json` |
 | `start=ok` | `/health` returns 200 with 9 agents |
