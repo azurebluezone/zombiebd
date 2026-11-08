@@ -10,6 +10,8 @@ module.exports = {
   role: "documentation",
   expertise: "API documentation, code comments, README, technical writing, documentation standards, API specs",
   priority: 5,
+  // Ollama Cloud: documentation writing on the smaller cloud model.
+  model: "gpt-oss:20b",
   enabled: 1,
   mission: "Ensure all code is well-documented with clear, professional English documentation and API specs",
   decisionRule: "Research standard documentation formats via web search when unsure about best practices",

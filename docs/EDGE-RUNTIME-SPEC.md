@@ -86,6 +86,7 @@ verification is green.
 | D14 | A provider may declare `TIMEOUT_MS`, `STREAM_TIMEOUT_MS` and `MAX_PROMPT_CHARS` | A local CPU model needed 132 s for a 5.7k-token prefill and answered with a tool call; the cloud-shaped prompt and 60 s timeout were both wrong for it |
 | D15 | A Gemini 3.x functionCall is replayed with its `thoughtSignature` and `id` | The API rejects the tool-result turn with HTTP 400 when the signature is dropped, so the normalizer and adapter must both carry it |
 | D16 | Fallback walks the providers that advertise the requested model, in priority order, and never changes the model | Four live models are served by two providers. Re-resolving the model to its single highest-priority provider made `findNextProvider` skip the second one, so `gemini-4-argon` could not move from `gemini` to `opencode` |
+| D17 | Agent → provider bindings are explicit and spread across five provider families; local Ollama uses the OpenAI `/v1` dialect | Native `/api/chat` needs `think:true` before `qwen3:0.6b` emits native tool calls, while `/v1/chat/completions` emits them directly. The matrix, rationale and gate live in `docs/AGENT-PROVIDER-MATRIX.md` |
 
 ---
 
@@ -169,7 +170,7 @@ APP_ROOT=
 BIND_HOST=127.0.0.1
 PORT=5050
 UDS_PORT=5150
-UDS=/tmp/zombiecoder/mcp.sock,/var/tmp/zombiecoder/mcp.sock
+UDS=data/run/mcp.sock,data/run/mcp2.sock
 UDS_OPENAI=1
 
 # Providers
@@ -312,7 +313,11 @@ Windows: `scripts/install.ps1` exists; it is **NOT_TESTED** on this Linux host.
   `/status` reports the same agent count.
 - No seed file is required from outside `dist/`.
 - Agent model edits are loaded at boot. Restart the gateway after changing the
-  DB directly; the in-memory `AGENTS` array is not live-reloaded.
+  DB directly; the in-memory `AGENTS` array is not live-reloaded. The admin
+  route `POST /api/admin/agents` refreshes it immediately.
+- The current 9-agent / 5-provider matrix, its rationale and the
+  `node tests/agent-provider-matrix-check.js` gate live in
+  `docs/AGENT-PROVIDER-MATRIX.md`.
 - A provider with `MAX_PROMPT_CHARS` set uses a compact system prompt: persona
   plus rules, no SSOT/syllabus prose, no session history and no automatic tool
   injection. The full files stay on disk and client-supplied tools still pass

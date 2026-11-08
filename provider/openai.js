@@ -60,13 +60,24 @@ function buildBody(params) {
   return body;
 }
 
+// Some OpenAI-compatible servers accept extra wire fields the OpenAI schema
+// does not define: Ollama's `reasoning_effort` disables qwen3 thinking, and
+// llama.cpp's `chat_template_kwargs` disables it for a Jinja template. The
+// quirk belongs to the provider config, not to this adapter.
+function applyExtraBody(cfg, body) {
+  const extra = cfg && cfg.extraBody;
+  if (!extra || typeof extra !== "object" || Array.isArray(extra)) return body;
+  for (const key of Object.keys(extra)) body[key] = extra[key];
+  return body;
+}
+
 // ─── Non-streaming ────────────────────────────────────────────────────
 // Returns { ok, normalized, raw, statusCode, error }.
 async function chat(cfg, params) {
   const url = endpoint(cfg, false);
   // A subclass adapter (e.g. Groq) may supply its own body builder.
   const builder = typeof params._build === "function" ? params._build : buildBody;
-  const body = builder(Object.assign({}, params, { stream: false }));
+  const body = applyExtraBody(cfg, builder(Object.assign({}, params, { stream: false })));
   delete body._build;
   const res = await transport.request(
     { baseUrl: cfg.baseUrl, key: cfg.key, headers: authHeaders(cfg),
@@ -104,7 +115,7 @@ async function chat(cfg, params) {
 async function chatStream(cfg, params, onDelta) {
   const url = endpoint(cfg, true);
   const builder = typeof params._build === "function" ? params._build : buildBody;
-  const body = builder(Object.assign({}, params, { stream: true }));
+  const body = applyExtraBody(cfg, builder(Object.assign({}, params, { stream: true })));
   delete body._build;
   const norm = createStreamNormalizer({
     dialect: DIALECT, model: params.model, provider: cfg.id,

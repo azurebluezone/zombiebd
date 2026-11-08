@@ -167,7 +167,9 @@ function fromOllama(raw) {
     ? msg.tool_calls.map(function (t, i) {
         const fn = t.function || {};
         return {
-          id: nextToolId("call_"),
+          // Ollama echoes the id it assigned; keep it so a tool result can be
+          // matched back to the exact call instead of a freshly invented id.
+          id: t.id || nextToolId("call_"),
           type: "function",
           function: { name: fn.name || "", arguments: asArgString(fn.arguments) },
           index: i,
@@ -370,7 +372,7 @@ function createStreamNormalizer(opts) {
           const fn = t.function || {};
           calls.push({
             index: calls.length,
-            id: nextToolId("call_"),
+            id: t.id || nextToolId("call_"),
             name: fn.name || "",
             args: asArgObject(fn.arguments),
             fragments: typeof fn.arguments === "string" ? [fn.arguments] : [],

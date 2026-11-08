@@ -10,6 +10,9 @@ module.exports = {
   role: "customer-experience",
   expertise: "customer journey, UX, satisfaction, retention, support, customer feedback analysis, brand loyalty",
   priority: 8,
+  // Gemini: 2.5 Flash still serves tool calls on the free tier. The
+  // 3.6/3.7/3.8 Flash tool path returned 503 high-demand during the gate.
+  model: "gemini-2.5-flash",
   enabled: 1,
   mission: "Handle customer interactions, resolve disputes professionally, and turn one-time buyers into loyal repeat customers",
   decisionRule: "Absolute Accuracy and High Empathy. 100% factual transparency with zero false promises. Bangladesh market reality FIRST",

@@ -10,6 +10,8 @@ module.exports = {
   role: "debugging",
   expertise: "bug detection, error analysis, debugging, root cause analysis, stack trace analysis, memory leak detection",
   priority: 2,
+  // Groq: the large gpt-oss model gives debugging probes fast tool calls.
+  model: "openai/gpt-oss-120b",
   enabled: 1,
   mission: "Detect bugs, analyze errors, validate logic, perform root cause analysis, and ensure code correctness",
   decisionRule: "Always reproduce the bug scenario before suggesting fixes. Search for known issues via web when SSOT lacks answers.",

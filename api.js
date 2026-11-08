@@ -147,7 +147,35 @@ const MCP_TABLE = (function () {
 // Everything wire-related — headers, payloads, dialects, response
 // normalization — lives in ./provider and ./normalizer. api.js only routes.
 const providerRegistry = require("./provider");
+const providerTransport = require("./provider/transport");
+const providerCapabilities = require("./provider/capabilities");
+const providerSecretStore = require("./lib/secret-store");
+const adminApi = require("./admin-api");
 const toolRegister = require("./provider/tools");
+
+// The admin routing module gets the live helpers through one context object.
+// Getters keep the DB handle and agent list current without this module
+// owning either of them.
+function adminApiContext() {
+  return {
+    adminAuthorized,
+    jsonResponse,
+    readBody,
+    log,
+    PROVIDER_CONFIG,
+    providerSummary,
+    providerPriority,
+    saveProviderFromAdmin,
+    deleteProviderFromAdmin,
+    refreshFreeModels,
+    persistProviderDisabled,
+    normalizeProviderPriorities,
+    get DISABLED_MODELS() { return DISABLED_MODELS; },
+    get db() { return MODELS_DB; },
+    refreshAgents,
+    get agents() { return AGENTS; },
+  };
+}
 // Unified structured log (logs/zc.jsonl). Path resolves from THIS file's
 // location — works no matter where the project is checked out.
 const zclog = require("./lib/zc-log");
@@ -190,7 +218,7 @@ const PROJECT_ROOT = __dirname;
 })();
 
 // ─── Config ──────────────────────────────────────────────────
-const PORT = parseInt(process.env.PORT || "3000", 10);
+const PORT = parseInt(process.env.PORT || DEFAULTS.PORT, 10);
 const MAX_BODY_SIZE = parseInt(
   process.env.MAX_BODY_SIZE || String(10 * 1024 * 1024),
   10
@@ -252,11 +280,11 @@ if (!PUSHER_ENABLED && process.env.PUSHER_APP_ID) {
 const sseClients = new Map();
 
 // Unix Domain Socket path for MCP
-// Priority: 1) env UDS_PORT, 2) DOMAIN_CFG.udsPort, 3) 5150 default
+// Priority: 1) env UDS_PORT, 2) DOMAIN_CFG.udsPort, 3) DEFAULTS.UDS_PORT
 const UDS_PORT = parseInt(
   process.env.UDS_PORT ||
   (typeof DOMAIN_CFG !== "undefined" ? DOMAIN_CFG.udsPort : null) ||
-  "5150",
+  DEFAULTS.UDS_PORT,
   10,
 );
 const { collectUdsPaths } = require("./transport/uds-gateway");
@@ -267,7 +295,7 @@ const { collectUdsPaths } = require("./transport/uds-gateway");
 // immediate fallback when a path is busy or cannot be bound.
 const UDS_PATHS = collectUdsPaths(process.env, PROJECT_ROOT);
 if (UDS_PATHS.length === 0) {
-  UDS_PATHS.push(path.join(os.tmpdir(), "zombiecoder", "mcp.sock"));
+  UDS_PATHS.push(path.resolve(PROJECT_ROOT, DEFAULTS.UDS));
 }
 const UDS_PATH = UDS_PATHS[0];
 let udsServer = null; // legacy MCP-only UDS server
@@ -889,6 +917,23 @@ function positiveIntEnv(name) {
   return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
+// Provider wire quirks that the OpenAI schema does not define arrive as one
+// JSON object (Ollama reasoning_effort, llama.cpp chat_template_kwargs).
+// Invalid JSON is ignored with a log line instead of crashing the gateway.
+function jsonObjectEnv(name) {
+  const raw = process.env[name];
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+  } catch (e) {
+    log("WARN", "PROVIDER_EXTRA_BODY_INVALID", { env: name, error: e.message });
+    return undefined;
+  }
+  log("WARN", "PROVIDER_EXTRA_BODY_INVALID", { env: name, error: "not a JSON object" });
+  return undefined;
+}
+
 // Custom providers use "name=>apiModel" for a masked pair. A plain colon is
 // not a delimiter here: local model tags contain one (qwen2:0.5b, ...:8b), so
 // splitting on ":" would turn a tag into a bogus mask.
@@ -970,10 +1015,10 @@ const PROVIDER_CONFIG = {
   ollama: {
     name: "Ollama",
     baseUrl: process.env.OLLAMA_BASE || "http://127.0.0.1:5051",
-    // Key resolution: explicit OLLAMA_API_KEY first; ollama.com CLOUD auth
-    // lives in OLLAMA_CLOUD_API_KEY (.env ships the cloud key there).
-    // Local keyless servers ignore the Bearer header, so one fallback is safe.
-    key: process.env.OLLAMA_API_KEY || process.env.OLLAMA_CLOUD_API_KEY || "",
+    // Local Ollama uses OLLAMA_API_KEY only. The cloud credential belongs to
+    // the separate ollama_cloud provider; a fallback here silently sent the
+    // cloud key to a local server and made the two providers indistinguishable.
+    key: process.env.OLLAMA_API_KEY || "",
     priority: parseInt(process.env.OLLAMA_PRIORITY || "999", 10), // NaN-proof: unset → lowest
     type: process.env.OLLAMA_TYPE || "openai",
     // DIALECT_FIX (2026-10-12): `type` alone CANNOT pick the wire dialect.
@@ -993,13 +1038,66 @@ const PROVIDER_CONFIG = {
     // still producing a valid answer. The budget is env-only, per provider.
     timeout: positiveIntEnv("OLLAMA_TIMEOUT_MS"),
     streamTimeout: positiveIntEnv("OLLAMA_STREAM_TIMEOUT_MS"),
+    // Small local models drown in a 4.5k-char persona and keep generating
+    // reasoning. Both knobs are env-only so a CPU box can stay responsive.
+    maxPromptChars: positiveIntEnv("OLLAMA_MAX_PROMPT_CHARS"),
+    maxTokens: positiveIntEnv("OLLAMA_MAX_TOKENS"),
+    // qwen3 thinks by default; /v1 only honours reasoning_effort, not think.
+    extraBody: jsonObjectEnv("OLLAMA_EXTRA_BODY"),
     // Model list is NOT hardcoded here: the DB or provider sync supplies it.
     // The env override keeps Ollama tags intact — "qwen2:0.5b" is a model id,
     // not a "qwen2 -> 0.5b" mask — so it uses the tag-safe parser.
     models: parseCustomModelsEnv(process.env.OLLAMA_MODELS || ""),
-    local: true,
+    // Model discovery is dynamic (the server can start or stop while the
+    // gateway runs). This is a capability, not a "local" category.
+    dynamicModels: true,
+  },
+  // ── Ollama Cloud (first-class provider) ────────────────────
+  // Same native /api/chat dialect as local Ollama, but at ollama.com with a
+  // Bearer key. Kept separate so the key never leaks into the local path and
+  // so the model lists (local tags vs cloud catalog) stay independent.
+  ollama_cloud: {
+    name: "Ollama Cloud",
+    baseUrl: process.env.OLLAMA_CLOUD_BASE || "https://ollama.com",
+    key: process.env.OLLAMA_CLOUD_API_KEY || "",
+    priority: parseInt(process.env.OLLAMA_CLOUD_PRIORITY || "999", 10),
+    type: process.env.OLLAMA_CLOUD_TYPE || "openai",
+    dialect: process.env.OLLAMA_CLOUD_DIALECT || "",
+    timeout: positiveIntEnv("OLLAMA_CLOUD_TIMEOUT_MS"),
+    streamTimeout: positiveIntEnv("OLLAMA_CLOUD_STREAM_TIMEOUT_MS"),
+    models: parseCustomModelsEnv(process.env.OLLAMA_CLOUD_MODELS || ""),
+    dynamicModels: true,
+  },
+  // ── Local LLM bridge (first-class provider) ────────────────
+  // The bridge is one OpenAI-compatible source. Its own upstream discovery
+  // stays inside the bridge; the gateway does not make it a router above the
+  // other providers.
+  bridge: {
+    name: "Local LLM Bridge",
+    baseUrl:
+      process.env.BRIDGE_BASE ||
+      "http://127.0.0.1:" + (process.env.BRIDGE_PORT || "11435") + "/v1",
+    key: process.env.BRIDGE_API_KEY || "",
+    priority: parseInt(process.env.BRIDGE_PRIORITY || "999", 10),
+    type: "openai",
+    models: parseCustomModelsEnv(process.env.BRIDGE_MODELS || ""),
+    enabled: process.env.BRIDGE_ENABLED !== "0",
+    dynamicModels: true,
+    // CPU-bound bridge upstreams still choke on a large tool catalog. This is
+    // a per-provider capability and can be raised by config, never inferred
+    // from a hostname.
+    capabilities: { maxTools: positiveIntEnv("BRIDGE_MAX_TOOLS") || 5 },
   },
 };
+
+// Every provider object keeps the env key separately from the effective key.
+// The effective key can be replaced by a DB row; `envKey` stays the fallback
+// so a DB row without a key never disables an env-configured provider.
+for (const p of Object.values(PROVIDER_CONFIG)) {
+  p.envKey = p.key || "";
+  p.keySource = p.key ? "env" : "none";
+  p.source = "env";
+}
 
 // ─── Dynamic Custom Provider Loader ─────────────────────────
 // Scans CUSTOM_PROVIDER_N_* env vars and dynamically adds them to
@@ -1032,6 +1130,9 @@ function loadCustomProviders() {
     const name =
       process.env["CUSTOM_PROVIDER_" + num + "_NAME"] || "Custom-" + num;
     const url = expandEnv(process.env["CUSTOM_PROVIDER_" + num + "_URL"] || "").trim();
+    const socketPath = expandEnv(
+      process.env["CUSTOM_PROVIDER_" + num + "_SOCKET"] || "",
+    ).trim();
     const apiKey = process.env["CUSTOM_PROVIDER_" + num + "_KEY"] || "";
     const modelsStr = process.env["CUSTOM_PROVIDER_" + num + "_MODELS"] || "";
     const priority = parseInt(
@@ -1040,8 +1141,10 @@ function loadCustomProviders() {
     );
     const type = process.env["CUSTOM_PROVIDER_" + num + "_TYPE"] || "openai";
 
-    if (!url) {
-      console.warn("[CUSTOM_PROVIDER_" + num + "] Skipped: no URL set");
+    if (!url && !socketPath) {
+      console.warn(
+        "[CUSTOM_PROVIDER_" + num + "] Skipped: no URL or SOCKET set",
+      );
       continue;
     }
 
@@ -1064,8 +1167,12 @@ function loadCustomProviders() {
     );
     PROVIDER_CONFIG[providerId] = {
       name: name,
-      baseUrl: url,
+      baseUrl: url || "http://localhost",
+      socketPath: socketPath || "",
       key: apiKey,
+      envKey: apiKey,
+      keySource: apiKey ? "env" : "none",
+      source: "env",
       priority: priority,
       type: type,
       models: models,
@@ -1094,6 +1201,12 @@ let MODELS_DB = null;
 const MODELS_DB_PATH = path.resolve(
   PROJECT_ROOT,
   process.env.DB_SQLITE_PATH || path.join(DATA_DIR, "models.db"),
+);
+
+// Provider API keys are encrypted with a key file that lives beside the DB,
+// never inside it. Configure before the first DB row is read or written.
+providerSecretStore.configure(
+  path.join(path.dirname(MODELS_DB_PATH), ".provider-keys.key"),
 );
 
 // Initialize the models database + table.
@@ -1153,6 +1266,25 @@ function initModelsDb() {
       CREATE INDEX IF NOT EXISTS idx_models_name ON models(name);
       CREATE INDEX IF NOT EXISTS idx_models_api ON models(api_model);
       CREATE INDEX IF NOT EXISTS idx_models_provider ON models(provider);
+
+      -- Provider registry persisted by the admin UI. Env-defined providers
+      -- keep working without a row here; a row means "DB-managed config"
+      -- (custom provider, edited key, edited base URL or socket path).
+      CREATE TABLE IF NOT EXISTS providers (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL DEFAULT '',
+        type TEXT NOT NULL DEFAULT 'openai',
+        base_url TEXT NOT NULL DEFAULT '',
+        api_key TEXT NOT NULL DEFAULT '',
+        models TEXT NOT NULL DEFAULT '',
+        socket_path TEXT NOT NULL DEFAULT '',
+        priority INTEGER DEFAULT 99,
+        enabled INTEGER DEFAULT 1,
+        requires_key INTEGER DEFAULT NULL,
+        source TEXT NOT NULL DEFAULT 'db',
+        created_at INTEGER DEFAULT 0,
+        updated_at INTEGER DEFAULT 0
+      );
 
       -- PHASE A (2026-08-10): agents table — DB-first persona source.
       -- PERSONAS.md + .zombiecoder/agents/*.md remain as fallback/override (100% kept).
@@ -1333,13 +1465,27 @@ function syncModelsToDb() {
           id,
           getModelName(m),
           getApiModelName(m),
-          p.name,
-          p.type,
-          p.priority || 99,
+          providerDisplayName(id, p),
+          modelKind(p, m),
+          Number.isFinite(Number(p.priority)) ? Number(p.priority) : 99,
           now,
         );
         count++;
       }
+    }
+    // Keep DB provider rows mirroring the live config so a power-cut restart
+    // restores the exact model list even before the first background sync.
+    try {
+      const updProvider = MODELS_DB.prepare(
+        "UPDATE providers SET models = ?, updated_at = ? WHERE id = ?",
+      );
+      for (const [id, p] of Object.entries(PROVIDER_CONFIG)) {
+        if (p.source === "db") {
+          updProvider.run(serializeModelList(p.models), now, id);
+        }
+      }
+    } catch (_) {
+      /* providers table missing on an old DB */
     }
     // Remove stale rows (models no longer present after this sync)
     // pinned=1 rows are remote-registry seeds — they survive across syncs
@@ -1358,6 +1504,29 @@ function syncModelsToDb() {
 // CUSTOM_PROVIDER_N_MODELS) and re-syncs the current env state into the
 // SQLite models table. Callable at startup or on demand (e.g. after the
 // user edits .env) without a server restart.
+function refreshBuiltinProviderEnv() {
+  const pairs = [
+    ["opencode", "OPENCODE_BASE", "OPENCODE_API_KEY", "OPENCODE_PRIORITY"],
+    ["groq", "GROQ_BASE", "GROQ_API_KEY", "GROQ_PRIORITY"],
+    ["gemini", "GEMINI_BASE", "GEMINI_API_KEY", "GEMINI_PRIORITY"],
+    ["ollama", "OLLAMA_BASE", "OLLAMA_API_KEY", "OLLAMA_PRIORITY"],
+    ["ollama_cloud", "OLLAMA_CLOUD_BASE", "OLLAMA_CLOUD_API_KEY", "OLLAMA_CLOUD_PRIORITY"],
+  ];
+  for (const [id, baseKey, keyKey, priorityKey] of pairs) {
+    const p = PROVIDER_CONFIG[id];
+    if (!p) continue;
+    if (process.env[baseKey]) p.baseUrl = process.env[baseKey];
+    const envKey = process.env[keyKey] || "";
+    p.envKey = envKey;
+    if (p.keySource !== "db") {
+      p.key = envKey;
+      p.keySource = envKey ? "env" : "none";
+    }
+    const priority = parseInt(process.env[priorityKey] || "", 10);
+    if (Number.isFinite(priority)) p.priority = priority;
+  }
+}
+
 function syncEnvModelsToDb() {
   if (!MODELS_DB) return { ok: false, error: "sqlite unavailable" };
   const before = {
@@ -1366,6 +1535,7 @@ function syncEnvModelsToDb() {
     gemini: PROVIDER_CONFIG.gemini.models.length,
   };
   // Re-read env vars (single source of truth) and update PROVIDER_CONFIG.
+  refreshBuiltinProviderEnv();
   PROVIDER_CONFIG.opencode.models = parseModelsEnv(
     process.env.OPENCODE_MODELS || "",
   );
@@ -1373,6 +1543,11 @@ function syncEnvModelsToDb() {
   PROVIDER_CONFIG.gemini.models = parseModelsEnv(process.env.GEMINI_MODELS || "");
   // Re-scan CUSTOM_PROVIDER_N_* env vars (adds new / updates existing).
   loadCustomProviders();
+  // DB rows are applied AFTER the env scan: a provider edited in admin keeps
+  // its DB key/base URL across restarts, while an untouched provider still
+  // falls back to env.
+  loadProvidersFromDb();
+  normalizeProviderPriorities("envSync");
   const db = syncModelsToDb();
   refreshFreeModels();
   log("INFO", "ENV_MODELS_SYNCED", {
@@ -1424,6 +1599,552 @@ function loadModelsFromDb() {
   }
 }
 
+// ─── DB-managed providers, key resolution, display names ────────────
+// Display name for a model's provider. A UDS connection identifies itself by
+// its socket; the llama engine socket is always shown as "llama UDS" and any
+// other socket keeps its own basename so two UDS providers cannot be confused.
+function providerDisplayName(id, p) {
+  const socketPath = String((p && p.socketPath) || "");
+  if (socketPath) {
+    const base = path.basename(socketPath).replace(/\.sock$/i, "");
+    if (/llama/i.test(base) || /llama/i.test(socketPath)) return "llama UDS";
+    return (base || id) + " UDS";
+  }
+  return (p && p.name) || id;
+}
+
+function isLoopbackUrl(raw) {
+  try {
+    const u = new URL(String(raw || ""));
+    return (
+      ["127.0.0.1", "localhost", "::1", "[::1]"].includes(u.hostname) ||
+      u.protocol === "unix:"
+    );
+  } catch (_) {
+    return false;
+  }
+}
+
+// A provider needs a key unless it is explicitly keyless / UDS / a llama.cpp
+// server. Unknown types on a public URL are treated as key-requiring so a
+// missing credential produces an honest 404 instead of an upstream 401.
+// Hostname is only a fallback for existing installs; a provider can always
+// state requiresKey in config or in the DB.
+function providerRequiresKey(p) {
+  if (!p) return false;
+  if (p.requiresKey === true) return true;
+  if (p.requiresKey === false) return false;
+  if (p.socketPath) return false;
+  if (p.type === "llamacpp") return false;
+  if (isLoopbackUrl(p.baseUrl)) return false;
+  return true;
+}
+
+// Key lookup order is DB first, env second, nothing third. The caller must
+// turn "nothing" into a direct 404 — never a fabricated provider response.
+function providerKey(id, p) {
+  if (MODELS_DB) {
+    try {
+      const row = MODELS_DB.prepare(
+        "SELECT api_key FROM providers WHERE id = ?",
+      ).get(id);
+      if (row && row.api_key) {
+        const key = providerSecretStore.decryptSecret(row.api_key);
+        if (key) return { key, source: "db" };
+      }
+    } catch (_) {
+      /* table missing on an old DB — env fallback below still works */
+    }
+  }
+  if (p && p.envKey) return { key: p.envKey, source: "env" };
+  if (p && p.key) {
+    return { key: p.key, source: p.keySource === "db" ? "db" : "env" };
+  }
+  return { key: "", source: "none" };
+}
+
+function providerKeyState(id, p) {
+  const resolved = providerKey(id, p);
+  if (resolved.key) return { ok: true, ...resolved };
+  if (!providerRequiresKey(p)) return { ok: true, key: "", source: "none" };
+  return { ok: false, key: "", source: resolved.source };
+}
+
+// Merge DB provider rows over the env-built registry. Called on every startup
+// and after every env re-sync so a power cut cannot lose a DB provider.
+function loadProvidersFromDb() {
+  if (!MODELS_DB) return false;
+  let rows = [];
+  try {
+    rows = MODELS_DB.prepare(
+      "SELECT * FROM providers ORDER BY priority ASC, id ASC",
+    ).all();
+  } catch (e) {
+    log("WARN", "PROVIDERS_DB_LOAD_FAIL", { error: e.message });
+    return false;
+  }
+  for (const row of rows) {
+    const existing = PROVIDER_CONFIG[row.id] || {};
+    const envKey = existing.envKey || "";
+    const dbKey = row.api_key
+      ? providerSecretStore.decryptSecret(row.api_key)
+      : "";
+    if (row.api_key && !dbKey) {
+      log("WARN", "PROVIDER_KEY_DECRYPT_FAIL", { provider: row.id });
+    }
+    const parsedModels = row.models ? parseCustomModelsEnv(row.models) : [];
+    const key = dbKey || envKey;
+    // DB providers have no budget columns. The env prefix keeps the knob
+    // per-provider without adding schema or hardcoding a provider id.
+    const envPrefix = "PROVIDER_" + String(row.id).toUpperCase().replace(/[^A-Z0-9]/g, "_");
+    const maxPromptChars = parseInt(process.env[envPrefix + "_MAX_PROMPT_CHARS"] || "", 10);
+    const maxTokens = parseInt(process.env[envPrefix + "_MAX_TOKENS"] || "", 10);
+    const extraBody = jsonObjectEnv(envPrefix + "_EXTRA_BODY");
+    PROVIDER_CONFIG[row.id] = Object.assign({}, existing, {
+      name: row.name || existing.name || row.id,
+      baseUrl: row.base_url || existing.baseUrl || "",
+      type: row.type || existing.type || "openai",
+      key,
+      envKey,
+      keySource: dbKey ? "db" : envKey ? "env" : "none",
+      priority: Number.isFinite(Number(row.priority))
+        ? Number(row.priority)
+        : Number.isFinite(Number(existing.priority))
+          ? Number(existing.priority)
+          : 99,
+      models: parsedModels.length ? parsedModels : existing.models || [],
+      socketPath: row.socket_path || "",
+      enabled: row.enabled !== 0,
+      requiresKey:
+        row.requires_key === null || row.requires_key === undefined
+          ? undefined
+          : row.requires_key === 1,
+      custom: true,
+      source: "db",
+      ...(Number.isFinite(maxPromptChars) && maxPromptChars > 0 ? { maxPromptChars } : {}),
+      ...(Number.isFinite(maxTokens) && maxTokens > 0 ? { maxTokens } : {}),
+      ...(extraBody ? { extraBody } : {}),
+    });
+  }
+  if (rows.length) {
+    log("INFO", "PROVIDERS_DB_LOADED", { count: rows.length });
+  }
+  return true;
+}
+
+// Priority is a routing order, so it must be unique and gap-free: 1..N.
+// Input duplicates or gaps are repaired here instead of being displayed.
+function normalizeProviderPriorities(reason) {
+  const entries = Object.entries(PROVIDER_CONFIG).sort(
+    ([aId, a], [bId, b]) =>
+      providerPriority(a) - providerPriority(b) || aId.localeCompare(bId),
+  );
+  const changed = [];
+  entries.forEach(([id, p], index) => {
+    const next = index + 1;
+    if (Number(p.priority) !== next) {
+      changed.push({ id, from: p.priority, to: next });
+    }
+    p.priority = next;
+  });
+  if (MODELS_DB) {
+    try {
+      const updModel = MODELS_DB.prepare(
+        "UPDATE models SET priority = ? WHERE provider = ?",
+      );
+      const updProvider = MODELS_DB.prepare(
+        "UPDATE providers SET priority = ?, updated_at = ? WHERE id = ?",
+      );
+      const now = Date.now();
+      for (const [id, p] of entries) {
+        updModel.run(p.priority, id);
+        updProvider.run(p.priority, now, id);
+      }
+    } catch (e) {
+      log("WARN", "PROVIDER_PRIORITY_SAVE_FAIL", { error: e.message });
+    }
+  }
+  if (changed.length) {
+    log("INFO", "PROVIDER_PRIORITIES_NORMALIZED", {
+      count: entries.length,
+      changed: changed.length,
+      reason: reason || "sync",
+    });
+  }
+  return entries.map(([id, p]) => ({ id, priority: p.priority }));
+}
+
+function serializeModelList(models) {
+  return (models || [])
+    .map((m) => {
+      if (typeof m === "string") return m;
+      const name = getModelName(m);
+      const apiModel = getApiModelName(m);
+      return name === apiModel ? name : name + "=>" + apiModel;
+    })
+    .join(",");
+}
+
+// Chat vs "other" is a model capability, not a wire dialect. The old code
+// stored the provider type ("openai"/"gemini") in models.type, which is why
+// the page reported 0 chat models.
+function modelKind(p, m) {
+  const declared =
+    typeof m === "object" && m ? String(m.type || "").toLowerCase() : "";
+  if (declared === "chat" || declared === "other") return declared;
+  const api = String(getApiModelName(m) || "").toLowerCase();
+  if (/(embed|rerank|moderation|whisper|tts|vision-encoder)/.test(api)) {
+    return "other";
+  }
+  return "chat";
+}
+
+function providerSummary(id, p) {
+  const st = getProviderStat(id);
+  const reqs = st ? st.requests : 0;
+  const errs = st ? st.errors : 0;
+  let healthy = true;
+  try {
+    healthy = isProviderHealthy(id);
+  } catch (_) {
+    /* keep the optimistic default only when the health probe itself dies */
+  }
+  const keyState = providerKeyState(id, p);
+  return {
+    id,
+    name: p.name || id,
+    displayName: providerDisplayName(id, p),
+    type: p.type || "openai",
+    baseUrl: p.baseUrl || "",
+    socketPath: p.socketPath || "",
+    priority: Number.isFinite(Number(p.priority)) ? Number(p.priority) : 99,
+    enabled: p.enabled !== false,
+    models: (p.models || []).length,
+    modelList: (p.models || []).map((m) => {
+      if (typeof m === "string") return m;
+      const name = getModelName(m);
+      const apiModel = getApiModelName(m);
+      return name === apiModel ? name : name + "=>" + apiModel;
+    }),
+    source: p.source || "env",
+    hasKey: !!keyState.key,
+    keySource: keyState.source,
+    requiresKey: providerRequiresKey(p),
+    capabilities: providerCapabilities.forConfig(p, id),
+    requests: reqs,
+    errors: errs,
+    success_pct: reqs ? Math.round(((reqs - errs) / reqs) * 100) : null,
+    last_used:
+      st && st.last_used ? new Date(st.last_used).toISOString() : null,
+    last_error: st && st.last_error ? st.last_error : null,
+    healthy,
+  };
+}
+
+// Validate a provider credential with a real runtime request before it is
+// persisted. A network failure is a validation failure: saving an unproven
+// key would poison every later request.
+async function validateProviderCredentials(input) {
+  const type = String(input.type || "openai").toLowerCase();
+  let base = String(input.baseUrl || "http://localhost").replace(/\/+$/, "");
+  let target;
+  if (type === "gemini") {
+    target = base + "/models";
+  } else if (type === "ollama") {
+    target = base.replace(/\/v1$/, "") + "/api/tags";
+  } else if (type === "llamacpp") {
+    target = base.replace(/\/v1$/, "") + "/v1/models";
+  } else {
+    target = base + "/models";
+  }
+  const headers = { "User-Agent": USER_AGENT };
+  if (input.apiKey) {
+    if (type === "gemini") headers["X-goog-api-key"] = input.apiKey;
+    else headers.Authorization = "Bearer " + input.apiKey;
+  }
+  try {
+    const res = await providerTransport.request(
+      {
+        baseUrl: base,
+        headers,
+        method: "GET",
+        timeout: 15000,
+        socketPath: input.socketPath || "",
+      },
+      target,
+    );
+    if (res.statusCode >= 200 && res.statusCode < 300) {
+      return {
+        ok: true,
+        statusCode: res.statusCode,
+        models: parseProviderModelIds({ type }, res.body) || [],
+      };
+    }
+    return {
+      ok: false,
+      statusCode: res.statusCode,
+      error: providerTransport.errorMessage(res.statusCode, res.body),
+    };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+const PROVIDER_TYPES = new Set([
+  "openai",
+  "gemini",
+  "groq",
+  "ollama",
+  "llamacpp",
+  "opencode",
+]);
+
+async function saveProviderFromAdmin(rawBody) {
+  const b = rawBody || {};
+  const requestedId = String(b.id || "").trim();
+  const id = requestedId || "auto_" + crypto.randomBytes(4).toString("hex");
+  if (!/^[a-z0-9][a-z0-9_-]{1,48}$/i.test(id)) {
+    return {
+      status: 400,
+      payload: {
+        ok: false,
+        error:
+          "Provider id must be 2-49 characters: letters, numbers, _ or -",
+      },
+    };
+  }
+  if (!MODELS_DB) {
+    return { status: 503, payload: { ok: false, error: "sqlite unavailable" } };
+  }
+  const existing = PROVIDER_CONFIG[id] || null;
+  const name = String(b.name !== undefined ? b.name : (existing && existing.name) || id).trim() || id;
+  const type = String(b.type !== undefined ? b.type : (existing && existing.type) || "openai").toLowerCase();
+  if (!PROVIDER_TYPES.has(type)) {
+    return {
+      status: 400,
+      payload: {
+        ok: false,
+        error: "Unsupported provider type: " + type,
+      },
+    };
+  }
+  const baseUrl = String(
+    b.baseUrl !== undefined ? b.baseUrl : (existing && existing.baseUrl) || "",
+  ).trim();
+  const socketPath = String(
+    b.socketPath !== undefined
+      ? b.socketPath
+      : (existing && existing.socketPath) || "",
+  ).trim();
+  if (!baseUrl && !socketPath) {
+    return {
+      status: 400,
+      payload: { ok: false, error: "baseUrl or socketPath is required" },
+    };
+  }
+  if (socketPath && !baseUrl) {
+    // transport.request() needs a URL to parse; the socket carries the host.
+    // The stored baseUrl is therefore the inoffensive local placeholder.
+    // (assigned below so the normalized value is persisted)
+  }
+  const normalizedBase = baseUrl || "http://localhost";
+
+  const apiKey = typeof b.apiKey === "string" ? b.apiKey.trim() : "";
+  if (apiKey) {
+    const check = await validateProviderCredentials({
+      type,
+      baseUrl: normalizedBase,
+      apiKey,
+      socketPath,
+    });
+    if (!check.ok) {
+      return {
+        status: 400,
+        payload: {
+          ok: false,
+          keyValid: false,
+          statusCode: check.statusCode || null,
+          error:
+            "API key validation failed: " +
+            (check.error || "HTTP " + check.statusCode),
+        },
+      };
+    }
+  }
+
+  let encryptedKey = "";
+  if (apiKey) {
+    try {
+      encryptedKey = providerSecretStore.encryptSecret(apiKey);
+    } catch (e) {
+      return {
+        status: 500,
+        payload: {
+          ok: false,
+          error: "Cannot store API key securely: " + e.message,
+        },
+      };
+    }
+  }
+
+  const priorRow = MODELS_DB.prepare(
+    "SELECT api_key FROM providers WHERE id = ?",
+  ).get(id);
+  let storedKey = priorRow && priorRow.api_key ? priorRow.api_key : "";
+  if (encryptedKey) storedKey = encryptedKey;
+  else if (b.clearKey) storedKey = "";
+
+  const decryptedStored = storedKey
+    ? providerSecretStore.decryptSecret(storedKey)
+    : "";
+  const envKey = existing && existing.envKey ? existing.envKey : "";
+  const effectiveKey = decryptedStored || envKey;
+  const keySource = decryptedStored ? "db" : envKey ? "env" : "none";
+
+  let models = existing ? existing.models || [] : [];
+  if (Array.isArray(b.models)) models = b.models;
+  else if (typeof b.models === "string") {
+    models = b.models.trim() ? parseCustomModelsEnv(b.models) : models;
+  }
+
+  const priority = Number.isFinite(Number(b.priority))
+    ? Number(b.priority)
+    : existing && Number.isFinite(Number(existing.priority))
+      ? Number(existing.priority)
+      : 999;
+  const enabled =
+    b.enabled === undefined
+      ? existing
+        ? existing.enabled !== false
+        : true
+      : !!b.enabled;
+  // Explicit override wins (a loopback gateway can still demand a key).
+  // null = "decide from type/URL", which is the default for env providers.
+  const requiresKey =
+    b.requiresKey === undefined
+      ? existing && existing.requiresKey !== undefined
+        ? existing.requiresKey
+          ? 1
+          : 0
+        : null
+      : b.requiresKey
+        ? 1
+        : 0;
+  const now = Date.now();
+
+  MODELS_DB.prepare(`
+    INSERT INTO providers
+      (id, name, type, base_url, api_key, models, socket_path, priority,
+       enabled, requires_key, source, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      name = excluded.name,
+      type = excluded.type,
+      base_url = excluded.base_url,
+      api_key = excluded.api_key,
+      models = excluded.models,
+      socket_path = excluded.socket_path,
+      priority = excluded.priority,
+      enabled = excluded.enabled,
+      requires_key = excluded.requires_key,
+      source = excluded.source,
+      updated_at = excluded.updated_at
+  `).run(
+    id,
+    name,
+    type,
+    normalizedBase,
+    storedKey,
+    serializeModelList(models),
+    socketPath,
+    priority,
+    enabled ? 1 : 0,
+    requiresKey,
+    "db",
+    now,
+    now,
+  );
+
+  PROVIDER_CONFIG[id] = Object.assign({}, existing || {}, {
+    name,
+    type,
+    baseUrl: normalizedBase,
+    socketPath,
+    key: effectiveKey,
+    envKey,
+    keySource,
+    priority,
+    models,
+    enabled,
+    requiresKey: requiresKey === null ? undefined : requiresKey === 1,
+    custom: true,
+    source: "db",
+  });
+
+  normalizeProviderPriorities("providerSave");
+  persistProviderDisabled();
+  syncModelsToDb();
+  refreshFreeModels();
+  log("INFO", "ADMIN_PROVIDER_SAVE", {
+    id,
+    type,
+    socketPath: socketPath || null,
+    keySource,
+    enabled,
+  });
+  return {
+    status: 200,
+    payload: {
+      ok: true,
+      keyValid: apiKey ? true : undefined,
+      provider: providerSummary(id, PROVIDER_CONFIG[id]),
+    },
+  };
+}
+
+function deleteProviderFromAdmin(rawId) {
+  const id = String(rawId || "").trim();
+  if (!MODELS_DB) {
+    return { status: 503, payload: { ok: false, error: "sqlite unavailable" } };
+  }
+  const row = MODELS_DB.prepare(
+    "SELECT id, source FROM providers WHERE id = ?",
+  ).get(id);
+  if (!row) {
+    return {
+      status: 404,
+      payload: {
+        ok: false,
+        error:
+          "Provider not managed in DB: " + id + " (env providers are edited in .env)",
+      },
+    };
+  }
+  if (["opencode", "groq", "gemini", "ollama"].includes(id)) {
+    return {
+      status: 400,
+      payload: {
+        ok: false,
+        error: "Built-in provider " + id + " cannot be deleted; disable it instead",
+      },
+    };
+  }
+  MODELS_DB.prepare("DELETE FROM providers WHERE id = ?").run(id);
+  MODELS_DB.prepare("DELETE FROM models WHERE provider = ?").run(id);
+  delete PROVIDER_CONFIG[id];
+  // A custom_N provider with env vars still exists in .env: rebuild it from
+  // env instead of pretending the provider is gone.
+  if (/^custom_\d+$/.test(id)) {
+    loadCustomProviders();
+    loadProvidersFromDb();
+  }
+  normalizeProviderPriorities("providerDelete");
+  persistProviderDisabled();
+  refreshFreeModels();
+  log("INFO", "ADMIN_PROVIDER_DELETE", { id });
+  return { status: 200, payload: { ok: true, id } };
+}
+
 // Look up a model name (public or apiModel) in the DB → provider row or null.
 function findModelInDb(name) {
   if (!MODELS_DB) return null;
@@ -1441,23 +2162,110 @@ function findModelInDb(name) {
 // GET {baseUrl}/models and merge the returned model IDs into
 // PROVIDER_CONFIG + SQLite. Keyless providers are still tried
 // (public endpoints); redirects (3xx) are followed up to 3 hops.
+function parseProviderModelIds(p, text) {
+  try {
+    const parsed = JSON.parse(text);
+    let ids = [];
+    if (p.type === "gemini") {
+      ids = (parsed.models || []).map((m) =>
+        String(m.name || "").replace(/^models\//, ""),
+      );
+    } else if (Array.isArray(parsed.data)) {
+      ids = parsed.data
+        .map((m) => (typeof m === "string" ? m : m && m.id))
+        .filter(Boolean);
+    } else if (Array.isArray(parsed.models)) {
+      ids = parsed.models
+        .map((m) =>
+          typeof m === "string" ? m : m && (m.id || m.name || m.model),
+        )
+        .filter(Boolean);
+    }
+    return [...new Set(ids)];
+  } catch (_) {
+    return null;
+  }
+}
+
 function fetchProviderModels(providerId, p) {
   return new Promise((resolve) => {
-    if (!p.baseUrl) return resolve({ ok: false, error: "no baseUrl" });
+    const keyState = providerKey(providerId, p);
+    const apiKey = keyState.key;
+    if (!p.baseUrl && !p.socketPath) {
+      return resolve({ ok: false, error: "no baseUrl" });
+    }
+
+    // Native Ollama discovery lives at /api/tags, not /models. Delegate to
+    // the adapter so local and cloud use one official endpoint instead of a
+    // guessed OpenAI-shaped URL.
+    if (
+      !p.socketPath &&
+      (providerId === "ollama" || providerId === "ollama_cloud") &&
+      p.dialect !== "openai"
+    ) {
+      return resolve(
+        providerRegistry.listModels({
+          id: providerId,
+          baseUrl: p.baseUrl,
+          key: apiKey,
+          type: p.type,
+          dialect: p.dialect || "",
+        }),
+      );
+    }
 
     const buildUrl = () => {
-      if (p.type === "gemini") return new URL(p.baseUrl + "/models");
-      return new URL(p.baseUrl.replace(/\/+$/, "") + "/models");
+      const base = (p.baseUrl || "http://localhost").replace(/\/+$/, "");
+      if (p.type === "gemini") return new URL(base + "/models");
+      if (p.type === "llamacpp") {
+        return new URL(base.replace(/\/v1$/, "") + "/v1/models");
+      }
+      return new URL(base + "/models");
     };
     const buildHeaders = () => {
       const h = { "User-Agent": USER_AGENT };
       if (p.type === "gemini") {
-        h["X-goog-api-key"] = p.key || "";
-      } else if (p.key) {
-        h["Authorization"] = "Bearer " + p.key;
+        h["X-goog-api-key"] = apiKey;
+      } else if (apiKey) {
+        h["Authorization"] = "Bearer " + apiKey;
       }
       return h;
     };
+
+    // A UDS provider is dialled through provider/transport (global fetch
+    // cannot open a unix socket).
+    if (p.socketPath) {
+      providerTransport
+        .request(
+          {
+            socketPath: p.socketPath,
+            headers: buildHeaders(),
+            method: "GET",
+            timeout: 20000,
+          },
+          buildUrl().toString(),
+        )
+        .then((res) => {
+          if (res.statusCode < 200 || res.statusCode >= 300) {
+            return resolve({
+              ok: false,
+              error: "HTTP " + res.statusCode,
+              raw: String(res.body || "").slice(0, 300),
+            });
+          }
+          const ids = parseProviderModelIds(p, res.body);
+          if (ids === null) {
+            return resolve({
+              ok: false,
+              error: "invalid JSON",
+              raw: String(res.body || "").slice(0, 300),
+            });
+          }
+          resolve({ ok: true, models: ids, raw: res.body });
+        })
+        .catch((err) => resolve({ ok: false, error: err.message }));
+      return;
+    }
 
     // Follow up to 3 redirects — some gateways redirect /models
     const doFetch = (url, headers, redirectsLeft) => {
@@ -1498,20 +2306,16 @@ function fetchProviderModels(providerId, p) {
               raw: data.slice(0, 300),
             });
           }
-          try {
-            const parsed = JSON.parse(data);
-            let ids = [];
-            if (p.type === "gemini") {
-              ids = (parsed.models || []).map((m) =>
-                String(m.name || "").replace(/^models\//, ""),
-              );
-            } else {
-              ids = (parsed.data || []).map((m) => m.id).filter(Boolean);
-            }
-            resolve({ ok: true, models: ids, raw: parsed });
-          } catch (e) {
-            resolve({ ok: false, error: e.message, raw: data.slice(0, 300) });
+          const ids = parseProviderModelIds(p, data);
+          if (ids === null) {
+            resolve({
+              ok: false,
+              error: "invalid JSON",
+              raw: data.slice(0, 300),
+            });
+            return;
           }
+          resolve({ ok: true, models: ids, raw: data });
         });
       });
       req.on("error", (err) => resolve({ ok: false, error: err.message }));
@@ -1536,13 +2340,24 @@ async function runNormalizerSync() {
       results[id] = { ok: false, skipped: true, reason: "admin-disabled" };
       continue;
     }
-    if (!p.baseUrl) {
+    if (!p.baseUrl && !p.socketPath) {
       results[id] = { ok: false, error: "no baseUrl", skipped: true };
       continue;
     }
+    const keyState = providerKey(id, p);
+    p.key = keyState.key;
+    if (providerRequiresKey(p) && !keyState.key) {
+      results[id] = {
+        ok: false,
+        error: "API key missing",
+        key_missing: true,
+        skipped: true,
+      };
+      continue;
+    }
     const fetched = await fetchProviderModels(id, p);
-    if (fetched.ok && fetched.models.length === 0 && p.local) {
-      // A reachable local server that reports no models (bridge with no
+    if (fetched.ok && fetched.models.length === 0 && p.dynamicModels) {
+      // A reachable dynamic server that reports no models (bridge with no
       // upstream) must not keep stale rows alive: the user asked for "if it
       // is not there, it is not there", not a phantom model.
       p.models = [];
@@ -1575,19 +2390,20 @@ async function runNormalizerSync() {
       results[id] = { ok: false, error: fetched.error || "no models" };
     }
   }
+  normalizeProviderPriorities("normalizerSync");
   const db = syncModelsToDb();
   refreshFreeModels();
   return { results, db };
 }
 
-// Local providers are the volatile ones: a model server can start or stop
-// while the gateway is running. Poll only those (never the cloud providers)
-// and rewrite the list + DB only when the live set actually changed, so the
-// model list follows reality without a restart and without API cost.
-async function refreshLocalProviders() {
+// Dynamic providers are the volatile ones: a model server can start or stop
+// while the gateway is running. Poll only those (never a fixed catalog) and
+// rewrite the list + DB only when the live set actually changed, so the model
+// list follows reality without a restart and without API cost.
+async function refreshDynamicProviders() {
   let changed = false;
   for (const [id, p] of Object.entries(PROVIDER_CONFIG)) {
-    if (!p.local || p.enabled === false) continue;
+    if (!p.dynamicModels || p.enabled === false) continue;
     const fetched = await fetchProviderModels(id, p);
     if (!fetched.ok) continue;
     const live = fetched.models.filter(Boolean);
@@ -1595,7 +2411,7 @@ async function refreshLocalProviders() {
     if (JSON.stringify(live) === JSON.stringify(current)) continue;
     p.models = live;
     changed = true;
-    log("INFO", "LOCAL_MODELS_REFRESHED", {
+    log("INFO", "DYNAMIC_MODELS_REFRESHED", {
       provider: id,
       count: live.length,
       models: live.slice(0, 12),
@@ -1613,7 +2429,7 @@ async function refreshLocalProviders() {
 // loadModelsFromDb() and runNormalizerSync() so counts stay accurate
 // (DB-enriched models are reflected everywhere, incl. /health).
 let FREE_MODELS = Object.values(PROVIDER_CONFIG)
-  .filter((p) => p.models.length > 0)
+  .filter((p) => p.enabled !== false && p.models.length > 0)
   .flatMap((p) => p.models.map(getModelName));
 
 // Recompute FREE_MODELS from the current PROVIDER_CONFIG state.
@@ -1625,17 +2441,17 @@ const _agentModelCache = new Map();
 
 function refreshFreeModels() {
   FREE_MODELS = Object.values(PROVIDER_CONFIG)
-    .filter((p) => p.models.length > 0)
+    .filter((p) => p.enabled !== false && p.models.length > 0)
     .flatMap((p) => p.models.map(getModelName));
   _agentModelCache.clear();
 }
 
 // ─── Provider-independent model choice ───────────────────────
-// A provider can be removed, a key can expire, a local server can be
+// A provider can be removed, a key can expire, a model server can be
 // stopped. Model names are preferences, not dependencies. The candidates
 // below are whatever the live catalog currently serves, ordered by provider
-// priority (lower number wins) and, at equal priority, cloud before local —
-// a stopped local server must never shadow a working cloud provider.
+// priority (lower number wins) and then by provider id. Capability and health
+// decide the winner; location does not.
 function liveModelCandidates() {
   const out = [];
   const seen = new Set();
@@ -1645,7 +2461,7 @@ function liveModelCandidates() {
       const pa = providerPriority(a[1]);
       const pb = providerPriority(b[1]);
       if (pa !== pb) return pa - pb;
-      return (a[1].local ? 1 : 0) - (b[1].local ? 1 : 0);
+      return String(a[0]).localeCompare(String(b[0]));
     });
   for (const [, p] of providers) {
     for (const m of p.models) {
@@ -1700,18 +2516,28 @@ function usableAgentModel(agent) {
 function getAllModels() {
   const list = [];
   for (const [id, p] of Object.entries(PROVIDER_CONFIG)) {
+    // An inactive provider contributes nothing to the model page. The rows
+    // stay in SQLite so re-enabling it restores the list immediately.
+    if (p.enabled === false) continue;
     if (p.models.length === 0) {
-      list.push({ model: "*", provider: id, providerName: p.name, providerType: p.type, enabled: p.enabled !== false });
+      list.push({
+        model: "*",
+        provider: id,
+        providerName: providerDisplayName(id, p),
+        providerType: p.type,
+        type: "chat",
+        enabled: true,
+      });
     } else {
       for (const m of p.models) {
         list.push({
           model: getModelName(m),
           apiModel: getApiModelName(m),
           provider: id,
-          providerName: p.name,
+          providerName: providerDisplayName(id, p),
           providerType: p.type,
-          type: typeof m === "object" && m.type ? m.type : p.type,
-          enabled: p.enabled !== false && !DISABLED_MODELS.has(id + "::" + getModelName(m)),
+          type: modelKind(p, m),
+          enabled: !DISABLED_MODELS.has(id + "::" + getModelName(m)),
         });
       }
     }
@@ -1738,7 +2564,16 @@ function loadDisabledState() {
     const row = MODELS_DB.prepare(
       "SELECT value FROM settings WHERE key = 'provider_disabled'"
     ).get();
-    const ids = row && row.value ? JSON.parse(row.value) : [];
+    const settingIds = row && row.value ? JSON.parse(row.value) : [];
+    let dbIds = [];
+    try {
+      dbIds = MODELS_DB.prepare(
+        "SELECT id FROM providers WHERE enabled = 0",
+      ).all().map((r) => r.id);
+    } catch (_) {
+      /* providers table missing on an old DB */
+    }
+    const ids = [...new Set([...settingIds, ...dbIds])];
     for (const [id, p] of Object.entries(PROVIDER_CONFIG)) {
       p.enabled = !ids.includes(id);
     }
@@ -1765,6 +2600,13 @@ function persistProviderDisabled() {
       "INSERT INTO settings (key, value, updated_at) VALUES ('provider_disabled', ?, ?) " +
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
     ).run(JSON.stringify(ids), Date.now());
+    const upd = MODELS_DB.prepare(
+      "UPDATE providers SET enabled = ?, updated_at = ? WHERE id = ?",
+    );
+    const now = Date.now();
+    for (const [id, p] of Object.entries(PROVIDER_CONFIG)) {
+      upd.run(p.enabled === false ? 0 : 1, now, id);
+    }
   } catch (e) {
     log("WARN", "PROVIDER_DISABLED_SAVE_FAIL", { error: e.message });
   }
@@ -1920,6 +2762,7 @@ function findNextProvider(model, currentProviderId) {
     // opencode), and fallback silently did nothing.
     if (
       PROVIDER_CONFIG[candidate.providerId]?.enabled !== false && // admin-off
+      providerKeyState(candidate.providerId, candidate.config).ok &&
       isProviderHealthy(candidate.providerId, model)
     ) {
       return candidate;
@@ -5816,6 +6659,7 @@ function callModelStream(
           temperature: temperature,
           tools: tools,
           tool_choice: tool_choice,
+          max_tokens: config.maxTokens,
         },
         function (chunk) {
           const delta =
@@ -6036,6 +6880,24 @@ function callModel(
       });
       return;
     }
+    // DB -> env -> nothing. Nothing means a truthful failure here; the HTTP
+    // routes turn provider_key_missing into a direct 404.
+    const modelKeyState = providerKeyState(providerId, config);
+    if (!modelKeyState.ok) {
+      log("WARN", "CALL_MODEL_KEY_MISSING", { model, provider: providerId });
+      resolve({
+        success: false,
+        content: "",
+        error:
+          `Provider "${providerId}" has no API key. Add it in Admin -> ` +
+          `Providers (stored in DB) or set the provider key in .env.`,
+        errorCode: "provider_key_missing",
+        model,
+        provider: providerId,
+      });
+      return;
+    }
+    config = Object.assign({}, config, { key: modelKeyState.key });
     const baseUrl = config.baseUrl;
     const apiKey = config.key;
 
@@ -6095,6 +6957,7 @@ function callModel(
         temperature: temperature,
         tools: tools,
         tool_choice: tool_choice,
+        max_tokens: config.maxTokens,
       })
       .then(function (r) {
         const retry = _retryCount || 0;
@@ -8469,10 +9332,9 @@ async function executeMission(
     };
   }
 
-  // Auto-inject MCP tools when no tools provided
-  // MAX_TOOLS_LIMIT: module-level const (Phase C, api.js:3082) — single
-  // source of truth for the "15" cap. (Local models get the stricter 5-cap
-  // via the isLocalAgent override in the stream path.)
+  // Auto-inject MCP tools when no tools provided.
+  // MAX_TOOLS_LIMIT is the global catalog cap; a provider can declare a
+  // stricter maxTools through capability metadata, applied in the stream path.
   if (!tools || tools.length === 0) {
     const mcpToolList = Object.entries(MCP_TOOLS).map(([name, def]) => ({
       type: "function",
@@ -13124,9 +13986,9 @@ const handleHttpRequest = async (req, res) => {
       // 1. Add real provider models (what JetBrains needs to see)
       for (const [id, p] of Object.entries(PROVIDER_CONFIG)) {
         if (p.models.length === 0) {
-          // A reachable local provider with no model is omitted; advertising
+          // A reachable dynamic provider with no model is omitted; advertising
           // a wildcard placeholder would be a model that cannot answer.
-          if (p.local) continue;
+          if (p.dynamicModels) continue;
           allModels.push({
             id: `${id}:default`,
             object: "model",
@@ -13185,7 +14047,7 @@ const handleHttpRequest = async (req, res) => {
       const providerModels = [];
       for (const [id, p] of Object.entries(PROVIDER_CONFIG)) {
         if (p.models.length === 0) {
-          if (p.local) continue;
+          if (p.dynamicModels) continue;
           providerModels.push({
             id: "*",
             provider: id,
@@ -13331,8 +14193,12 @@ const handleHttpRequest = async (req, res) => {
         agents: AGENTS.map((a) => {
           const providerInfo = resolveProvider(a.model, true);
           const providerId = providerInfo?.providerId || "";
-          const isLocal = !!providerInfo?.config?.local || /^custom_/.test(providerId);
-          const streamLimit = Math.min(MAX_TOOLS_LIMIT, isLocal ? 5 : 15);
+          const caps = providerRegistry.capabilitiesFor(
+            providerInfo?.config,
+            providerId,
+            a.model,
+          );
+          const streamLimit = Math.min(MAX_TOOLS_LIMIT, caps.maxTools);
           return {
             id: a.id,
             name: a.name,
@@ -13352,222 +14218,10 @@ const handleHttpRequest = async (req, res) => {
       return;
     }
 
-    // ─── PHASE A: Admin Agents CRUD (DB-first) ─────────────────
-    // SECURITY (2026-10-08): adminAuthorized() moved to MODULE scope (see
-    // just after mcpAdminTokenOk) — it was declared inside this handler block,
-    // which left routes defined BEFORE it (e.g. /api/rate-limit/reset at 13479)
-    // with no reachable guard. Fail-open → fail-closed behaviour is documented
-    // on the module-scope definition.
-
-    if (url === "/api/admin/agents" && method === "GET") {
-      if (!adminAuthorized(req)) {
-        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN required" });
-        return;
-      }
-      if (!MODELS_DB) {
-        jsonResponse(res, 503, { error: "sqlite unavailable" });
-        return;
-      }
-      const rows = MODELS_DB.prepare(
-        "SELECT id, name, role, model, expertise, persona, enabled, priority, updated_at FROM agents ORDER BY priority ASC, name ASC"
-      ).all();
-      jsonResponse(res, 200, { count: rows.length, agents: rows });
-      return;
-    }
-
-    // ─── Admin: provider & model enable/disable (runtime + persisted) ──
-    if (url === "/api/admin/providers" && method === "GET") {
-      if (!adminAuthorized(req)) {
-        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN required" });
-        return;
-      }
-      jsonResponse(res, 200, {
-        ok: true,
-        providers: Object.entries(PROVIDER_CONFIG).map(([id, p]) => {
-          const st = getProviderStat(id);
-          const reqs = st ? st.requests : 0;
-          const errs = st ? st.errors : 0;
-          let healthy = true;
-          try {
-            healthy = isProviderHealthy(id);
-          } catch (_) {}
-          return {
-            id,
-            name: p.name || id,
-            type: p.type || "openai",
-            baseUrl: p.baseUrl || "",
-            priority: Number.isFinite(Number(p.priority)) ? Number(p.priority) : 99,
-            enabled: p.enabled !== false,
-            models: (p.models || []).length,
-            hasKey: !!(p.key && p.key.length > 8),
-            // real traffic ledger + live health (no fake "Online")
-            requests: reqs,
-            errors: errs,
-            success_pct: reqs
-              ? Math.round(((reqs - errs) / reqs) * 100)
-              : null,
-            last_used:
-              st && st.last_used
-                ? new Date(st.last_used).toISOString()
-                : null,
-            last_error: st && st.last_error ? st.last_error : null,
-            healthy,
-          };
-        }),
-      });
-      return;
-    }
-    if (url === "/api/admin/providers" && method === "POST") {
-      if (!adminAuthorized(req)) {
-        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN required" });
-        return;
-      }
-      const body = await readBody(req);
-      let b;
-      try {
-        b = JSON.parse(body);
-      } catch (e) {
-        jsonResponse(res, 400, { error: "Invalid JSON" });
-        return;
-      }
-      if (!b || !b.id || !PROVIDER_CONFIG[b.id]) {
-        jsonResponse(res, 404, { error: "Unknown provider: " + (b && b.id) });
-        return;
-      }
-      PROVIDER_CONFIG[b.id].enabled = b.enabled ? true : false;
-      const off = persistProviderDisabled();
-      log("INFO", "ADMIN_PROVIDER_TOGGLE", {
-        provider: b.id,
-        enabled: PROVIDER_CONFIG[b.id].enabled,
-        disabled_list: off,
-      });
-      jsonResponse(res, 200, {
-        ok: true,
-        id: b.id,
-        enabled: PROVIDER_CONFIG[b.id].enabled,
-        disabledProviders: off,
-      });
-      return;
-    }
-    if (url === "/api/admin/models" && method === "POST") {
-      if (!adminAuthorized(req)) {
-        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN required" });
-        return;
-      }
-      if (!MODELS_DB) {
-        jsonResponse(res, 503, { error: "sqlite unavailable" });
-        return;
-      }
-      const body = await readBody(req);
-      let b;
-      try {
-        b = JSON.parse(body);
-      } catch (e) {
-        jsonResponse(res, 400, { error: "Invalid JSON" });
-        return;
-      }
-      if (!b || !b.provider || !b.name) {
-        jsonResponse(res, 400, { error: "provider and name are required" });
-        return;
-      }
-      const r = MODELS_DB.prepare(
-        "UPDATE models SET enabled = ? WHERE provider = ? AND name = ?"
-      ).run(b.enabled ? 1 : 0, b.provider, b.name);
-      if (r.changes === 0) {
-        jsonResponse(res, 404, { error: "Model not found in DB" });
-        return;
-      }
-      if (b.enabled) DISABLED_MODELS.delete(b.provider + "::" + b.name);
-      else DISABLED_MODELS.add(b.provider + "::" + b.name);
-      log("INFO", "ADMIN_MODEL_TOGGLE", {
-        provider: b.provider,
-        name: b.name,
-        enabled: !!b.enabled,
-      });
-      jsonResponse(res, 200, {
-        ok: true,
-        provider: b.provider,
-        name: b.name,
-        enabled: !!b.enabled,
-        disabledCount: DISABLED_MODELS.size,
-      });
-      return;
-    }
-
-    if (url === "/api/admin/agents" && method === "POST") {
-      if (!adminAuthorized(req)) {
-        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN required" });
-        return;
-      }
-      if (!MODELS_DB) {
-        jsonResponse(res, 503, { error: "sqlite unavailable" });
-        return;
-      }
-      const body = await readBody(req);
-      let a;
-      try {
-        a = JSON.parse(body);
-      } catch (e) {
-        jsonResponse(res, 400, { error: "Invalid JSON" });
-        return;
-      }
-      if (!a || !a.id) {
-        jsonResponse(res, 400, { error: "id is required" });
-        return;
-      }
-      const existing = MODELS_DB.prepare(
-        "SELECT name, role, model, expertise, persona, enabled, priority FROM agents WHERE id = ?"
-      ).get(a.id);
-      // persona required only when CREATING — updates (model mapping,
-      // enable/disable) may omit it and inherit the stored persona.
-      if (!a.persona && !existing) {
-        jsonResponse(res, 400, { error: "id and persona are required" });
-        return;
-      }
-      const now = Date.now();
-      MODELS_DB.prepare(`
-        INSERT INTO agents (id, name, role, model, expertise, persona, enabled, priority, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-          name = excluded.name,
-          role = excluded.role,
-          model = excluded.model,
-          expertise = excluded.expertise,
-          persona = excluded.persona,
-          enabled = excluded.enabled,
-          priority = excluded.priority,
-          updated_at = excluded.updated_at
-      `).run(
-        a.id,
-        a.name || existing?.name || a.id,
-        a.role || existing?.role || "general",
-        a.model || existing?.model || "",
-        a.expertise || existing?.expertise || "",
-        a.persona || existing?.persona || "Agent",
-        a.enabled === undefined ? (existing?.enabled === undefined ? 1 : existing.enabled) : a.enabled ? 1 : 0,
-        a.priority || existing?.priority || 99,
-        now,
-      );
-      await refreshAgents();
-      jsonResponse(res, 200, { ok: true, id: a.id, totalAgents: AGENTS.length });
-      return;
-    }
-
-    if (url.startsWith("/api/admin/agents/") && method === "DELETE") {
-      if (!adminAuthorized(req)) {
-        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN required" });
-        return;
-      }
-      if (!MODELS_DB) {
-        jsonResponse(res, 503, { error: "sqlite unavailable" });
-        return;
-      }
-      const id = decodeURIComponent(url.slice("/api/admin/agents/".length));
-      MODELS_DB.prepare("DELETE FROM agents WHERE id = ?").run(id);
-      await refreshAgents();
-      jsonResponse(res, 200, { ok: true, id, totalAgents: AGENTS.length });
-      return;
-    }
+    // ─── Admin routing API (providers, models, agents) ─────────
+    // SECURITY: adminAuthorized() is module scope; admin-api.js receives it
+    // via ctx and checks every route before touching the DB.
+    if (await adminApi.handle(adminApiContext(), req, res, url, method)) return;
 
     // ─── GET /admin/:file — Admin Panel static files ─
     // Directory resolution: ADMIN_DIR env var first; NO hardcoded path —
@@ -13915,6 +14569,33 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
       const body = await readBody(req);
       try {
         const input = JSON.parse(body);
+        // Full sync (admin Sync buttons): env vars first, then every active
+        // provider's live /models endpoint (TCP or UDS), then SQLite.
+        if (input.mode === "full") {
+          const envResult = syncEnvModelsToDb();
+          const syncResult = await runNormalizerSync();
+          normalizeProviderPriorities("adminFullSync");
+          const db = syncModelsToDb();
+          refreshFreeModels();
+          log("INFO", "NORMALIZE_FULL_SYNC", {
+            providers: Object.keys(syncResult.results).length,
+          });
+          jsonResponse(res, 200, {
+            success: true,
+            mode: "full",
+            normalizer: "Haq Mawla Universal Response Normalizer",
+            env: envResult.db,
+            results: syncResult.results,
+            db,
+            providers: Object.entries(PROVIDER_CONFIG)
+              .sort(
+                ([, a], [, b]) =>
+                  providerPriority(a) - providerPriority(b),
+              )
+              .map(([id, p]) => providerSummary(id, p)),
+          });
+          return;
+        }
         // Env-var sync mode: re-read env model lists → update config → persist
         if (input.envSync || input.mode === "envSync") {
           const envResult = syncEnvModelsToDb();
@@ -14906,6 +15587,30 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
         // Only providers that actually advertise THIS model may serve it.
         // A different model from the same provider is never a fallback.
         const orderedProviders = resolveAllProviders(model);
+        // A provider that advertises the model but has no credential cannot
+        // serve it. DB -> env already happened; nothing left is a direct 404,
+        // never a fake upstream attempt.
+        const keyedProviders = orderedProviders.filter(
+          (candidate) =>
+            providerKeyState(candidate.providerId, candidate.config).ok,
+        );
+        if (orderedProviders.length && !keyedProviders.length) {
+          const blocked = orderedProviders[0];
+          log("WARN", "PROXY_PROVIDER_KEY_MISSING", {
+            model,
+            provider: blocked.providerId,
+          });
+          jsonResponse(res, 404, {
+            error: {
+              message:
+                `Provider "${blocked.providerId}" has no API key. Add it in ` +
+                `Admin -> Providers (stored in DB) or set the key in .env.`,
+              type: "invalid_request_error",
+              code: "provider_key_missing",
+            },
+          });
+          return;
+        }
         if (!orderedProviders.length) {
           const known = [...new Set(
             Object.values(PROVIDER_CONFIG)
@@ -14993,7 +15698,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
         // Provider fallback keeps the requested model. Trying another model
         // from the same provider used to answer a request with a completely
         // different model and provider; that path is removed.
-        for (const candidate of orderedProviders) {
+        for (const candidate of keyedProviders) {
           log("INFO", "PROXY_TRY", { model, provider: candidate.providerId });
           proxyResult = await proxyChatCompletion(
             model,
@@ -15136,6 +15841,33 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
         return;
       }
 
+      // Resolve the agent's provider BEFORE opening an SSE response. A
+      // missing DB/env key must be a direct 404, not a 200 stream of nothing.
+      const earlyAgentModel = usableAgentModel(agent);
+      const earlyProviderInfo = resolveProvider(earlyAgentModel, true);
+      if (earlyProviderInfo) {
+        const earlyKeyState = providerKeyState(
+          earlyProviderInfo.providerId,
+          earlyProviderInfo.config,
+        );
+        if (!earlyKeyState.ok) {
+          log("WARN", "AGENT_PROVIDER_KEY_MISSING", {
+            agent: agent.id,
+            provider: earlyProviderInfo.providerId,
+          });
+          jsonResponse(res, 404, {
+            error: {
+              message:
+                `Provider "${earlyProviderInfo.providerId}" has no API key. ` +
+                `Add it in Admin -> Providers (stored in DB) or set the key in .env.`,
+              type: "invalid_request_error",
+              code: "provider_key_missing",
+            },
+          });
+          return;
+        }
+      }
+
       if (stream) {
         // SSE Streaming response
         res.writeHead(200, {
@@ -15189,8 +15921,11 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
         const agentModel = usableAgentModel(agent);
         const agentProviderInfo = resolveProvider(agentModel, true);
         const agentProviderId = agentProviderInfo?.providerId || "";
-        const isLocalAgent =
-          !!agentProviderInfo?.config?.local || /^custom_/.test(agentProviderId);
+        const agentCaps = providerRegistry.capabilitiesFor(
+          agentProviderInfo?.config,
+          agentProviderId,
+          agentModel,
+        );
         const promptBudget =
           Number(agentProviderInfo?.config?.maxPromptChars) || 0;
 
@@ -15227,9 +15962,9 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
           }
         }
 
-        // LOCAL MODEL TOOL LIMIT: Ollama/llama.cpp cannot handle many tools
-        // with large system prompts. Cap aggressively for local providers.
-        const MAX_TOOLS_LIMIT = isLocalAgent ? 5 : 15;
+        // Tool catalog size is a provider capability: bridge/Ollama declare
+        // 5, cloud adapters default to 15. No hostname or provider-id check.
+        const streamToolLimit = Math.min(25, agentCaps.maxTools);
         let toolsForStream =
           tools ||
           Object.entries(MCP_TOOLS).map(([name, def]) => ({
@@ -15244,10 +15979,9 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
               },
             },
           }));
-        // Cap AFTER build — local models get at most MAX_TOOLS_LIMIT (5),
-        // cloud 15. (The const was orphaned — slice restored, slice order,
-        // no priority juggling.)
-        toolsForStream = toolsForStream.slice(0, MAX_TOOLS_LIMIT);
+        // Cap AFTER build. The cap came from capability metadata, so a
+        // provider never gets a tool catalog it did not declare.
+        toolsForStream = toolsForStream.slice(0, streamToolLimit);
 
         // EMPTY RESPONSE RETRY: If model returns empty, retry once without tools
         let retryWithoutTools = false;
@@ -17229,7 +17963,7 @@ async function init() {
   // timer so a server started after boot appears (and a stopped one leaves)
   // without a restart. Unref'd: the timer never keeps the process alive.
   setInterval(() => {
-    refreshLocalProviders().catch((e) =>
+    refreshDynamicProviders().catch((e) =>
       log("WARN", "LOCAL_MODELS_REFRESH_FAIL", { error: e.message }),
     );
   }, parseInt(process.env.LOCAL_MODELS_REFRESH_MS || "20000", 10)).unref();
@@ -17409,157 +18143,6 @@ async function init() {
     })
     .catch((e) => log("WARN", "EXTERNAL_MCP_STARTUP_FAIL", { error: e.message }));
 }
-
-// ═══════════════════════════════════════════════════════════════════════════════
-//  LOCAL UDS CLIENT — Zero Dependency, < 1ms Latency to model_server.py
-// ═══════════════════════════════════════════════════════════════════════════════
-// Uses Node.js built-in `net` module. NO grpc, NO protobuf, NO new packages.
-// Protocol: 4-byte little-endian length prefix + JSON payload
-// Socket:   /tmp/zombie_coder.sock (Linux/Mac only)
-// Fallback: If UDS unavailable, falls back to HTTP REST.
-// ═══════════════════════════════════════════════════════════════════════════════
-
-const LOCAL_UDS_PATH =
-  process.env.ZOMBIE_UDS_PATH ||
-  path.join(
-    process.env.XDG_RUNTIME_DIR || os.tmpdir(),
-    "zombie_coder.sock",
-  );
-const LOCAL_UDS_TIMEOUT = parseInt(process.env.LOCAL_UDS_TIMEOUT || "30000");
-let _udsAvailable = null;
-
-/**
- * Check if the local UDS socket exists and is connectable.
- */
-function isLocalUdsAvailable() {
-  if (_udsAvailable !== null) return _udsAvailable;
-  try {
-    if (process.platform === "win32") { _udsAvailable = false; return false; }
-    _udsAvailable = fs.existsSync(LOCAL_UDS_PATH);
-    return _udsAvailable;
-  } catch { _udsAvailable = false; return false; }
-}
-
-/**
- * Send a request to model_server.py via UDS socket.
- * @param {string} path - e.g. "/v1/chat/completions", "/health"
- * @param {string} method - "GET" or "POST"
- * @param {object|null} body - Request body (for POST)
- * @returns {Promise<{status: number, body: object}>}
- */
-function udsRequest(path, method, body) {
-  return new Promise((resolve, reject) => {
-    if (!isLocalUdsAvailable()) return reject(new Error("UDS socket not available"));
-    const startTime = Date.now();
-    const client = net.createConnection({ path: LOCAL_UDS_PATH });
-    let responded = false;
-    const timeout = setTimeout(() => {
-      if (!responded) { responded = true; client.destroy(); reject(new Error("UDS timeout after " + LOCAL_UDS_TIMEOUT + "ms")); }
-    }, LOCAL_UDS_TIMEOUT);
-
-    client.on("connect", () => {
-      try {
-        const req = JSON.stringify({ path, method, body: body || {} });
-        const buf = Buffer.from(req, "utf-8");
-        const header = Buffer.alloc(4);
-        header.writeUInt32LE(buf.length, 0);
-        client.write(Buffer.concat([header, buf]));
-      } catch (err) { responded = true; clearTimeout(timeout); client.destroy(); reject(err); }
-    });
-
-    let dataBuf = Buffer.alloc(0);
-    let expectedLen = -1;
-
-    client.on("data", (chunk) => {
-      dataBuf = Buffer.concat([dataBuf, chunk]);
-      while (true) {
-        if (expectedLen === -1) {
-          if (dataBuf.length < 4) break;
-          expectedLen = dataBuf.readUInt32LE(0);
-          dataBuf = dataBuf.subarray(4);
-        }
-        if (dataBuf.length < expectedLen) break;
-        const jsonStr = dataBuf.subarray(0, expectedLen).toString("utf-8");
-        dataBuf = dataBuf.subarray(expectedLen);
-        expectedLen = -1;
-        try {
-          const resp = JSON.parse(jsonStr);
-          const elapsed = Date.now() - startTime;
-          log("INFO", "UDS_RESPONSE", { path, status: resp.status, latency: elapsed + "ms" });
-          responded = true; clearTimeout(timeout); client.destroy(); resolve(resp);
-        } catch { responded = true; clearTimeout(timeout); client.destroy(); reject(new Error("UDS invalid JSON response")); }
-        break;
-      }
-    });
-
-    client.on("error", (err) => {
-      if (!responded) { responded = true; clearTimeout(timeout); _udsAvailable = false; reject(err); }
-    });
-    client.on("close", () => {
-      if (!responded) { responded = true; clearTimeout(timeout); reject(new Error("UDS connection closed before response")); }
-    });
-  });
-}
-
-/**
- * Call local model_server.py via UDS with automatic HTTP fallback.
- * @param {string} path - API path
- * @param {string} method - HTTP method
- * @param {object|null} body - Request body
- * @param {string} fallbackUrl - Full HTTP URL for fallback
- * @returns {Promise<{status: number, body: object, transport: string}>}
- */
-async function callLocalWithFallback(path, method, body, fallbackUrl) {
-  // Step 1: Try UDS (zero dependency, < 1ms)
-  if (isLocalUdsAvailable()) {
-    try {
-      const resp = await udsRequest(path, method, body);
-      return { ...resp, transport: "uds" };
-    } catch (udsErr) {
-      log("WARN", "UDS_FALLBACK_TO_HTTP", { path, error: udsErr.message });
-      _udsAvailable = false;
-    }
-  }
-  // Step 2: Fallback to HTTP REST
-  if (!fallbackUrl) return { status: 502, body: { error: "No UDS and no fallback URL" }, transport: "none" };
-  try {
-    const resp = await new Promise((resolve, reject) => {
-      const urlObj = new URL(fallbackUrl);
-      const mod = urlObj.protocol === "https:" ? https : http;
-      const postData = body ? JSON.stringify(body) : null;
-      const opts = {
-        hostname: urlObj.hostname, port: urlObj.port, path: urlObj.pathname,
-        method: method, headers: { "Content-Type": "application/json" }, timeout: 15000,
-      };
-      if (postData) opts.headers["Content-Length"] = Buffer.byteLength(postData);
-      const req = mod.request(opts, (res) => {
-        let data = "";
-        res.on("data", (c) => (data += c));
-        res.on("end", () => {
-          try { resolve({ status: res.statusCode, body: JSON.parse(data), transport: "http" }); }
-          catch { resolve({ status: res.statusCode, body: { raw: data }, transport: "http" }); }
-        });
-      });
-      req.on("error", reject);
-      req.on("timeout", () => { req.destroy(); reject(new Error("HTTP timeout")); });
-      if (postData) req.write(postData);
-      req.end();
-    });
-    return resp;
-  } catch (httpErr) {
-    return { status: 502, body: { error: "HTTP fallback failed: " + httpErr.message }, transport: "none" };
-  }
-}
-
-/**
- * UDS-aware health check for local model server.
- */
-async function checkLocalModelServerHealth() {
-  const modelServerPort = parseInt(process.env.MODEL_SERVER_PORT || "8007");
-  const fallbackUrl = "http://127.0.0.1:" + modelServerPort + "/health";
-  return callLocalWithFallback("/health", "GET", null, fallbackUrl);
-}
-
 
 // ══════════════════════════════════════════════════════════════
 //  UNIFIED MESSAGE HANDLER — Transport Adapter Layer

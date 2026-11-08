@@ -693,6 +693,17 @@
     .tag-orange { background: rgba(244,184,96,.13); color: #ffc978; }
     .tag-purple { background: rgba(182,156,255,.13); color: #c7b4ff; }
 
+    /* Lightweight result toast for Sync / provider save actions. */
+    .toast {
+      position: fixed; right: 20px; bottom: 20px; z-index: 400;
+      max-width: 380px; padding: 10px 14px; border-radius: 8px;
+      font-size: 12px; line-height: 1.5; color: var(--text);
+      background: var(--bg2); border: 1px solid var(--border);
+      box-shadow: 0 8px 24px rgba(0,0,0,.35);
+    }
+    .toast.ok { border-color: var(--green); }
+    .toast.err { border-color: var(--red); }
+
     .agent-grid { gap: 14px; }
     .agent-card, .agent-list-item {
       background: linear-gradient(145deg, #18273d, #121f32);
@@ -1021,7 +1032,7 @@
               </div>
               <div>
                 <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px">Priority (lower = higher)</label>
-                <input type="number" id="mgrNewPriority" value="50" min="1" max="999" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:6px;font-size:13px">
+                <input type="text" inputmode="numeric" id="mgrNewPriority" value="50" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:6px;font-size:13px;font-family:monospace">
               </div>
               <div>
                 <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px">Expertise</label>
@@ -1062,11 +1073,12 @@
         </div>
         <div class="card">
           <div class="card-header"><h3>Available Models</h3>
-            <div style="display:flex;gap:6px">
-              <input type="text" id="modelSearch" placeholder="Search model..." style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:4px 10px;border-radius:4px;font-size:12px;width:180px" oninput="filterModels()">
-              <select id="modelProviderFilter" onchange="filterModels()" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:4px;font-size:12px">
+            <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;align-items:center">
+              <input type="text" id="modelSearch" placeholder="Search model..." style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:4px 10px;border-radius:4px;font-size:12px;flex:1 1 120px;min-width:90px;max-width:180px" oninput="filterModels()">
+              <select id="modelProviderFilter" onchange="filterModels()" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:4px;font-size:12px;flex:0 0 auto">
                 <option value="">All Providers</option>
               </select>
+              <button class="refresh-btn" id="modelSyncBtn" onclick="syncAllModels()" style="white-space:nowrap;flex:0 0 auto">⟳ Sync</button>
             </div>
           </div>
           <div class="card-body" style="overflow-x:auto">
@@ -1110,8 +1122,14 @@
           <div class="stat-card"><div class="stat-value" id="provPriority"><span style="color:var(--green)">Active</span></div><div class="stat-label">Status</div></div>
         </div>
         <div class="card">
-          <div class="card-header"><h3>Provider Configuration</h3><span style="font-size:11px;color:var(--text2)" id="providerRefreshTime"></span></div>
-          <div class="card-body"><table><thead><tr><th>Provider</th><th>Name</th><th>Type</th><th>Base URL</th><th>Models</th><th>Priority</th><th>Req</th><th>Err</th><th>OK%</th><th>Status</th></tr></thead><tbody id="providerTable"><tr><td colspan="10"><div class="loading">Loading providers...</div></td></tr></tbody></table></div>
+          <div class="card-header"><h3>Provider Configuration</h3>
+            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end">
+              <span style="font-size:11px;color:var(--text2)" id="providerRefreshTime"></span>
+              <button class="refresh-btn" id="providerSyncBtn" onclick="syncAllModels()" style="white-space:nowrap;flex:0 0 auto">⟳ Sync</button>
+              <button class="refresh-btn" onclick="openProviderModal(null)" style="white-space:nowrap;flex:0 0 auto">+ New Provider</button>
+            </div>
+          </div>
+          <div class="card-body"><table><thead><tr><th>Provider</th><th>Name</th><th>Type</th><th>Endpoint</th><th>Models</th><th>Priority</th><th>Req</th><th>Err</th><th>OK%</th><th>Status</th><th>Actions</th></tr></thead><tbody id="providerTable"><tr><td colspan="11"><div class="loading">Loading providers...</div></td></tr></tbody></table></div>
         </div>
         <div class="card">
           <div class="card-header"><h3>Provider Model Distribution</h3></div>
@@ -1494,8 +1512,17 @@
           // Auth failed: clear the stale token and surface a fixable message.
           return { error: handleUnauthorized(), unauthorized: true, status: 401 };
         }
-        if (!r.ok) return { error: 'HTTP ' + r.status };
-        return await r.json();
+        // Read the body even on failure: a provider-key rejection carries the
+        // real reason (validation HTTP status / upstream message) and hiding it
+        // behind "HTTP 400" made the admin chase a phantom bug.
+        let payload = null;
+        try { payload = await r.json(); } catch (_) { payload = null; }
+        if (!r.ok) {
+          const err = payload && payload.error;
+          const msg = typeof err === 'string' ? err : err && err.message;
+          return { ...(payload || {}), error: msg || ('HTTP ' + r.status), status: r.status };
+        }
+        return payload || {};
       } catch (e) { return { error: e.message }; }
     }
 
@@ -1934,61 +1961,309 @@
     async function loadProviders() {
       const data = await apiFetch('/api/normalize-list');
       if (data.error) {
-        document.getElementById('providerTable').innerHTML = '<tr><td colspan="10" style="color:var(--red)">Failed: ' + data.error + '</td></tr>';
+        document.getElementById('providerTable').innerHTML = '<tr><td colspan="11" style="color:var(--red)">Failed: ' + data.error + '</td></tr>';
         return;
       }
-      const providers = data.providers || [];
+      const providerMap = {};
+      (data.providers || []).forEach(p => { providerMap[p.id] = Object.assign({}, p); });
       const allModels = data.models || [];
-      // live on/off state from GET /api/admin/providers (fallback: normalize-list)
-      let provState = {};
-      try {
-        const adm = await apiFetch('/api/admin/providers');
-        if (adm && adm.providers) adm.providers.forEach(p => { provState[p.id] = p; });
-      } catch (_) {}
+
+      // GET /api/admin/providers is the richer source: DB/env key origin,
+      // socket path, model count and normalized priority. It needs the admin
+      // token; without one we still render from normalize-list.
+      const adm = await apiFetch('/api/admin/providers');
+      if (adm && Array.isArray(adm.providers)) {
+        adm.providers.forEach(p => {
+          providerMap[p.id] = Object.assign({}, providerMap[p.id] || {}, p);
+        });
+      }
+      const providers = Object.values(providerMap).sort(
+        (a, b) => (Number(a.priority) || 99) - (Number(b.priority) || 99) || String(a.id).localeCompare(String(b.id))
+      );
+      providerDataCache = providers;
 
       // Stats
       document.getElementById('provTotal').textContent = providers.length;
       document.getElementById('provModels').textContent = allModels.length;
-      document.getElementById('provActive').textContent = providers.filter(p => (provState[p.id] ? provState[p.id].enabled : p.enabled !== false) && p.priority > 0).length;
-      document.getElementById('provPriority').innerHTML = '<span style="color:var(--green)">✓ Active</span>';
+      document.getElementById('provActive').textContent = providers.filter(p => p.enabled !== false).length;
+      const priorities = providers.map(p => Number(p.priority)).sort((a, b) => a - b);
+      const contiguous = priorities.every((n, i) => n === i + 1);
+      document.getElementById('provPriority').innerHTML = contiguous
+        ? '<span style="color:var(--green)">1…' + priorities.length + '</span>'
+        : '<span style="color:var(--orange)">⚠ ' + priorities.join(',') + '</span>';
       document.getElementById('providerRefreshTime').textContent = 'updated ' + fmtTime(Date.now());
 
-      // Table — with dynamic enable/disable toggle
+      if (!providers.length) {
+        document.getElementById('providerTable').innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--text2)">No providers registered — add one or check .env</td></tr>';
+        document.getElementById('providerChart').innerHTML = '';
+        return;
+      }
+
+      // Table — key origin, endpoint and enable/disable/edit/delete per row.
       document.getElementById('providerTable').innerHTML = providers.map(p => {
-        const st = provState[p.id] || {};
-        const on = st.enabled !== false && p.enabled !== false;
+        const on = p.enabled !== false;
+        const modelCount = Array.isArray(p.models) ? p.models.length : (Number(p.models) || 0);
+        const keyBadge = p.keySource === 'db'
+          ? '<span class="tag tag-green">key: DB</span>'
+          : p.keySource === 'env'
+            ? '<span class="tag tag-blue">key: env</span>'
+            : p.requiresKey
+              ? '<span class="tag tag-red">key: missing</span>'
+              : '<span class="tag tag-purple">no key needed</span>';
+        const endpoint = p.socketPath
+          ? '<code title="' + String(p.socketPath).replace(/"/g, '&quot;') + '">UDS ' + String(p.socketPath).slice(0, 34) + '</code>'
+          : (p.baseUrl ? String(p.baseUrl).slice(0, 40) + (String(p.baseUrl).length > 40 ? '…' : '') : '—');
+        const canDelete = p.source === 'db' && !['opencode', 'groq', 'gemini', 'ollama'].includes(p.id);
         return `
         <tr style="${on ? '' : 'opacity:.55'}">
-          <td><strong>${p.id || p.name || '—'}</strong></td>
-          <td>${p.name || '—'}</td>
+          <td><strong>${p.id}</strong></td>
+          <td>${p.displayName || p.name || '—'}${p.displayName && p.name && p.displayName !== p.name ? '<div style="font-size:10px;color:var(--text2)">' + p.name + '</div>' : ''}
+            <div style="margin-top:3px">${keyBadge}</div>
+            <div style="font-size:10px;color:var(--text2)">${p.source === 'db' ? 'DB-managed' : 'from .env'}</div></td>
           <td><span class="tag tag-blue">${p.type || 'openai'}</span></td>
-          <td style="font-size:11px;font-family:monospace">${p.baseUrl ? p.baseUrl.slice(0, 40) + (p.baseUrl.length > 40 ? '...' : '') : '—'}${st.hasKey ? ' ' : ''}</td>
-          <td>${(p.models && p.models.length) || st.models || '—'}</td>
-          <td><span class="tag ${p.priority > 1 ? 'tag-green' : 'tag-orange'}">${p.priority || '—'}</span></td>
-          <td><strong>${st.requests || 0}</strong></td>
-          <td><span class="tag ${st.errors > 0 ? 'tag-red' : 'tag-green'}">${st.errors || 0}</span></td>
-          <td>${st.success_pct == null ? '<span style="color:var(--text2)">—</span>' : '<strong style="color:' + (st.success_pct >= 90 ? 'var(--green)' : (st.success_pct >= 60 ? 'var(--orange)' : 'var(--red)')) + '">' + st.success_pct + '%</strong>'}<div style="font-size:10px;color:var(--text2)">${st.last_used ? ago(st.last_used) : 'never used'}</div></td>
+          <td style="font-size:11px;font-family:monospace">${endpoint}</td>
+          <td>${modelCount}</td>
+          <td><span class="tag ${modelCount ? 'tag-green' : 'tag-orange'}">${p.priority != null ? p.priority : '—'}</span></td>
+          <td><strong>${p.requests || 0}</strong></td>
+          <td><span class="tag ${p.errors > 0 ? 'tag-red' : 'tag-green'}">${p.errors || 0}</span></td>
+          <td>${p.success_pct == null ? '<span style="color:var(--text2)">—</span>' : '<strong style="color:' + (p.success_pct >= 90 ? 'var(--green)' : (p.success_pct >= 60 ? 'var(--orange)' : 'var(--red)')) + '">' + p.success_pct + '%</strong>'}<div style="font-size:10px;color:var(--text2)">${p.last_used ? ago(p.last_used) : 'never used'}</div></td>
           <td>
-            ${on ? (st.healthy === false ? '<span class="tag tag-red">Failing</span>' : '<span class="tag tag-green">Online</span>') : '<span class="tag tag-red">Off</span>'}
-            ${st.last_error ? '<div style="font-size:10px;color:var(--red);max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + String(st.last_error).replace(/"/g, "'") + '">' + String(st.last_error).slice(0, 40) + '</div>' : ''}
-            <button class="refresh-btn" onclick="toggleProvider('${(p.id || '').replace(/'/g, "\\'")}', ${on ? 0 : 1})" style="padding:2px 6px;font-size:10px;margin-left:4px;">${on ? 'Disable' : 'Enable'}</button>
+            ${on ? (p.healthy === false ? '<span class="tag tag-red">Failing</span>' : '<span class="tag tag-green">Online</span>') : '<span class="tag tag-red">Off</span>'}
+            ${p.last_error ? '<div style="font-size:10px;color:var(--red);max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + String(p.last_error).replace(/"/g, "'") + '">' + String(p.last_error).slice(0, 40) + '</div>' : ''}
+            <button class="refresh-btn" onclick="toggleProvider('${String(p.id).replace(/'/g, "\\'")}', ${on ? 0 : 1})" style="padding:2px 6px;font-size:10px;margin-left:4px;">${on ? 'Disable' : 'Enable'}</button>
+          </td>
+          <td style="white-space:nowrap">
+            <button class="refresh-btn" onclick="openProviderModal('${String(p.id).replace(/'/g, "\\'")}')" style="padding:2px 6px;font-size:10px;">Edit</button>
+            ${canDelete ? `<button class="refresh-btn" onclick="deleteProvider('${String(p.id).replace(/'/g, "\\'")}')" style="padding:2px 6px;font-size:10px;color:var(--red)">Delete</button>` : ''}
           </td>
         </tr>`;
       }).join('');
 
       // Model distribution chart
       document.getElementById('providerChart').innerHTML = providers.map(p => {
-        const count = (p.models && p.models.length) || 0;
+        const count = Array.isArray(p.models) ? p.models.length : (Number(p.models) || 0);
         const pct = allModels.length ? (count / allModels.length * 100).toFixed(1) : 0;
         return `<div style="background:var(--bg3);border-radius:var(--radius);padding:12px;text-align:center">
           <div style="font-size:24px;font-weight:700;color:var(--blue)">${count}</div>
-          <div style="font-size:11px;color:var(--text2)">${p.name || p.id}</div>
+          <div style="font-size:11px;color:var(--text2)">${p.displayName || p.name || p.id}</div>
           <div style="margin-top:6px;height:4px;background:var(--border);border-radius:2px;overflow:hidden">
             <div style="height:100%;width:${pct}%;background:var(--blue);border-radius:2px"></div>
           </div>
           <div style="font-size:10px;color:var(--text2);margin-top:4px">${pct}% of total</div>
         </div>`;
       }).join('');
+    }
+
+    // ── Result toast: visible feedback instead of a silent reload ──────
+    function showToast(message, kind) {
+      const old = document.getElementById('zcToast');
+      if (old) old.remove();
+      const el = document.createElement('div');
+      el.id = 'zcToast';
+      el.className = 'toast ' + (kind || '');
+      el.textContent = message;
+      document.body.appendChild(el);
+      setTimeout(() => { if (el.parentNode) el.remove(); }, 6000);
+    }
+
+    // Full sync: env vars + every active provider's live /models (TCP or UDS)
+    // + SQLite upsert + priority normalization. One button, one truth.
+    async function syncAllModels() {
+      const buttons = ['modelSyncBtn', 'providerSyncBtn']
+        .map(id => document.getElementById(id))
+        .filter(Boolean);
+      const label = buttons[0] ? buttons[0].textContent : '';
+      buttons.forEach(b => { b.disabled = true; b.textContent = '⟳ Syncing…'; });
+      try {
+        const r = await apiFetch('/api/normalize', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode: 'full' })
+        });
+        if (r.error) {
+          showToast('Sync failed: ' + r.error, 'err');
+          return;
+        }
+        const results = r.results || {};
+        const ok = Object.keys(results).filter(k => results[k].ok);
+        const failed = Object.keys(results).filter(k => !results[k].ok);
+        const skipped = failed.filter(k => results[k].skipped);
+        const broken = failed.filter(k => !results[k].skipped);
+        const stored = r.db && r.db.models != null ? r.db.models : (r.db && r.db.count) || null;
+        let msg = 'Sync done — ' + ok.length + ' provider(s) live';
+        if (broken.length) msg += ', ' + broken.length + ' failed (' + broken.join(', ') + ')';
+        if (skipped.length) msg += ', ' + skipped.length + ' skipped (inactive/no key)';
+        if (stored != null) msg += ' · ' + stored + ' models in DB';
+        showToast(msg, broken.length ? 'err' : 'ok');
+        await loadModels();
+        await loadProviders();
+      } catch (e) {
+        showToast('Sync error: ' + e.message, 'err');
+      } finally {
+        buttons.forEach(b => { b.disabled = false; b.textContent = label || '⟳ Sync'; });
+      }
+    }
+
+    // ── Provider create/edit modal ─────────────────────────────────────
+    const PROVIDER_TYPE_LIST = ['openai', 'groq', 'gemini', 'ollama', 'llamacpp', 'opencode'];
+
+    // Models may arrive as strings or {name, apiModel} pairs; the textarea
+    // speaks one dialect only: "public=>api" comma list.
+    function modelsToInput(list) {
+      return (list || []).map(m => {
+        if (typeof m === 'string') return m;
+        const name = m.name || m.model || '';
+        const api = m.apiModel || name;
+        return name === api ? name : name + '=>' + api;
+      }).filter(Boolean).join(', ');
+    }
+
+    // <input type="number"> renders digits in the browser locale, so a bn-BD
+    // client shows "1" as "১" and parseInt() then returns NaN. Keep the raw
+    // value ASCII and normalise anything a user still types in Bengali digits.
+    const BN_DIGITS = '০১২৩৪৫৬৭৮৯';
+    function asciiDigits(value) {
+      return String(value == null ? '' : value).replace(/[০-৯]/g, (d) => String(BN_DIGITS.indexOf(d)));
+    }
+
+    function openProviderModal(providerId) {
+      const existing = providerId
+        ? (providerDataCache || []).find(p => p.id === providerId) || { id: providerId, name: providerId }
+        : null;
+      const editing = !!existing;
+      const old = document.getElementById('providerEditModal');
+      if (old) old.remove();
+      const overlay = document.createElement('div');
+      overlay.className = 'modal-overlay show';
+      overlay.id = 'providerEditModal';
+      overlay.innerHTML = `
+        <div class="modal" style="max-width:640px;width:94vw;max-height:88vh;display:flex;flex-direction:column;overflow:hidden">
+          <h3 style="flex:0 0 auto;margin-bottom:10px">${editing ? 'Edit Provider — ' + existing.id : 'New Provider'}</h3>
+          <div style="display:grid;gap:10px;overflow-y:auto;padding-right:4px;flex:1 1 auto">
+            <label style="font-size:11px;color:var(--text2)">Provider ID
+              <input id="pmId" type="text" value="${editing ? existing.id : ''}" ${editing ? 'disabled' : ''}
+                placeholder="e.g. llama-uds" autocomplete="off" spellcheck="false"
+                style="display:block;width:100%;margin-top:4px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:7px 10px;border-radius:6px;font-size:12px;font-family:monospace">
+            </label>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+              <label style="font-size:11px;color:var(--text2)">Display Name
+                <input id="pmName" type="text" value="${editing ? (existing.name || '') : ''}"
+                  style="display:block;width:100%;margin-top:4px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:7px 10px;border-radius:6px;font-size:12px">
+              </label>
+              <label style="font-size:11px;color:var(--text2)">Type
+                <select id="pmType" style="display:block;width:100%;margin-top:4px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:7px 10px;border-radius:6px;font-size:12px">
+                  ${PROVIDER_TYPE_LIST.map(t => `<option value="${t}" ${editing && existing.type === t ? 'selected' : ''}>${t}</option>`).join('')}
+                </select>
+              </label>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:center">
+              <label style="font-size:11px;color:var(--text2)">Priority <span style="color:var(--text2)">(1 = highest; list stays 1..N)</span>
+                <input id="pmPriority" type="text" inputmode="numeric" autocomplete="off" dir="ltr"
+                  value="${editing && existing.priority != null ? String(existing.priority) : ''}" placeholder="auto"
+                  style="display:block;width:100%;margin-top:4px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:7px 10px;border-radius:6px;font-size:12px;font-family:monospace">
+              </label>
+              <label style="font-size:11px;color:var(--text2);display:flex;align-items:center;gap:6px">
+                <input id="pmEnabled" type="checkbox" ${!editing || existing.enabled !== false ? 'checked' : ''}> Active (serves models)
+              </label>
+            </div>
+            <label style="font-size:11px;color:var(--text2)">Base URL <span style="color:var(--text2)">(http/https — ignored when a socket is set for requests)</span>
+              <input id="pmBaseUrl" type="text" value="${editing ? (existing.baseUrl || '') : ''}" placeholder="e.g. https://api.example.com/v1"
+                style="display:block;width:100%;margin-top:4px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:7px 10px;border-radius:6px;font-size:12px;font-family:monospace">
+            </label>
+            <label style="font-size:11px;color:var(--text2)">UDS Socket Path <span style="color:var(--text2)">(optional)</span>
+              <input id="pmSocket" type="text" value="${editing ? (existing.socketPath || '') : ''}" placeholder="e.g. /tmp/llama-1000/llama.sock"
+                style="display:block;width:100%;margin-top:4px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:7px 10px;border-radius:6px;font-size:12px;font-family:monospace">
+            </label>
+            <label style="font-size:11px;color:var(--text2)">API Key
+              <input id="pmApiKey" type="password" autocomplete="new-password" value=""
+                placeholder="${editing && existing.keySource && existing.keySource !== 'none' ? 'leave blank to keep the existing ' + existing.keySource + ' key' : 'paste the key — validated before saving'}"
+                style="display:block;width:100%;margin-top:4px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:7px 10px;border-radius:6px;font-size:12px;font-family:monospace">
+            </label>
+            ${editing && existing.keySource && existing.keySource !== 'none' ? `
+            <label style="font-size:11px;color:var(--text2);display:flex;align-items:center;gap:6px">
+              <input id="pmClearKey" type="checkbox"> Remove the stored ${existing.keySource} key (env fallback still applies)
+            </label>` : ''}
+            <label style="font-size:11px;color:var(--text2)">Models <span style="color:var(--text2)">(comma separated; alias as public=>api)</span>
+              <textarea id="pmModels" rows="2" style="display:block;width:100%;margin-top:4px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:7px 10px;border-radius:6px;font-size:12px;font-family:monospace">${editing ? modelsToInput(existing.modelList || existing.models) : ''}</textarea>
+            </label>
+          </div>
+          <div id="pmError" style="display:none;color:var(--red);font-size:12px;background:rgba(255,107,120,.08);border:1px solid var(--red);border-radius:6px;padding:8px 10px;margin-top:10px;flex:0 0 auto"></div>
+          <div style="display:flex;gap:8px;justify-content:flex-end;align-items:center;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);flex:0 0 auto">
+            <button class="refresh-btn" onclick="document.getElementById('providerEditModal').remove()" style="padding:8px 18px;min-width:110px;justify-content:center">Cancel</button>
+            <button class="refresh-btn" id="pmSaveBtn" onclick="saveProvider(${editing ? "'" + existing.id + "'" : 'null'})" style="padding:8px 18px;min-width:150px;justify-content:center;background:var(--green);color:#fff;border-color:var(--green)">${editing ? 'Save Changes' : 'Create Provider'}</button>
+          </div>
+        </div>`;
+      document.body.appendChild(overlay);
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    }
+
+    async function saveProvider(providerId) {
+      const errBox = document.getElementById('pmError');
+      const btn = document.getElementById('pmSaveBtn');
+      const showErr = (msg) => {
+        errBox.style.display = 'block';
+        errBox.textContent = msg;
+      };
+      errBox.style.display = 'none';
+      const body = {
+        action: 'save',
+        id: asciiDigits(document.getElementById('pmId').value.trim()),
+        name: document.getElementById('pmName').value.trim(),
+        type: document.getElementById('pmType').value,
+        baseUrl: document.getElementById('pmBaseUrl').value.trim(),
+        socketPath: document.getElementById('pmSocket').value.trim(),
+        apiKey: document.getElementById('pmApiKey').value.trim(),
+        models: document.getElementById('pmModels').value.trim(),
+        enabled: document.getElementById('pmEnabled').checked,
+        clearKey: !!(document.getElementById('pmClearKey') && document.getElementById('pmClearKey').checked)
+      };
+      // Blank priority means "keep the current order"; the server renumbers
+      // 1..N after any save anyway, so a typo can never leave a gap.
+      const priorityValue = asciiDigits(document.getElementById('pmPriority').value.trim());
+      if (priorityValue && !/^\d{1,3}$/.test(priorityValue)) {
+        showErr('Priority must be a whole number (1, 2, 3 ...)');
+        return;
+      }
+      if (priorityValue) body.priority = Number(priorityValue);
+      if (!body.id) { showErr('Provider ID is required'); return; }
+      if (!/^[a-z0-9][a-z0-9_-]{1,48}$/i.test(body.id)) {
+        showErr('Provider ID must be 2-49 characters: letters, numbers, _ or -');
+        return;
+      }
+      if (!body.baseUrl && !body.socketPath) { showErr('Base URL or UDS socket path is required'); return; }
+      if (btn) { btn.disabled = true; btn.textContent = body.apiKey ? 'Validating key…' : 'Saving…'; }
+      try {
+        const r = await apiFetch('/api/admin/providers', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        if (r.error) {
+          showErr(r.error);
+          return;
+        }
+        document.getElementById('providerEditModal').remove();
+        showToast(
+          (providerId ? 'Provider updated' : 'Provider created') + ' — ' + (r.provider ? r.provider.displayName || r.provider.name : body.id) +
+          (body.apiKey ? ' · key validated and stored' : ''),
+          'ok'
+        );
+        await loadProviders();
+        await loadModels();
+      } catch (e) {
+        showErr('Save failed: ' + e.message);
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = providerId ? 'Save Changes' : 'Create Provider'; }
+      }
+    }
+
+    async function deleteProvider(id) {
+      if (!confirm('Delete provider "' + id + '" and its model rows? Env-defined providers come back on the next env sync.')) return;
+      const r = await apiFetch('/api/admin/providers/' + encodeURIComponent(id), { method: 'DELETE' });
+      if (r.error) { showToast('Delete failed: ' + r.error, 'err'); return; }
+      showToast('Provider deleted: ' + id, 'ok');
+      await loadProviders();
+      await loadModels();
     }
 
     // Toggle provider on/off at RUNTIME — persisted to SQLite settings,
@@ -2843,7 +3118,7 @@
       const name = document.getElementById('mgrNewName').value.trim() || id;
       const role = document.getElementById('mgrNewRole').value;
       const model = document.getElementById('mgrNewModel').value;
-      const priority = parseInt(document.getElementById('mgrNewPriority').value || '50', 10);
+      const priority = parseInt(asciiDigits(document.getElementById('mgrNewPriority').value) || '50', 10);
       const expertise = document.getElementById('mgrNewExpertise').value.trim();
       const persona = document.getElementById('mgrNewPersona').value.trim();
 
@@ -2906,7 +3181,7 @@
             </div>
             <div>
               <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px">Priority</label>
-              <input type="number" id="editAgentPriority" value="${agent.priority || 99}" min="1" max="999" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:6px;font-size:13px">
+              <input type="text" inputmode="numeric" id="editAgentPriority" value="${agent.priority || 99}" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:6px;font-size:13px;font-family:monospace">
             </div>
           </div>
           <div>
@@ -2940,7 +3215,7 @@
         name: document.getElementById('editAgentName').value.trim(),
         role: document.getElementById('editAgentRole').value.trim(),
         model: document.getElementById('editAgentModel').value,
-        priority: parseInt(document.getElementById('editAgentPriority').value || '99', 10),
+        priority: parseInt(asciiDigits(document.getElementById('editAgentPriority').value) || '99', 10),
         expertise: document.getElementById('editAgentExpertise').value.trim(),
         persona: document.getElementById('editAgentPersona').value.trim(),
         enabled: 1

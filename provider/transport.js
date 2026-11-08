@@ -41,11 +41,13 @@ const FRAME_TOO_LARGE = "provider frame exceeds MAX_FRAME_BYTES";
 // Returns { statusCode, headers, body } where body is the raw string.
 // Never throws on HTTP status — the caller decides fallback policy.
 function request(cfg, target, body) {
+  cfg = cfg || {};
   const url = new URL(target);
   const useSocket = !!cfg.socketPath;
+  const method = String(cfg.method || "POST").toUpperCase();
 
   const options = {
-    method: "POST",
+    method: method,
     timeout: cfg.timeout || DEFAULT_TIMEOUT,
     headers: Object.assign(
       { "Content-Type": "application/json; charset=utf-8" },
@@ -63,7 +65,12 @@ function request(cfg, target, body) {
     options.path = url.pathname + url.search;
   }
 
-  const payload = typeof body === "string" ? body : JSON.stringify(body || {});
+  const payload =
+    method === "GET" || method === "HEAD"
+      ? ""
+      : typeof body === "string"
+        ? body
+        : JSON.stringify(body || {});
 
   // HTTP/2 only for cleartext-secure (https) direct connections.
   if (!useSocket && url.protocol === "https:") {
@@ -132,9 +139,9 @@ function http2Request(url, options, payload) {
     };
     client.on("error", function (e) { done(reject, e); });
     const headers = {
-      ":method": "POST",
+      ":method": options.method || "POST",
       ":path": url.pathname + url.search,
-      "content-type": options.headers["Content-Type"],
+      "content-type": options.headers["Content-Type"] || "application/json",
     };
     for (const k of Object.keys(options.headers)) {
       if (k === "Content-Type") continue;

@@ -47,7 +47,13 @@ async function applyTemplate(cfg, messages) {
   const base = nativeBase(cfg);
   try {
     const res = await transport.request(
-      { baseUrl: base, key: cfg.key, headers: headers(cfg), timeout: cfg.timeout },
+      {
+        baseUrl: base,
+        key: cfg.key,
+        headers: headers(cfg),
+        timeout: cfg.timeout,
+        socketPath: cfg.socketPath,
+      },
       base + "/apply-template",
       { messages: messages || [] },
     );
@@ -82,7 +88,13 @@ function usageOf(raw) {
 async function chat(cfg, params) {
   const prompt = await applyTemplate(cfg, params.messages);
   const res = await transport.request(
-    { baseUrl: nativeBase(cfg), key: cfg.key, headers: headers(cfg), timeout: cfg.timeout },
+    {
+      baseUrl: nativeBase(cfg),
+      key: cfg.key,
+      headers: headers(cfg),
+      timeout: cfg.timeout,
+      socketPath: cfg.socketPath,
+    },
     endpoint(cfg),
     buildBody(params, prompt, false),
   );
@@ -149,7 +161,13 @@ async function chatStream(cfg, params, onDelta) {
   emit({ role: "assistant", content: "" }, null);
 
   const res = await transport.stream(
-    { baseUrl: nativeBase(cfg), key: cfg.key, headers: headers(cfg), streamTimeout: cfg.streamTimeout },
+    {
+      baseUrl: nativeBase(cfg),
+      key: cfg.key,
+      headers: headers(cfg),
+      streamTimeout: cfg.streamTimeout,
+      socketPath: cfg.socketPath,
+    },
     endpoint(cfg),
     buildBody(params, prompt, true),
     function (line) {
@@ -207,17 +225,32 @@ async function chatStream(cfg, params, onDelta) {
 
 async function listModels(cfg) {
   const base = nativeBase(cfg);
-  const response = await fetch(base + "/v1/models", {
-    signal: AbortSignal.timeout(20000),
-    headers: headers(cfg),
-  });
-  const text = await response.text();
-  if (response.status < 200 || response.status >= 300) {
-    return { ok: false, error: transport.errorMessage(response.status, text) };
+  // socketPath-aware: the same probe works for TCP and for a unix socket,
+  // and `fetch` cannot dial a UDS.
+  const probe = async (path) =>
+    transport.request(
+      {
+        baseUrl: base,
+        key: cfg.key,
+        headers: headers(cfg),
+        timeout: 20000,
+        socketPath: cfg.socketPath,
+        method: "GET",
+      },
+      base + path,
+    );
+
+  let response = await probe("/v1/models");
+  if (response.statusCode === 404) response = await probe("/api/v0/models");
+  if (response.statusCode < 200 || response.statusCode >= 300) {
+    return {
+      ok: false,
+      error: transport.errorMessage(response.statusCode, response.body),
+    };
   }
   let raw;
   try {
-    raw = JSON.parse(text);
+    raw = JSON.parse(response.body);
   } catch (error) {
     return { ok: false, error: "invalid JSON: " + error.message };
   }

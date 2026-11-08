@@ -133,24 +133,24 @@ part of this verification.
 ## The Mission Barisal Agents (9)
 
 Agent definitions live in `agent/*.js`; each file carries its persona inline.
-The SQLite `agents` table is the runtime source of truth. The file
-`fallbackModel` is used only when a DB row has no concrete model.
+The SQLite `agents` table is the runtime source of truth. The file `model`
+default is used only when a DB row has no concrete model.
 
 | ID | Role | Provider | Model |
 |----|------|----------|-------|
-| `security-hero` | security | `custom_5` | `qwen3-1.7b-abliterated` |
-| `perf-wizard` | performance | `custom_6` | `llama-native-qwen` |
-| `doc-king` | documentation | `ollama` | `qwen2:0.5b` |
+| `security-hero` | security | `llama-uds` | `qwen3-1.7b-abliterated` |
+| `perf-wizard` | performance | `ollama` | `qwen3:0.6b` |
+| `doc-king` | documentation | `ollama_cloud` | `gpt-oss:20b` |
 | `qa-tyrant` | quality | `groq` | `openai/gpt-oss-20b` |
-| `team-heart` | general | `gemini` | `gemini-2.5-flash-lite` |
-| `customer-experience-specialist` | customer-experience | `gemini` | `gemini-3.6-flash` |
-| `ecommerce-operations-analyst` | ecommerce-operations | `groq` | `openai/gpt-oss-120b` |
-| `bug-hunter` | debugging | `gemini` | `gemini-2.5-flash` |
-| `code-guru` | architecture | `gemini` | `gemini-3.5-flash` |
+| `team-heart` | general | `ollama_cloud` | `gpt-oss:20b` |
+| `customer-experience-specialist` | customer-experience | `gemini` | `gemini-2.5-flash` |
+| `ecommerce-operations-analyst` | ecommerce-operations | `ollama_cloud` | `gpt-oss:120b` |
+| `bug-hunter` | debugging | `groq` | `openai/gpt-oss-120b` |
+| `code-guru` | architecture | `ollama_cloud` | `gpt-oss:120b` |
 
-The table is the binding observed on 2026-11-06: every row answered an OpenAI
-request with HTTP 200 through the provider and model shown. The runtime source
-of truth stays the SQLite `agents` table:
+The full rationale, provider coverage and tool-call acceptance test live in
+[`docs/AGENT-PROVIDER-MATRIX.md`](docs/AGENT-PROVIDER-MATRIX.md). The runtime
+source of truth stays the SQLite `agents` table:
 
 ```bash
 node -e 'const {DatabaseSync}=require("node:sqlite");const db=new DatabaseSync("data/models.db",{readOnly:true});console.log(db.prepare("SELECT id,model FROM agents").all())'

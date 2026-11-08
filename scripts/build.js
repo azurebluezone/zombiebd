@@ -70,6 +70,7 @@ const COPY_DIRS = [
 
 const COPY_FILES = [
   "api.js",
+  "admin-api.js",
   "start.js",
   "start-local-mcp.js",
   "cdp-pipe.js",
@@ -130,12 +131,11 @@ function main() {
     if (fs.existsSync(src)) copyFile(src, path.join(DIST, file));
   }
 
-  // Copy .env.example as template; if a real .env exists, copy it so the
-  // dist can boot without re-initialization in this environment.
-  if (fs.existsSync(path.join(ROOT, ".env"))) {
-    copyFile(path.join(ROOT, ".env"), path.join(DIST, ".env"));
-  } else if (fs.existsSync(path.join(ROOT, ".env.example"))) {
-    copyFile(path.join(ROOT, ".env.example"), path.join(DIST, ".env.example"));
+  // The dist carries both the real keys (.env) and the template
+  // (.env.example). Missing one must not drop the other.
+  for (const file of [".env", ".env.example"]) {
+    const src = path.join(ROOT, file);
+    if (fs.existsSync(src)) copyFile(src, path.join(DIST, file));
   }
 
   // Render env-driven Caddyfile

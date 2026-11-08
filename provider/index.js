@@ -27,6 +27,7 @@ const ollama = require("./ollama");
 const opencode = require("./opencode");
 const llamacpp = require("./llamacpp");
 const validator = require("./validator");
+const capabilities = require("./capabilities");
 const zclog = require("../lib/zc-log");
 const { expandEnv } = require("../lib/expand-env");
 
@@ -38,6 +39,7 @@ const ADAPTERS = {
   groq: groq,
   gemini: gemini,
   ollama: ollama,
+  ollama_cloud: ollama,
   opencode: opencode,
   llamacpp: llamacpp,
   "llama-cpp": llamacpp,
@@ -93,6 +95,21 @@ function supports(providerId, modelName, mode) {
   }
 }
 
+// Effective capabilities for one provider/model: declared config first, DB
+// model flags second. No caller should branch on a provider id or hostname.
+function capabilitiesFor(cfg, providerId, modelName) {
+  const config = cfg && typeof cfg === "object" ? cfg : resolveConfig(cfg);
+  const id = providerId || config.id || "";
+  const model = modelName || "";
+  const base = capabilities.forConfig(config, id);
+  return {
+    ...base,
+    tools: base.tools && supports(id, model, "tools"),
+    media: base.media && supports(id, model, "media"),
+    stream: base.stream && supports(id, model, "stream"),
+  };
+}
+
 // ─── Provider config resolution ───────────────────────────────────────
 // cfg may be: a config object already resolved by the caller, or a provider
 // id string that we expand from environment.
@@ -109,8 +126,11 @@ function configForId(id) {
                 key: env.GROQ_API_KEY, type: "groq" },
     gemini:   { baseUrl: env.GEMINI_BASE || "https://generativelanguage.googleapis.com/v1beta",
                 key: env.GEMINI_API_KEY, type: "gemini" },
-    ollama:   { baseUrl: env.OLLAMA_BASE, key: env.OLLAMA_API_KEY || env.OLLAMA_CLOUD_API_KEY,
+    ollama:   { baseUrl: env.OLLAMA_BASE, key: env.OLLAMA_API_KEY,
                 type: "openai", dialect: env.OLLAMA_DIALECT || "" },
+    ollama_cloud: { baseUrl: env.OLLAMA_CLOUD_BASE || "https://ollama.com",
+                key: env.OLLAMA_CLOUD_API_KEY, type: "openai",
+                dialect: env.OLLAMA_CLOUD_DIALECT || "" },
   };
   if (P[id]) return Object.assign({ id: id }, P[id]);
 
@@ -486,6 +506,8 @@ module.exports = {
   chatStream,
   listModels,
   supports,
+  capabilities,
+  capabilitiesFor,
   normalizeMessages,
   setDatabase,
   resolveConfig,
