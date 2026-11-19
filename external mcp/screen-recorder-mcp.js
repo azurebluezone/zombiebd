@@ -15,10 +15,11 @@
 const { exec, spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
-const os = require("os");
+const { resolveRuntimePaths } = require("../lib/env");
 
 const PORT = parseInt(process.env.SCREEN_MCP_PORT || "3101", 10);
-const RECORDINGS_DIR = process.env.SCREEN_RECORDINGS_DIR || path.join(os.homedir(), "zombie-recordings");
+// Default recordings live under APP_ROOT/data/recordings, not a home literal.
+const RECORDINGS_DIR = resolveRuntimePaths(process.env).screenDir;
 if (!fs.existsSync(RECORDINGS_DIR)) fs.mkdirSync(RECORDINGS_DIR, { recursive: true });
 
 let activeRecordings = new Map(); // id → { process, outputPath, startedAt }

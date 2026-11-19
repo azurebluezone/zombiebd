@@ -115,7 +115,14 @@ const { chooseUsableModel } = require("./lib/model-choice.js");
 const { loadAgentFiles, getAgentById, listAgentIds, resolveAgentModel } = require("./agent");
 const systemInfo = require("./lib/system-info.js");
 const { classifyDbError } = require("./lib/db-guard.js");
-const { loadProcessEnv, SERVICE_PORTS, DEFAULTS } = require("./lib/env.js");
+const {
+  loadProcessEnv,
+  SERVICE_PORTS,
+  DEFAULTS,
+  resolveRuntimePaths,
+  userHomeDir,
+  expandHome: expandHomePath,
+} = require("./lib/env.js");
 const {
   resolveProviderTimeouts,
   resolveBridgeTimeouts,
@@ -247,8 +254,12 @@ const MAX_BODY_SIZE = parseInt(
 const INSTANCE_ID = process.env.INSTANCE_ID || crypto.randomUUID();
 const OPENCODE_BASE = process.env.OPENCODE_BASE || "https://opencode.ai/zen/v1";
 const MAX_DEBATE_ROUNDS = parseInt(process.env.MAX_DEBATE_ROUNDS || "0", 10);
-const LOG_DIR = path.resolve(PROJECT_ROOT, process.env.LOG_DIR || "./logs");
-const DATA_DIR = path.resolve(PROJECT_ROOT, process.env.DATA_DIR || "./data");
+// ─── Runtime paths (lib/env.js — the only resolver) ─────────
+// DATA_DIR/LOG_DIR/CACHE_DIR/dbPath come from one place, anchored at
+// APP_ROOT; a shell cwd outside the project can no longer change them.
+const RUNTIME_PATHS = resolveRuntimePaths(process.env);
+const LOG_DIR = RUNTIME_PATHS.logDir;
+const DATA_DIR = RUNTIME_PATHS.dataDir;
 const PERSONAS_FILE = path.resolve(
   PROJECT_ROOT,
   process.env.PERSONAS_FILE || "./PERSONAS.md",
@@ -366,7 +377,7 @@ let grpcServer = null; // HTTP/2 + protobuf transport
 
 // ─── Cache & Git Config ─────────────────────────────────────
 // Cross-session user cache for accuracy & performance
-const CACHE_DIR = path.resolve(PROJECT_ROOT, process.env.CACHE_DIR || "./cache");
+const CACHE_DIR = RUNTIME_PATHS.cacheDir;
 const CACHE_TTL = parseInt(process.env.CACHE_TTL || "86400000", 10); // 24h default
 const CACHE_MAX_ENTRIES = parseInt(process.env.CACHE_MAX_ENTRIES || "1000", 10);
 
@@ -471,11 +482,10 @@ function getOSRootDir() {
   return "/";
 }
 const _OS_ROOT_DIR = getOSRootDir();
-const _HOME_DIR = os.homedir();
 const _HOSTNAME = os.hostname();
 
 // .missionbarisal/ folder at project root (runtime config directory)
-const _MISSION_BARISAL_DIR = path.join(process.cwd(), ".missionbarisal");
+const _MISSION_BARISAL_DIR = path.join(RUNTIME_PATHS.appRoot, ".missionbarisal");
 
 // ─── Auto-Setup: ensure directory exists ──────────────────────
 function ensureDir(dirPath) {
@@ -1171,10 +1181,24 @@ loadCustomProviders();
 let MODELS_DB = null;
 // DB path priority: env DB_SQLITE_PATH → DATA_DIR/models.db (fallback).
 // A missing file is fatal unless DB_BOOTSTRAP=1 explicitly asks for creation.
-const MODELS_DB_PATH = path.resolve(
-  PROJECT_ROOT,
-  process.env.DB_SQLITE_PATH || path.join(DATA_DIR, "models.db"),
-);
+// Every project-owned path is resolved once so the boot log and the real
+// file handles can never disagree. Relative values are already anchored at
+// APP_ROOT by lib/env.js, never at the shell's cwd.
+const MODELS_DB_PATH = RUNTIME_PATHS.dbPath;
+
+for (const [name, value] of Object.entries({
+  APP_ROOT: RUNTIME_PATHS.appRoot,
+  DATA_DIR: RUNTIME_PATHS.dataDir,
+  LOG_DIR: RUNTIME_PATHS.logDir,
+  CACHE_DIR: RUNTIME_PATHS.cacheDir,
+  TMP_DIR: RUNTIME_PATHS.tmpDir,
+  DB_SQLITE_PATH: RUNTIME_PATHS.dbPath,
+  TTS_OUTPUT_DIR: RUNTIME_PATHS.ttsOutputDir,
+  SCREEN_RECORDINGS_DIR: RUNTIME_PATHS.screenDir,
+  MCP_OUTPUT_DIR: RUNTIME_PATHS.mcpOutputDir,
+})) {
+  console.log("PATH_RESOLVED name=" + name + " path=" + value);
+}
 
 // Provider API keys are encrypted with a key file that lives beside the DB,
 // never inside it. Configure before the first DB row is read or written.
@@ -10494,13 +10518,9 @@ async function executeRemoteMcpTool(server, tool, args) {
 
 // Clients often send ~/project even though path.isAbsolute("~/x") is false.
 // Expand it before resolving so the agent reaches the same file a shell would.
+// The expansion rule lives in lib/env.js (one resolver).
 function expandHome(value) {
-  const s = String(value || "");
-  if (s === "~") return os.homedir();
-  if (s.startsWith("~/") || s.startsWith("~\\")) {
-    return path.join(os.homedir(), s.slice(2));
-  }
-  return s;
+  return expandHomePath(value);
 }
 
 function isPathSafe(targetPath) {
@@ -10533,7 +10553,7 @@ function isPathSafe(targetPath) {
   }
   // Allow access to any path under the user's home directory.
   // This enables the agent to read/write project files across all workspaces.
-  const homeDir = path.resolve(os.homedir());
+  const homeDir = path.resolve(userHomeDir());
   if (resolved.startsWith(homeDir + path.sep) || resolved === homeDir) {
     return true;
   }

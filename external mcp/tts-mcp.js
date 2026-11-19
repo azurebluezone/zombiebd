@@ -15,11 +15,13 @@
 const { spawn } = require("child_process"); // NOTE: no execSync — all child procs are async (spawnAsync)
 const fs = require("fs");
 const path = require("path");
-const os = require("os");
 const http = require("http");
+const { resolveRuntimePaths } = require("../lib/env");
 
 const PORT = parseInt(process.env.TTS_MCP_PORT || "3102", 10);
-const OUTPUT_DIR = process.env.TTS_OUTPUT_DIR || path.join(os.homedir(), "zombie-tts");
+// Default output lives under APP_ROOT/data/tts, not a home-directory literal.
+// TTS_OUTPUT_DIR still wins, absolute or relative to APP_ROOT.
+const OUTPUT_DIR = resolveRuntimePaths(process.env).ttsOutputDir;
 if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
 
 const DEFAULT_VOICE = process.env.TTS_VOICE || "bn-BD-NabanitaNeural";

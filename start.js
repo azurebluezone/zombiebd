@@ -16,12 +16,22 @@ const http = require("http");
 const net = require("net");
 const { execSync, spawn, spawnSync } = require("child_process");
 const systemInfo = require("./lib/system-info.js");
-const { loadProcessEnv } = require("./lib/env");
+const {
+  loadProcessEnv,
+  resolveRuntimePaths,
+  userHomeDir,
+} = require("./lib/env");
 const { classifyDbError, isBusyError } = require("./lib/db-guard");
 
 const VERSION = "3.2.1"; // keep in sync with api.js /health version
-const CONFIG_DIR = path.join(os.homedir(), ".zombiecoder");
-const CONFIG_PATH = path.join(CONFIG_DIR, "config.json");
+
+// Config location comes from the one path resolver (configDir).
+function configDir() {
+  return resolveRuntimePaths(process.env).configDir;
+}
+function configPath() {
+  return path.join(configDir(), "config.json");
+}
 
 // The root start.js is the ONLY entry point: it rebuilds this directory and
 // then requires api.js from it. ZC_DIST_DIR exists so verification can build
@@ -41,14 +51,12 @@ if (path.basename(__dirname) === "dist") {
 
 // Project-owned state follows the code, never the shell's cwd. DATA_DIR and
 // DB_SQLITE_PATH may be absolute (tests, dist) and then win as usual.
+// lib/env.js is the single resolver both start.js and api.js call.
 function projectDataDir() {
-  return path.resolve(__dirname, process.env.DATA_DIR || "./data");
+  return resolveRuntimePaths(process.env).dataDir;
 }
 function projectDbPath() {
-  return path.resolve(
-    __dirname,
-    process.env.DB_SQLITE_PATH || path.join(projectDataDir(), "models.db"),
-  );
+  return resolveRuntimePaths(process.env).dbPath;
 }
 
 // ─── Build (every start) ─────────────────────────────────────
@@ -168,7 +176,7 @@ function detectEnvironment() {
     isWindows,
     isLinux,
     isMac,
-    homeDir: os.homedir(),
+    homeDir: userHomeDir(),
     tmpDir: os.tmpdir(),
     cpus: os.cpus().length,
     totalMemGB: Math.round(os.totalmem() / 1024 / 1024 / 1024 * 10) / 10,
@@ -176,7 +184,7 @@ function detectEnvironment() {
     username: process.env.USER || process.env.USERNAME || "unknown",
     cwd: process.cwd(),
     dataDir: projectDataDir(),
-    configDir: CONFIG_DIR,
+    configDir: configDir(),
     timestamp: new Date().toISOString(),
   };
   
@@ -482,9 +490,9 @@ function getDefaultConfig() {
     udsPort: Number(process.env.UDS_PORT) || 5150,
     udsPath:
       require("./transport/uds-gateway").collectUdsPaths(process.env, process.cwd())[0] ||
-      path.join(os.tmpdir(), "zombiecoder", "mcp.sock"),
+      path.join(resolveRuntimePaths(process.env).tmpDir, "mcp.sock"),
     workingDir: process.cwd(),
-    homeDir: os.homedir(),
+    homeDir: userHomeDir(),
     createdAt: new Date().toISOString(),
   };
 }
@@ -494,12 +502,12 @@ function getDefaultConfig() {
 // ---------------------------------------------------------------------------
 function configAll() {
   try {
-    fs.mkdirSync(CONFIG_DIR, { recursive: true });
+    fs.mkdirSync(configDir(), { recursive: true });
     const cfg = getDefaultConfig();
-    fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2), "utf8");
+    fs.writeFileSync(configPath(), JSON.stringify(cfg, null, 2), "utf8");
     console.log("");
     console.log("[CONFIG ALL] config.json created at:");
-    console.log("  " + CONFIG_PATH);
+    console.log("  " + configPath());
     console.log("");
     console.log("  serverPort :", cfg.serverPort);
     console.log("  udsPort    :", cfg.udsPort);
@@ -507,7 +515,7 @@ function configAll() {
     console.log("  workingDir :", cfg.workingDir);
     console.log("  homeDir    :", cfg.homeDir);
     console.log("");
-    console.log("This location is OS-default (os.homedir()). The server and the");
+    console.log("This location is the OS-default home directory. The server and the");
     console.log("extension can both read it from any working directory.");
     return 0;
   } catch (err) {
@@ -999,13 +1007,13 @@ async function startAll() {
   
   // 5. Auto-ensure config exists in the OS default directory (idempotent).
   try {
-    if (!fs.existsSync(CONFIG_PATH)) {
-      fs.mkdirSync(CONFIG_DIR, { recursive: true });
-      fs.writeFileSync(CONFIG_PATH, JSON.stringify(getDefaultConfig(), null, 2), "utf8");
-      console.log("[CONFIG] Auto-created:", CONFIG_PATH);
+    if (!fs.existsSync(configPath())) {
+      fs.mkdirSync(configDir(), { recursive: true });
+      fs.writeFileSync(configPath(), JSON.stringify(getDefaultConfig(), null, 2), "utf8");
+      console.log("[CONFIG] Auto-created:", configPath());
     } else {
-      const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
-      console.log("[CONFIG] Loaded:", CONFIG_PATH);
+      const cfg = JSON.parse(fs.readFileSync(configPath(), "utf8"));
+      console.log("[CONFIG] Loaded:", configPath());
       // Env vars take priority over config.json (so PORT/SERVER_PORT in .env win)
       if (cfg.serverPort && !process.env.SERVER_PORT && !process.env.PORT) {
         process.env.PORT = String(cfg.serverPort);

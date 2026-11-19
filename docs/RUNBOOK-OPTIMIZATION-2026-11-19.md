@@ -128,7 +128,7 @@ OPENCODE_ENABLED=false
 
 **Proof:** `node tests/env-loader-check.js` → `ENV_LOADER_OK` (29 checks: one implementation, four delegating callers, no private `.env` reader, read error returned, missing reported, parent-wins/overwrite, malformed warning, `loadEnv` validation). Related gates still pass: `node scripts/check-env.js` → `ENV_OK services=17 unique=yes`, `node tests/modules-foundation-check.js` → `MODULES_FOUNDATION_OK`, `node tests/modules-runtime-check.js` → `MODULES_RUNTIME_OK`.
 
-#### P0-04 — Path resolution দুই জায়গায়, কিছু default home-এ
+#### P0-04 — Path resolution দুই জায়গায়, কিছু default home-এ — ✅ SOLVED (2026-11-20)
 
 - `api.js:244-245` — `LOG_DIR`/`DATA_DIR` default `./logs`, `./data`
 - `start.js:28-35` — `projectDataDir()` + `projectDbPath()` আবার একই logic
@@ -136,6 +136,10 @@ OPENCODE_ENABLED=false
 - `external mcp/screen-recorder-mcp.js:21` — `os.homedir()/zombie-recordings`
 - `cdp-pipe.js:45-46` — `/opt/google/chrome/chrome`, `/tmp/opencode`
 - `tests/agent-transport-e2e.js:23`, `tests/workspace-layout-check.js:44` — `/home/sahon` (test-only)
+
+**Fix (2026-11-20):** `lib/env.js:259` `resolveRuntimePaths()` is the only runtime path resolver: `APP_ROOT` defaults to the tree that owns `lib/` (checkout or its dist twin) and env `APP_ROOT` wins; relative `DATA_DIR`/`LOG_DIR`/`CACHE_DIR`/`TMP_DIR`/`DB_SQLITE_PATH`/`MCP_OUTPUT_DIR`/`TTS_OUTPUT_DIR`/`SCREEN_RECORDINGS_DIR`/`ZOMBIECODER_CONFIG_DIR` resolve against it, absolute values stay absolute. `lib/env.js:309` `assertPathInside()` throws `PATH_ESCAPE` on an escape, `:231` `userHomeDir()` is the only `os.homedir()` call, `:235` `expandHome()` owns `~`, and `loadEnv()` returns the same map as `paths`. `api.js:260` computes `RUNTIME_PATHS` once, takes DATA/LOG/CACHE/DB from it, anchors `.missionbarisal` at APP_ROOT and prints `PATH_RESOLVED name=... path=...` for all nine locations (`api.js:1200`). `start.js:30/56/59/493` delegates config/data/db/tmp; `local-llm-bridge.js:16` uses `userHomeDir()`; `external mcp/tts-mcp.js:24` defaults to `data/tts` and `screen-recorder-mcp.js:22` to `data/recordings`; `lib/secret-store.js:42` takes the DB path from the resolver. Production `os.homedir()` is now zero in the T3 grep list; `cdp-pipe.js:45-46` keeps its tool-local `CHROME_BIN`/`CDP_TMP_DIR` env defaults (browser-tool paths, not runtime state), and the `/home/sahon` hits are test-only.
+
+**Proof:** `node tests/path-resolver-check.js` → `PATH_RESOLVER_OK` (49 checks: exports and callers, no production `os.homedir()`, default and override maps, `~` expansion, `PATH_ESCAPE`, `loadEnv().paths`, MCP defaults). Regression: `node tests/env-loader-check.js` → `ENV_LOADER_OK`, `node tests/bridge-timeout-check.js` → `BRIDGE_TIMEOUT_OK`, `node tests/tool-budget-check.js` → `TOOL_BUDGET_OK`, `node scripts/check-env.js` → `ENV_OK services=17`; `local-tool-cap.test.js` A6 PASS with only the pre-existing A1/D15 failures.
 
 #### P0-05 — Hidden loopback scan + ভাঙা self-reference check
 

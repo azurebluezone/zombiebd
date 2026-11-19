@@ -7,10 +7,13 @@ const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
 const { resolveBridgeTimeouts } = require("./lib/provider-timeout");
+const { userHomeDir } = require("./lib/env");
 const { spawn, execSync } = require("child_process");
 
 // ── Config ────────────────────────────────────────────────────
-const HOME = os.homedir();
+// Model/GGUF roots still live under the user's home by convention. The
+// home lookup itself lives in lib/env.js (one path resolver).
+const HOME = userHomeDir();
 const MODEL_DIR = path.join(HOME, ".local", "share", "models");
 const LLAMA_DIR = path.join(HOME, ".local", "share", "llama.cpp");
 
