@@ -120,9 +120,13 @@ OPENCODE_ENABLED=false
 
 **Proof:** `bash scripts/verify-db-failfast.sh` → `DB_FAILFAST_OK` (missing/corrupt/busy exit 78, bootstrap + re-boot `/health` 200, capability deny). `node scripts/verify-capability-failclosed.js` → `CAPABILITY_FAILCLOSED_OK`.
 
-#### P0-03 — `.env` loader চারটি, error গেলা হয়
+#### P0-03 — `.env` loader চারটি, error গেলা হয় — ✅ SOLVED (2026-11-20)
 
 `api.js:211-237` (`catch (_) {}`), `start.js:57-72` (`catch (_) {}`), `lib/env.js:82`/`:170`, `lib/expand-env.js:15`; `api.js:117` শুধু `SERVICE_PORTS, DEFAULTS` নেয়, loader নেয় না।
+
+**Fix (2026-11-20):** `lib/env.js:153` `loadProcessEnv()` is the only `.env` reader and the only `loadProcessEnv` definition. It returns `{loaded, file, count, vars, warnings, missing?, error?}`: `ENOENT` is a reported `missing` (non-fatal), any other read failure is an `error` string, and malformed lines become warnings instead of vanishing. Parent env wins unless `overwrite:true`; `${VAR}` expansion, quotes and `export` stay supported. `api.js:118`/`:221` requires it and exits `78` on a read error; `start.js:19`/`:138` delegates and no longer has a swallowed `catch`; `lib/expand-env.js:15`/`:26` delegates too. `modules/config.js` no longer contains `parseEnv`/`loadEnvFile` or any `fs`/`path` import.
+
+**Proof:** `node tests/env-loader-check.js` → `ENV_LOADER_OK` (29 checks: one implementation, four delegating callers, no private `.env` reader, read error returned, missing reported, parent-wins/overwrite, malformed warning, `loadEnv` validation). Related gates still pass: `node scripts/check-env.js` → `ENV_OK services=17 unique=yes`, `node tests/modules-foundation-check.js` → `MODULES_FOUNDATION_OK`, `node tests/modules-runtime-check.js` → `MODULES_RUNTIME_OK`.
 
 #### P0-04 — Path resolution দুই জায়গায়, কিছু default home-এ
 

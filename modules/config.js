@@ -1,9 +1,8 @@
 "use strict";
 
-const fs = require("fs");
-const path = require("path");
-
 // One lookup order for every runtime setting: DB, env, then a loud error.
+// The .env file itself is read by lib/env.js (loadProcessEnv); this module
+// only resolves keys that are already in process.env or the database.
 
 const BOOLEAN_TRUE = new Set(["1", "true", "yes", "on"]);
 const BOOLEAN_FALSE = new Set(["0", "false", "no", "off"]);
@@ -137,52 +136,8 @@ function resolveJson(key, opts) {
   }
 }
 
-function parseEnv(text) {
-  const pairs = [];
-  for (const line of String(text || "").split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const eq = trimmed.indexOf("=");
-    if (eq === -1) continue;
-    const key = trimmed.slice(0, eq).trim();
-    let value = trimmed.slice(eq + 1).trim();
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1);
-    }
-    if (key) pairs.push({ key, value });
-  }
-  return pairs;
-}
-
-function loadEnvFile(opts) {
-  const o = opts || {};
-  const env = o.env || process.env;
-  const root = path.resolve(o.root || process.cwd());
-  const file = path.join(root, o.file || ".env");
-  let text;
-  try {
-    text = fs.readFileSync(file, "utf8");
-  } catch (error) {
-    if (error.code === "ENOENT") return { loaded: false, file, count: 0 };
-    return { loaded: false, file, count: 0, error: error.message };
-  }
-  let count = 0;
-  for (const pair of parseEnv(text)) {
-    if (!env[pair.key]) {
-      env[pair.key] = pair.value;
-      count += 1;
-    }
-  }
-  return { loaded: true, file, count };
-}
-
 module.exports = {
   ConfigError,
-  parseEnv,
-  loadEnvFile,
   resolveSetting,
   requireSetting,
   resolveInt,

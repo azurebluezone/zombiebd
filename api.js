@@ -115,8 +115,7 @@ const { chooseUsableModel } = require("./lib/model-choice.js");
 const { loadAgentFiles, getAgentById, listAgentIds, resolveAgentModel } = require("./agent");
 const systemInfo = require("./lib/system-info.js");
 const { classifyDbError } = require("./lib/db-guard.js");
-const { SERVICE_PORTS, DEFAULTS } = require("./lib/env.js");
-const configModule = require("./modules/config.js");
+const { loadProcessEnv, SERVICE_PORTS, DEFAULTS } = require("./lib/env.js");
 const goalsModule = require("./modules/goals.js");
 const verifyModule = require("./modules/verify.js");
 const compilerModule = require("./modules/compiler.js");
@@ -218,12 +217,19 @@ const {
 // when a user launches it from /tmp or any other working directory.
 const PROJECT_ROOT = __dirname;
 
-// ─── .env Loader (modules/config.js) ─────────────────────────
-const _envLoad = configModule.loadEnvFile({ root: PROJECT_ROOT });
+// ─── .env Loader (lib/env.js — the only loader) ─────────────
+const _envLoad = loadProcessEnv({ root: PROJECT_ROOT });
 if (_envLoad.error) {
-  console.log("[ENV] Load failed:", _envLoad.file, _envLoad.error);
-} else if (_envLoad.loaded) {
-  console.log("[ENV] Loaded:", _envLoad.file);
+  console.error("[ENV] FATAL", _envLoad.file, _envLoad.error);
+  process.exit(78);
+}
+for (const warning of _envLoad.warnings || []) {
+  console.warn("[ENV] WARN", _envLoad.file, warning);
+}
+if (_envLoad.loaded) {
+  console.log("[ENV] Loaded:", _envLoad.file, "(" + _envLoad.count + " vars)");
+} else {
+  console.warn("[ENV] .env not found:", _envLoad.file || "(disabled)");
 }
 
 // ─── Config ──────────────────────────────────────────────────

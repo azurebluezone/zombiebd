@@ -16,7 +16,7 @@ const http = require("http");
 const net = require("net");
 const { execSync, spawn, spawnSync } = require("child_process");
 const systemInfo = require("./lib/system-info.js");
-const { readEnvFile } = require("./lib/env");
+const { loadProcessEnv } = require("./lib/env");
 const { classifyDbError, isBusyError } = require("./lib/db-guard");
 
 const VERSION = "3.2.1"; // keep in sync with api.js /health version
@@ -130,27 +130,24 @@ const STARTUP_TIMEOUT_MS = 30000;
 const HEALTH_CHECK_DELAY_MS = 2000;
 
 // ---------------------------------------------------------------------------
-// Environment loader (unchanged behavior, kept dependency-free)
+// Environment loader (delegates to lib/env.js — the only .env reader)
 // ---------------------------------------------------------------------------
 function loadEnv() {
-  try {
-    // Anchor to the project, not the shell's cwd. `node /path/to/start.js`
-    // from /tmp must still load the project's .env and data directory.
-    const envPath = path.join(__dirname, ".env");
-    const fileVars = readEnvFile(envPath);
-    const keys = Object.keys(fileVars);
-    if (!keys.length) return;
-
-    let loaded = 0;
-    for (const key of keys) {
-      // Explicit shell env always wins over the file.
-      if (!process.env[key]) {
-        process.env[key] = fileVars[key];
-        loaded++;
-      }
-    }
-    console.log("[ENV] Loaded:", envPath, "(" + loaded + " vars)");
-  } catch (_) { }
+  // Anchor to the project, not the shell's cwd. `node /path/to/start.js`
+  // from /tmp must still load the project's .env and data directory.
+  const result = loadProcessEnv({ root: __dirname });
+  if (result.error) {
+    console.error("[ENV] FATAL " + result.file + ": " + result.error);
+    process.exit(78);
+  }
+  for (const warning of result.warnings || []) {
+    console.warn("[ENV] WARN " + result.file + " " + warning);
+  }
+  if (!result.loaded) {
+    console.warn("[ENV] .env not found: " + result.file);
+    return;
+  }
+  console.log("[ENV] Loaded:", result.file, "(" + result.count + " vars)");
 }
 
 // ---------------------------------------------------------------------------
