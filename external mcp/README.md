@@ -16,7 +16,7 @@
 ```json
 {
   "name": "my-service",
-  "url": "https://example.com/mcp",
+  "url": "https://localhost/mcp",
   "transport": "http",
   "enabled": true,
   "autoConnect": true,
@@ -36,10 +36,10 @@
 `EXTERNAL_MCP_URLS` env var দিয়েও load করা যায় (কমা দিয়ে আলাদা):
 
 ```bash
-EXTERNAL_MCP_URLS="https://b.zombiecoder.my.id/mcp,http://localhost:9100/mcp"
+EXTERNAL_MCP_URLS="https://localhost/mcp"
 ```
 
-server name auto-generate হয় hostname থেকে (`b-zombiecoder-my-id`).
+server name auto-generate হয় hostname থেকে (`localhost`).
 
 ## কীভাবে চেক করবেন
 

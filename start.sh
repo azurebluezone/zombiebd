@@ -26,7 +26,7 @@ info "✓ Node $NODE_VER"
 
 # Ollama (ঐচ্ছিক — লোকাল মডেলের জন্য)। না থাকলে শুধু ক্লাউড provider-রা চলে।
 OLLAMA_BASE_VAL="$(grep -E '^OLLAMA_BASE=' .env 2>/dev/null | cut -d= -f2- | tr -d '"' || true)"
-OLLAMA_BASE_VAL="${OLLAMA_BASE_VAL:-http://127.0.0.1:11434/v1}"
+OLLAMA_BASE_VAL="${OLLAMA_BASE_VAL:-http://localhost:11434/v1}"
 if command -v ollama >/dev/null 2>&1; then
   if ! curl -sf "${OLLAMA_BASE_VAL%/v1}/v1/models" >/dev/null 2>&1; then
     warn "ollama ইনস্টল আছে কিন্তু চলছে না → লোকাল মডেল আসবে না।"

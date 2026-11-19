@@ -2,7 +2,7 @@
 /**
  * circuit.js — circuit breaker for upstream (main server) calls
  * ═══════════════════════════════════════════════════════════════════════
- * WHY: main-sync polls http://127.0.0.1:5050/mcp. When the main server is
+ * WHY: main-sync polls http://localhost:5050/mcp. When the main server is
  * down (crash, port fight, reboot window), naive retry loops hammer a dead
  * endpoint and every tools/list stalls for CALL_TIMEOUT_MS.
  *
@@ -37,7 +37,7 @@ class CircuitOpenError extends Error {
       `circuit "${name}" is open — upstream failing; ` +
         `not retrying for ${COOLDOWN_MS}ms. ` +
         `last: ${lastError || "n/a"}. ` +
-        `Troubleshoot: curl -s -X POST http://127.0.0.1:5050/mcp …tools/list`,
+        `Troubleshoot: curl -s -X POST http://localhost:5050/mcp …tools/list`,
     );
     this.name = "CircuitOpenError";
     this.code = "CIRCUIT_OPEN";

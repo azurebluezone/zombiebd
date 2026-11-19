@@ -33,8 +33,8 @@ const ENV = loadEnv({ root: ROOT });
 const API_PORT = ENV.ports.api || 5050;
 const BRIDGE_PORT = ENV.ports.bridge || 11435;
 const MAIN_HOST = ENV.derived.mainHost || "";
-const API = process.env.ZOMBIE_API_URL || "http://127.0.0.1:" + API_PORT;
-const OLLAMA = process.env.BRIDGE_OLLAMA_URL || "http://127.0.0.1:11434";
+const API = process.env.ZOMBIE_API_URL || "http://localhost:" + API_PORT;
+const OLLAMA = process.env.BRIDGE_OLLAMA_URL || "http://localhost:11434";
 const ORIGIN = "https://audit.local";
 const IDENTITY_AGENT = "readiness-audit";
 const LOG_DIR = path.resolve(ROOT, ENV.values.LOG_DIR || "logs");
@@ -113,7 +113,7 @@ function httpsRequest(pathname, hostHeader) {
   return new Promise((resolve) => {
     const req = https.request(
       {
-        hostname: "127.0.0.1",
+        hostname: "localhost",
         port: 443,
         path: pathname,
         method: "GET",
@@ -254,7 +254,7 @@ function freePort() {
   return new Promise((resolve, reject) => {
     const server = net.createServer();
     server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
+    server.listen(0, "localhost", () => {
       const port = server.address().port;
       server.close(() => resolve(port));
     });
@@ -319,7 +319,7 @@ async function bridgeAutoSelect() {
   try {
     let health = null;
     for (let i = 0; i < 60; i++) {
-      const res = await request("http://127.0.0.1:" + port + "/health", { timeoutMs: 1200 });
+      const res = await request("http://localhost:" + port + "/health", { timeoutMs: 1200 });
       if (res.status === 200 && res.json) {
         health = res.json;
         break;
@@ -594,7 +594,7 @@ async function edgeReady() {
   if (caddyActive) {
     if (!MAIN_HOST) throw new Error("MAIN_HOST is required for the live edge check");
     for (let i = 0; i < 20; i++) {
-      const httpRes = await request("http://127.0.0.1/health", {
+      const httpRes = await request("http://localhost/health", {
         timeoutMs: 2500,
         headers: { Host: MAIN_HOST },
       });

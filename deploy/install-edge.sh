@@ -184,8 +184,8 @@ HTTPS_CODE=""
 HTTPS_BODY=""
 HEALTH_FILE="$EDGE_TMP/edge-health.$$.json"
 for _ in $(seq 1 40); do
-  HTTP_CODE="$(curl -sS -o /dev/null -w '%{http_code}' -m 5 -H "Host: $MAIN_HOST" http://127.0.0.1/health 2>/dev/null || true)"
-  HTTPS_CODE="$(curl -k -sS -o "$HEALTH_FILE" -w '%{http_code}' -m 5 --resolve "$MAIN_HOST:443:127.0.0.1" "https://$MAIN_HOST/health" 2>/dev/null || true)"
+  HTTP_CODE="$(curl -sS -o /dev/null -w '%{http_code}' -m 5 -H "Host: $MAIN_HOST" http://localhost/health 2>/dev/null || true)"
+  HTTPS_CODE="$(curl -k -sS -o "$HEALTH_FILE" -w '%{http_code}' -m 5 --resolve "$MAIN_HOST:443:localhost" "https://$MAIN_HOST/health" 2>/dev/null || true)"
   HTTPS_BODY="$(cat "$HEALTH_FILE" 2>/dev/null || true)"
   [ "$HTTPS_CODE" = "200" ] && break
   sleep 0.5

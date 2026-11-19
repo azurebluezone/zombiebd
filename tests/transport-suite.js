@@ -70,7 +70,7 @@ function close(server) {
 
 async function freePort() {
   const server = net.createServer();
-  const port = await listen(server, 0, "127.0.0.1");
+  const port = await listen(server, 0, "localhost");
   await close(server);
   return port;
 }
@@ -104,7 +104,7 @@ function requestText(opts) {
     const lib = opts.protocol === "https" ? https : http;
     const req = lib.request(
       {
-        hostname: opts.host || "127.0.0.1",
+        hostname: opts.host || "localhost",
         port: opts.port,
         socketPath: opts.socketPath,
         path: opts.path,
@@ -379,7 +379,7 @@ function grpcCall(port, request, timeoutMs) {
     "protobuf",
   ));
   return new Promise((resolve, reject) => {
-    const client = http2.connect("http://127.0.0.1:" + port);
+    const client = http2.connect("http://localhost:" + port);
     const timer = setTimeout(() => {
       client.destroy();
       reject(new Error("grpc timeout"));
@@ -473,7 +473,7 @@ function waitHealth(port, child, output) {
 function spawnServer(ports) {
   const env = Object.assign({}, process.env, readDotEnv(), {
     PORT: String(ports.api),
-    BIND_HOST: "127.0.0.1",
+    BIND_HOST: "localhost",
     UDS_PORT: String(ports.mcp),
     UDS: path.join(TMP, "mcp.sock"),
     UDS_OPENAI: "1",
@@ -546,7 +546,7 @@ async function main() {
         "-keyout", path.join(TMP, "key.pem"),
         "-out", path.join(TMP, "cert.pem"),
         "-days", "1", "-subj", "/CN=localhost",
-        "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1",
+        "-addext", "subjectAltName=DNS:localhost,IP:localhost",
       ],
       { stdio: "pipe" },
     );

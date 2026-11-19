@@ -8,8 +8,8 @@
  * paths, then proves:
  *   1. .env, data, logs and models.db still come from the project root.
  *   2. The agents table is seeded with all 9 agent/*.js agents.
- *   3. get_working_dir returns the launch directory (/tmp), so agents can
- *      work wherever the user started them.
+ *   3. get_working_dir returns the checkout, not the launch directory (/tmp):
+ *      a bare start must never adopt whatever folder the process began in.
  *   4. After deleting every agents row, a restart restores all 9 rows and
  *      logs AGENTS_REPAIRED.
  *
@@ -40,7 +40,7 @@ function freePort() {
   return new Promise((resolve, reject) => {
     const server = net.createServer();
     server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
+    server.listen(0, "localhost", () => {
       const port = server.address().port;
       server.close(() => resolve(port));
     });
@@ -52,7 +52,7 @@ function httpJson(port, pathname, method, body) {
     const payload = body === undefined ? null : JSON.stringify(body);
     const req = http.request(
       {
-        hostname: "127.0.0.1",
+        hostname: "localhost",
         port,
         path: pathname,
         method: method || "GET",
@@ -259,8 +259,11 @@ async function main() {
     wd.ok && wd.json && wd.json.result && wd.json.result.content
       ? wd.json.result.content.map((c) => c.text).join("")
       : "";
-  wdText === "/tmp"
-    ? pass("agent-working-dir", "get_working_dir=/tmp")
+  // The launch directory does not silently become the project. A bare start
+  // must resolve the checkout that owns the build; only an explicit
+  // set_working_dir / MCP roots may retarget the agent.
+  wdText === ROOT
+    ? pass("agent-working-dir", "get_working_dir=" + ROOT)
     : fail("agent-working-dir", "got=" + JSON.stringify(wdText || wd.error));
 
   await stopInstance(first);

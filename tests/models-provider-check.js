@@ -30,7 +30,7 @@ const { readEnvFile } = require("../lib/env.js");
 const ROOT = path.resolve(__dirname, "..");
 const ENV = Object.assign({}, readEnvFile(path.join(ROOT, ".env")), process.env);
 const PORT = Number(ENV.PORT || 5050);
-const API = process.env.ZOMBIE_API_URL || "http://127.0.0.1:" + PORT;
+const API = process.env.ZOMBIE_API_URL || "http://localhost:" + PORT;
 const ADMIN_TOKEN =
   ENV.ADMIN_TOKEN || ENV.ADMIN_API_KEY || ENV.MCP_ADMIN_TOKEN || "";
 const DB_PATH = path.resolve(ROOT, ENV.DB_SQLITE_PATH || "data/models.db");
@@ -151,7 +151,7 @@ function startKeyAuthority() {
       res.writeHead(404, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: { message: "not found" } }));
     });
-    server.listen(0, "127.0.0.1", () => resolve(server));
+    server.listen(0, "localhost", () => resolve(server));
   });
 }
 
@@ -224,7 +224,7 @@ async function main() {
   // ─── 4. Invalid key rejected before write ──────────────────────────
   const authority = await startKeyAuthority();
   const authorityPort = authority.address().port;
-  const authorityBase = "http://127.0.0.1:" + authorityPort + "/v1";
+  const authorityBase = "http://localhost:" + authorityPort + "/v1";
   let db = openDb();
   try {
     const before = db
@@ -338,7 +338,7 @@ async function main() {
       id: "tests-hidden",
       name: "Hidden Gate",
       type: "openai",
-      baseUrl: "http://127.0.0.1:9/v1",
+      baseUrl: "http://localhost:9/v1",
       models: "hidden-model",
       enabled: false,
     });

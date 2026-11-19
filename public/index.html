@@ -425,7 +425,7 @@ select.setting-input { cursor: pointer; }
 
 const SERVER_OS = navigator.platform; // 'Win32', 'Linux x86_64', etc.
 const defaults = {
-  serverUrl: 'http://127.0.0.1:5050',
+  serverUrl: 'http://localhost:5050',
   udsPath: '/tmp/zombiecoder/mcp.sock',
   theme: 'dark',
   lang: 'bn',
@@ -616,6 +616,7 @@ async function callAgent(chat, msg) {
 
 function createChatBody(msg, agentId, stream) {
   return {
+    channel: 'web-chat',
     model: agentId || 'code-guru',
     messages: [{ role: 'user', content: msg }],
     temperature: parseFloat(config.temperature),
@@ -626,6 +627,7 @@ function createChatBody(msg, agentId, stream) {
 
 function createMissionBody(msg, agents, stream) {
   return {
+    channel: 'web-chat',
     input: msg,
     agents: agents || [],
     mode: agents && agents.length > 0 ? 'single' : 'mission',

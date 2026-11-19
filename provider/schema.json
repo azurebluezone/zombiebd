@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://mission-barisal.local/provider/schema.json",
+  "$id": "https://localhost/provider/schema.json",
   "title": "Mission Barisal — normalized provider contract",
   "description": "The ONE shape the API server consumes. provider/* speaks each official dialect (openai/groq/ollama/gemini/opencode) on the wire; normalizer/ converts every response into these definitions; api.js never sees a provider-native payload.",
   "$defs": {

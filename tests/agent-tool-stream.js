@@ -9,9 +9,9 @@
 //      client executes it, replays role:"tool", and gets a second-round answer
 //   4. one compact report at the end
 //
-// Run: node tests/agent-tool-stream.js   (gateway http://127.0.0.1:5050)
+// Run: node tests/agent-tool-stream.js   (gateway http://localhost:5050)
 // ─────────────────────────────────────────────────────────────────────
-const BASE = process.env.BASE_URL || ("http://127.0.0.1:" + (process.env.PORT || "5050"));
+const BASE = process.env.BASE_URL || ("http://localhost:" + (process.env.PORT || "5050"));
 const fs = require("fs");
 const path = require("path");
 

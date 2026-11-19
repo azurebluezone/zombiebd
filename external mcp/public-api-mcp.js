@@ -960,8 +960,8 @@ const server = http.createServer(async (req, res) => {
 
 // Loopback-only bind: unauthenticated local tool backend — main server talks
 // to it on the same machine, so it must never be exposed on the network.
-server.listen(PORT, "127.0.0.1", () => {
-  console.log(`[Public API MCP v2.0] http://127.0.0.1:${PORT}/mcp`);
+server.listen(PORT, "localhost", () => {
+  console.log(`[Public API MCP v2.0] http://localhost:${PORT}/mcp`);
   console.log(`[Tools] ${TOOLS.length} registered`);
   console.log(`[APIs] StackOverflow, Weather, Wikipedia, Countries, Currency, Crypto, IP, QR`);
 });

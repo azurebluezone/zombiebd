@@ -39,18 +39,18 @@ mkdir -p "$SCRATCH"
 BUILD_OUT="$SCRATCH/build" node scripts/build.js >/dev/null && echo "build=ok"
 
 # server start verify
-APP_ROOT="$SCRATCH/run" DATA_DIR="$SCRATCH/run/data" LOG_DIR="$SCRATCH/run/logs" LOCK_DIR="$SCRATCH/run/locks" CACHE_DIR="$SCRATCH/run/cache" DB_SQLITE_PATH="$SCRATCH/run/models.db" UDS_PATH="$SCRATCH/run/mcp.sock" OPENAI_UDS_PATH="$SCRATCH/run/openai.sock" PORT="$VERIFY_PORT" GRPC_PORT="$((VERIFY_PORT + 1))" HTTPS_PORT="$((VERIFY_PORT + 2))" BIND_HOST=127.0.0.1 timeout 40 node api.js > "$SCRATCH/server.log" 2>&1 &
+APP_ROOT="$SCRATCH/run" DATA_DIR="$SCRATCH/run/data" LOG_DIR="$SCRATCH/run/logs" LOCK_DIR="$SCRATCH/run/locks" CACHE_DIR="$SCRATCH/run/cache" DB_SQLITE_PATH="$SCRATCH/run/models.db" UDS_PATH="$SCRATCH/run/mcp.sock" OPENAI_UDS_PATH="$SCRATCH/run/openai.sock" PORT="$VERIFY_PORT" GRPC_PORT="$((VERIFY_PORT + 1))" HTTPS_PORT="$((VERIFY_PORT + 2))" BIND_HOST=localhost timeout 40 node api.js > "$SCRATCH/server.log" 2>&1 &
 PID=$!
 for i in $(seq 1 80); do
-  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 1 http://127.0.0.1:"$VERIFY_PORT"/status 2>/dev/null || true)
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 1 http://localhost:"$VERIFY_PORT"/status 2>/dev/null || true)
   [ "$code" = "200" ] && break
   sleep 0.5
 done
-curl -s http://127.0.0.1:"$VERIFY_PORT"/status | grep -q '"agents"' && echo "server=ok"
+curl -s http://localhost:"$VERIFY_PORT"/status | grep -q '"agents"' && echo "server=ok"
 # agents
-curl -s http://127.0.0.1:"$VERIFY_PORT"/api/agents 2>/dev/null | grep -q '"id"' && echo "agents=ok" || echo "agents=ok(check)"
+curl -s http://localhost:"$VERIFY_PORT"/api/agents 2>/dev/null | grep -q '"id"' && echo "agents=ok" || echo "agents=ok(check)"
 # tools
-curl -s http://127.0.0.1:"$VERIFY_PORT"/api/tools 2>/dev/null | grep -q '\[' && echo "tools=ok" || echo "tools=ok(check)"
+curl -s http://localhost:"$VERIFY_PORT"/api/tools 2>/dev/null | grep -q '\[' && echo "tools=ok" || echo "tools=ok(check)"
 kill $PID 2>/dev/null || true
 wait $PID 2>/dev/null || true
 

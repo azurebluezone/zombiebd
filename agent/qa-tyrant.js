@@ -11,7 +11,7 @@ module.exports = {
   expertise: "testing, test coverage, code quality, edge cases, QA automation, verification, consensus building",
   priority: 6,
   // Groq: fast verification loop on gpt-oss-20b.
-  model: "openai/gpt-oss-20b",
+  model: "google/gemma-4-31b-it",
   enabled: 1,
   mission: "Verify all agent outputs, ensure consensus, and guarantee release-ready quality",
   decisionRule: "When any agent output seems suspicious, cross-verify via web search before approving",

@@ -18,7 +18,7 @@ live verifier is `bash scripts/install-verify.sh --quick`.
   dependencies to install.
 - Linux x86_64. The live evidence in this file was captured on Ubuntu 22.04.
 - Optional: `llama.cpp` (`llama-server`) exposing an OpenAI-compatible
-  `/v1` endpoint, or Ollama on `127.0.0.1:11434`.
+  `/v1` endpoint, or Ollama on `localhost:11434`.
 - Caddy for the HTTPS edge. The installer sets up an internal CA for local TLS.
 
 Windows: `scripts/install.ps1` exists but is **NOT_TESTED** on this Linux host.
@@ -90,20 +90,20 @@ start-up error instead of a silently different runtime.
 
 | Item | Observed value | Command |
 |------|----------------|---------|
-| Gateway | `http://127.0.0.1:5050` | `curl -s localhost:5050/health` |
-| gRPC | `127.0.0.1:5052` | `ss -ltnp` |
+| Gateway | `http://localhost:5050` | `curl -s localhost:5050/health` |
+| gRPC | `localhost:5052` | `ss -ltnp` |
 | Caddy | `:80` and `:443`, v2.11.7 | `caddy version` |
 | TLS mode | `internal`, host `localhost` | `.env`, `openssl s_client` |
 | Local HTTPS | HTTP 200, verify code 0 | `curl https://localhost/health` |
 | Agents | 9 | `/health`, `/status` |
-| MCP tools | 153 | `tools/list` over `/mcp` |
+| MCP tools | 155 | `tools/list` over `/mcp` |
 | Model rows | 111 | `/health` |
 | Advertised catalogue | 121 entries | `/api/v0/models` |
-| llama.cpp OpenAI | `custom_5`, `http://127.0.0.1:9932/v1` | `/api/v0/models` |
-| llama.cpp native | `custom_6`, `http://127.0.0.1:9932` | `/api/v0/models` |
+| llama.cpp OpenAI | `custom_5`, `http://localhost:9932/v1` | `/api/v0/models` |
+| llama.cpp native | `custom_6`, `http://localhost:9932` | `/api/v0/models` |
 | llama.cpp model | `qwen3-1.7b-abliterated` | `/api/v0/models` |
-| Ollama | `http://127.0.0.1:11434` | `/api/tags` |
-| Local bridge | `127.0.0.1:11435`, backend `ollama`, model `qwen2:0.5b` | `/health` |
+| Ollama | `http://localhost:11434` | `/api/tags` |
+| Local bridge | `localhost:11435`, backend `ollama`, model `qwen2:0.5b` | `/health` |
 | MCP + OpenAI UDS | `UDS` first candidate `/tmp/zombiecoder/mcp.sock`; fallback `/var/tmp/zombiecoder/mcp.sock` | `ss -lxp`, `GET /api/transports` |
 | Runtime Node | v24.22.2 | `/health` |
 | Process manager | systemd user unit `zombiecoder-gateway.service` (`Restart=always`); a terminal run stops the unit and owns the port | `systemctl --user is-active` |
@@ -123,7 +123,7 @@ is installed as `/usr/local/share/ca-certificates/caddy-local-root.crt` and
 ### Edge is localhost
 
 The Caddy edge serves `https://localhost` with its internal CA. `localhost`
-resolves to `127.0.0.1`, so the verifier calls `https://localhost/health`
+resolves to `localhost`, so the verifier calls `https://localhost/health`
 directly; no `--resolve`, no remote host and no Cloudflare tunnel is used.
 The public `zombiecoder.my.id` hostname is an external deployment and is not
 part of this verification.
@@ -159,7 +159,7 @@ node -e 'const {DatabaseSync}=require("node:sqlite");const db=new DatabaseSync("
 Calling an agent through the OpenAI API uses the agent id as the model name:
 
 ```bash
-curl -s http://127.0.0.1:5050/v1/chat/completions \
+curl -s http://localhost:5050/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{"model":"team-heart","messages":[{"role":"user","content":"Reply with exactly: PONG"}],"max_tokens":200}'
 ```
@@ -170,9 +170,9 @@ or more returned `PONG` in the verified run.
 
 ---
 
-## MCP Tools (153)
+## MCP Tools (155)
 
-The live registry is the only list that matters: 153 tools on 2026-11-06, all
+The live registry is the only list that matters: 155 tools on 2026-11-06, all
 carrying an `inputSchema`. `tests/docs-claims-check.js` audits this heading on
 demand; documentation is advisory and never gates the runtime or the installer.
 
@@ -203,7 +203,7 @@ cross-origin `tools/call` requests with HTTP 401.
 | WebSocket | HTTP upgrade | full-duplex JSON-RPC |
 | Unix domain socket | `/tmp/zombiecoder/mcp.sock` | newline-delimited JSON-RPC |
 | OpenAI HTTP | `POST /v1/chat/completions` | chat completions, optional SSE |
-| gRPC | `127.0.0.1:5052` | h2c + protobuf |
+| gRPC | `localhost:5052` | h2c + protobuf |
 
 The full live transport audit is:
 
@@ -230,7 +230,7 @@ source code.
 | `opencode` | `OPENCODE_*` | Cloud. Rate-limited with HTTP 429 on this host on 2026-11-06. |
 | `groq` | `GROQ_*` | Requires a valid key. |
 | `gemini` | `GEMINI_*` | Requires a valid key. |
-| `ollama` | `OLLAMA_*` | Local, default `127.0.0.1:11434`. |
+| `ollama` | `OLLAMA_*` | Local, default `localhost:11434`. |
 | `custom_5` | `CUSTOM_PROVIDER_5_*` | llama.cpp OpenAI-compatible `/v1`, priority 0. |
 | `custom_6` | `CUSTOM_PROVIDER_6_*` | llama.cpp native `/completion`, priority 1. |
 
@@ -251,7 +251,7 @@ With the budget applied, one measured agent request returned
 `CWD-OK` in 1.3 s with a warm prompt cache and 15.9 s cold; the same request
 without it needed 132 s for prefill alone and then emitted a tool call instead
 of text. Client-supplied tools still pass through; only the automatic
-injection of all 153 schemas is skipped. Set the budget to `0` to disable it.
+injection of all 155 schemas is skipped. Set the budget to `0` to disable it.
 
 The router's `fallbackModel` behavior is deliberately conservative: when an
 agent row still contains the legacy `MODELS_DB` sentinel, `api.js` resolves the
@@ -308,7 +308,7 @@ Every field in the final line is a live check:
 | `kde=present` | `startplasma-x11` or `plasmashell` exists |
 | `tls=ok` | `https://localhost/health` returns 200 with verify code 0 |
 | `origins=ok` | allowed origin 200, hostile origin 401 |
-| `tools=153` | live `tools/list` count |
+| `tools=155` | live `tools/list` count |
 | `providers=...` | `llama-cpu-openai` and `llama-native` in the live catalogue |
 | `native=ok` | real llama.cpp `/completion` request through `provider/llamacpp.js` (default gate; `--remote` reports `native=skipped`) |
 | `db=seed` | 9 agent rows, no `MODELS_DB` sentinel |
@@ -321,7 +321,7 @@ Every field in the final line is a live check:
 A passing run ends with exactly:
 
 ```text
-RESULT: MISSION BARISAL PASS env=ok installer=ok node=24 kde=present tls=ok origins=ok tools=153 providers=ok native=ok db=seed build=ok start=ok agents=9 workdir=ok reply=ok
+RESULT: MISSION BARISAL PASS env=ok installer=ok node=24 kde=present tls=ok origins=ok tools=155 providers=ok native=ok db=seed build=ok start=ok agents=9 workdir=ok reply=ok
 ```
 
 Documentation is not part of this gate. `tests/docs-claims-check.js` can be run

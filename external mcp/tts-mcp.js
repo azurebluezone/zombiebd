@@ -363,8 +363,8 @@ const server = http.createServer(async (req, res) => {
   res.end(JSON.stringify(reply));
 });
 
-server.listen(PORT, "127.0.0.1", () => {
-  console.log(`[TTS-MCP] Running on http://127.0.0.1:${PORT}`);
+server.listen(PORT, "localhost", () => {
+  console.log(`[TTS-MCP] Running on http://localhost:${PORT}`);
   console.log(`[TTS-MCP] Tools: ${TOOLS.map(t => t.name).join(", ")}`);
   console.log(`[TTS-MCP] Default voice: ${DEFAULT_VOICE}`);
   console.log(`[TTS-MCP] Output dir: ${OUTPUT_DIR}`);

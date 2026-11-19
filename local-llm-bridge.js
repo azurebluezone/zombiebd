@@ -100,7 +100,11 @@ function findLlamaServer() {
 
 // Local servers the user may already be running. Probing is cheap and
 // bounded; a missing server is a non-event, not a boot failure.
-const DEFAULT_PROBE_PORTS = [11434, 9932, 8080, 1234, 8000];
+// The project's own gateway (PORT, default 5050) and edge proxy (80/443) are
+// deliberately absent: the bridge is an upstream OF the gateway, so probing
+// 5050 feeds the gateway's agent ids back into its own provider catalog (a
+// routing loop). Self-references are dropped below as well.
+const DEFAULT_PROBE_PORTS = [11434, 9932, 8080, 9999, 3000, 1234, 5252, 8000];
 
 // "name=url,url" — one entry per upstream. The name is only for logs and
 // owned_by; routing is by the model ids each upstream reports.
@@ -157,6 +161,14 @@ const CFG = {
 let child = null;
 let shuttingDown = false;
 
+// Ports that belong to this project's own edge, never to an LLM upstream.
+// PORT is the gateway (5050), inherited by this child; CFG.port is the bridge
+// itself. A loopback candidate on either port is a self-reference.
+const SELF_PORTS = new Set(
+  [CFG.port, Number(process.env.PORT || 0), Number(process.env.BRIDGE_GATEWAY_PORT || 0)]
+    .filter((port) => Number.isInteger(port) && port > 0),
+);
+
 // Installed models are discovered from live upstreams, never guessed. The
 // old build shipped a fake "ollama-local" entry when nothing was installed,
 // so every client saw a model that could never answer.
@@ -194,8 +206,8 @@ function candidateUpstreams() {
     if (!/^https?:\/\//i.test(base)) return;
     try {
       const u = new URL(base);
-      const loopback = u.hostname === "127.0.0.1" || u.hostname === "localhost";
-      if (loopback && Number(u.port || 80) === CFG.port) return;
+      const loopback = u.hostname === "localhost" || u.hostname === "localhost";
+      if (loopback && SELF_PORTS.has(Number(u.port || 80))) return;
     } catch (_) {
       return;
     }
@@ -206,13 +218,13 @@ function candidateUpstreams() {
 
   for (const u of CFG.explicitUpstreams) add(u.name || "explicit", u.baseUrl);
   if (CFG.configuredUrl) add("configured", CFG.configuredUrl);
-  if (CFG.backend === "llama") add("llama-server", "http://127.0.0.1:" + CFG.internalPort);
+  if (CFG.backend === "llama") add("llama-server", "http://localhost:" + CFG.internalPort);
   // BRIDGE_PROBE_DEFAULTS=0 pins discovery to explicit upstreams only; tests
   // use it to prove the absent-server path on a machine that happens to have
   // a local model server running.
   if (CFG.probeDefaults) {
     for (const port of DEFAULT_PROBE_PORTS) {
-      add("local-" + port, "http://127.0.0.1:" + port);
+      add("local-" + port, "http://localhost:" + port);
     }
   }
   return out;
@@ -669,7 +681,7 @@ function spawnLlamaServer() {
     "-m", CFG.gguf,
     "-c", String(CFG.ctx),
     "-t", String(CFG.threads),
-    "--host", "127.0.0.1",
+    "--host", "localhost",
     "--port", String(CFG.internalPort),
     "--alias", CFG.alias,
     "--jinja",
@@ -1057,7 +1069,7 @@ async function handler(req, res) {
           models: u.models,
         })),
         discovered_at: DISCOVERY.at || null,
-        transports: { unix_socket: CFG.socket, tcp: "127.0.0.1:" + CFG.port },
+        transports: { unix_socket: CFG.socket, tcp: "localhost:" + CFG.port },
       })
     );
     return;
@@ -1171,8 +1183,8 @@ async function main() {
   if (CFG.backend === "llama") spawnLlamaServer();
 
   const tcpServer = http.createServer(handler);
-  tcpServer.listen(CFG.port, "127.0.0.1", () => {
-    log("INFO", "TCP_SERVER_LISTENING", { host: "127.0.0.1", port: CFG.port });
+  tcpServer.listen(CFG.port, "localhost", () => {
+    log("INFO", "TCP_SERVER_LISTENING", { host: "localhost", port: CFG.port });
   });
 
   // UDS is opt-in: the gateway owns the single inbound socket. The bridge

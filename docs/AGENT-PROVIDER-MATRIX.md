@@ -48,7 +48,7 @@ model.
   immediately:
 
 ```bash
-curl -s -X POST http://127.0.0.1:5050/api/admin/agents \
+curl -s -X POST http://localhost:5050/api/admin/agents \
   -H "X-Admin-Token: $ADMIN_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"id":"security-hero","model":"qwen3-1.7b-abliterated"}'
@@ -63,7 +63,7 @@ curl -s -X POST http://127.0.0.1:5050/api/admin/agents \
 
 ## Local CPU budget and thinking
 
-`OLLAMA_BASE` points at `http://127.0.0.1:11434/v1` and
+`OLLAMA_BASE` points at `http://localhost:11434/v1` and
 `OLLAMA_DIALECT=openai`. Ollama's OpenAI-compatible `/v1/chat/completions`
 endpoint emits native `tool_calls` directly; the native `/api/chat` path needs
 a separate `think` flag and is not used here. The cloud provider keeps the

@@ -21,7 +21,7 @@ const { loadEnv } = require("../lib/env.js");
 
 const ROOT = path.resolve(__dirname, "..");
 const ENV = loadEnv({ root: ROOT });
-const API = process.env.ZOMBIE_API_URL || "http://127.0.0.1:" + (ENV.ports.api || 5050);
+const API = process.env.ZOMBIE_API_URL || "http://localhost:" + (ENV.ports.api || 5050);
 // tools/call passes through the MCP CSRF gate: no-Origin and loopback
 // origins are allowed, arbitrary external origins are not. A real local
 // client uses this origin, so the audit does the same instead of weakening
@@ -139,10 +139,10 @@ async function main() {
     return;
   }
   const names = new Set(tools.map((t) => t && t.name).filter(Boolean));
-  if (names.size !== 153) {
-    fail("catalog size=" + names.size + " expected=153");
+  if (names.size !== 155) {
+    fail("catalog size=" + names.size + " expected=155");
   } else {
-    pass("catalog tools=153 source=live /mcp");
+    pass("catalog tools=155 source=live /mcp");
   }
 
   const schemaBad = tools.filter(

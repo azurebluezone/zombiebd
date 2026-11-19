@@ -1,10 +1,10 @@
 {
   "_comment": "External MCP servers for Mission Barisal. Every entry is loopback-bound. Ports are ${VAR} placeholders resolved from .env by lib/expand-env.js — change the port in .env, never here, or the spawner will pin a stale value.",
-  "_security": "2026-10-08: removed hardcoded remote DNS entry https://localhost/mcp (was name:zombiecoder, autoConnect:true). All remaining servers are loopback-bound (127.0.0.1).",
+  "_security": "2026-10-08: removed hardcoded remote DNS entry https://localhost/mcp (was name:zombiecoder, autoConnect:true). All remaining servers are loopback-bound (localhost).",
   "servers": [
     {
       "name": "ocr",
-      "url": "http://127.0.0.1:${OCR_MCP_PORT}",
+      "url": "http://localhost:${OCR_MCP_PORT}",
       "transport": "http",
       "enabled": true,
       "autoConnect": true,
@@ -15,7 +15,7 @@
     },
     {
       "name": "screen-recorder",
-      "url": "http://127.0.0.1:${SCREEN_MCP_PORT}",
+      "url": "http://localhost:${SCREEN_MCP_PORT}",
       "transport": "http",
       "enabled": true,
       "autoConnect": true,
@@ -26,7 +26,7 @@
     },
     {
       "name": "tts",
-      "url": "http://127.0.0.1:${TTS_MCP_PORT}",
+      "url": "http://localhost:${TTS_MCP_PORT}",
       "transport": "http",
       "enabled": true,
       "autoConnect": true,
@@ -37,7 +37,7 @@
     },
     {
       "name": "facebook-ads",
-      "url": "http://127.0.0.1:${FB_ADS_MCP_PORT}/mcp",
+      "url": "http://localhost:${FB_ADS_MCP_PORT}/mcp",
       "transport": "http",
       "enabled": true,
       "autoConnect": true,
@@ -48,7 +48,7 @@
     },
     {
       "name": "public-api",
-      "url": "http://127.0.0.1:${PUBLIC_API_MCP_PORT}/mcp",
+      "url": "http://localhost:${PUBLIC_API_MCP_PORT}/mcp",
       "transport": "http",
       "enabled": true,
       "autoConnect": true,
@@ -59,7 +59,7 @@
     },
     {
       "name": "combined",
-      "url": "http://127.0.0.1:${COMBINED_MCP_PORT}/mcp",
+      "url": "http://localhost:${COMBINED_MCP_PORT}/mcp",
       "transport": "http",
       "enabled": true,
       "autoConnect": true,
@@ -70,7 +70,7 @@
     },
     {
       "name": "universal-adapter",
-      "url": "http://127.0.0.1:${ADAPTER_HTTP_PORT}/mcp",
+      "url": "http://localhost:${ADAPTER_HTTP_PORT}/mcp",
       "transport": "http",
       "enabled": true,
       "autoConnect": true,

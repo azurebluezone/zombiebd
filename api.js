@@ -110,11 +110,35 @@ const {
   slimSSOT,
 } = require("./tools/context-slimmer.js");
 const { makeAliasResolver } = require("./tools/model-alias.js");
-const { normalizeText } = require("./lib/text-integrity.js");
+const { normalizeText, stripInvisible, scanInvisible } = require("./lib/text-integrity.js");
 const { chooseUsableModel } = require("./lib/model-choice.js");
 const { loadAgentFiles, getAgentById, listAgentIds, resolveAgentModel } = require("./agent");
 const systemInfo = require("./lib/system-info.js");
 const { SERVICE_PORTS, DEFAULTS } = require("./lib/env.js");
+const configModule = require("./modules/config.js");
+const goalsModule = require("./modules/goals.js");
+const verifyModule = require("./modules/verify.js");
+const compilerModule = require("./modules/compiler.js");
+const agentsModule = require("./modules/agents.js");
+const watchdogModule = require("./modules/watchdog.js");
+const antiDoteValidateInput = goalsModule.validateInput;
+const antiDoteCheckProof = goalsModule.checkProof;
+const antiDoteSetGoalContract = goalsModule.setGoalContract;
+const antiDoteExecute = goalsModule.executeContract;
+const antiDoteVerifyOutput = verifyModule.verifyContract;
+const mcpProtocol = require("./modules/mcp-protocol.js");
+const { pickEntries } = require("./modules/context.js");
+const { buildSystemPrompt, fitPrompt, estimateTokens } = require("./modules/system-prompt.js");
+const providerModels = require("./modules/provider-models.js");
+const chatInterpreter = require("./modules/chat-interpreter.js");
+const { createProjectMemory } = require("./modules/project-memory.js");
+const {
+  getIdentity,
+  isReadOnly,
+  identityMetadata,
+  identityPromptBlock,
+  identityHeaders,
+} = require("./modules/system-identity.js");
 
 // ─── MCP gateway route table (deny-by-default) ─────────────────────────
 // The local tool servers (ocr / screen-recorder / tts) are child processes
@@ -192,30 +216,13 @@ const {
 // when a user launches it from /tmp or any other working directory.
 const PROJECT_ROOT = __dirname;
 
-// ─── .env Loader (zero-dependency) ───────────────────────────
-(function loadEnv() {
-  try {
-    const envPath = path.join(PROJECT_ROOT, ".env");
-    if (fs.existsSync(envPath)) {
-      const content = fs.readFileSync(envPath, "utf8");
-      for (const line of content.split("\n")) {
-        const t = line.trim();
-        if (!t || t.startsWith("#")) continue;
-        const eq = t.indexOf("=");
-        if (eq === -1) continue;
-        const k = t.slice(0, eq).trim();
-        let v = t.slice(eq + 1).trim();
-        if (
-          (v.startsWith('"') && v.endsWith('"')) ||
-          (v.startsWith("'") && v.endsWith("'"))
-        )
-          v = v.slice(1, -1);
-        if (!process.env[k]) process.env[k] = v;
-      }
-      console.log("[ENV] Loaded:", envPath);
-    }
-  } catch (_) { }
-})();
+// ─── .env Loader (modules/config.js) ─────────────────────────
+const _envLoad = configModule.loadEnvFile({ root: PROJECT_ROOT });
+if (_envLoad.error) {
+  console.log("[ENV] Load failed:", _envLoad.file, _envLoad.error);
+} else if (_envLoad.loaded) {
+  console.log("[ENV] Loaded:", _envLoad.file);
+}
 
 // ─── Config ──────────────────────────────────────────────────
 const PORT = parseInt(process.env.PORT || DEFAULTS.PORT, 10);
@@ -245,6 +252,26 @@ let ALLOWED_DIRS = (
 )
   .split(",")
   .map((d) => path.resolve(PROJECT_ROOT, d.trim()));
+
+// Outbound proxy configuration. `direct` (or empty) means no proxy. The list
+// is validated at boot; actual proxy egress is opt-in and must be wired by the
+// transport that uses it, so a typo never silently disables provider calls.
+function proxyListState() {
+  const raw = String(process.env.PROXY_LIST || "").trim();
+  if (!raw || raw === "direct") {
+    return { mode: "direct", count: 0, invalid: [] };
+  }
+  const entries = raw.split(",").map((p) => p.trim()).filter(Boolean);
+  const invalid = entries.filter((entry) => {
+    try {
+      const u = new URL(entry);
+      return !/^https?:$/.test(u.protocol);
+    } catch (_) {
+      return true;
+    }
+  });
+  return { mode: "proxy", count: entries.length, invalid };
+}
 
 // ─── Domain Detection ────────────────────────────────────────
 // Domain detected immediately on server start — env var > port heuristic > localhost
@@ -433,28 +460,7 @@ function getOSRootDir() {
 }
 const _OS_ROOT_DIR = getOSRootDir();
 const _HOME_DIR = os.homedir();
-const _TEMP_DIR = os.tmpdir();
 const _HOSTNAME = os.hostname();
-
-// Editor config directories per platform (global pattern — all editors)
-function getEditorConfigDir(editorName) {
-  const e = editorName.toLowerCase();
-  const appData = process.env.APPDATA || _HOME_DIR;
-  if (_IS_WINDOWS) {
-    if (e === "vscode" || e === "code")
-      return path.join(appData, "Code", "User");
-    if (e === "jetbrains" || e === "idea")
-      return path.join(appData, "JetBrains");
-    if (e === "cursor") return path.join(appData, "Cursor", "User");
-    return path.join(_HOME_DIR, "." + editorName);
-  }
-  if (e === "vscode" || e === "code")
-    return path.join(_HOME_DIR, ".config", "Code", "User");
-  if (e === "jetbrains" || e === "idea")
-    return path.join(_HOME_DIR, ".config", "JetBrains");
-  if (e === "cursor") return path.join(_HOME_DIR, ".config", "Cursor", "User");
-  return path.join(_HOME_DIR, "." + editorName);
-}
 
 // .missionbarisal/ folder at project root (runtime config directory)
 const _MISSION_BARISAL_DIR = path.join(process.cwd(), ".missionbarisal");
@@ -678,92 +684,58 @@ function printSetupReport(results) {
 const _setupResults = autoSetupConfig();
 printSetupReport(_setupResults);
 
-// ─── System Identity (domain-aware) ──────────────────────────
-const SYSTEM_IDENTITY = {
-  system_identity: {
-    ...DOMAIN_CFG.identity,
-    server: {
-      domain: DETECTED_DOMAIN,
-      type: DOMAIN_CFG.type,
+// ─── Immutable identity core (identity.json) ─────────────────
+// The file is read-only; the parsed object is deep-frozen by the module.
+// A broken/missing file must not stop the gateway: the fallback below keeps
+// the server answering and logs the problem once.
+let _IMMUTABLE_IDENTITY = null;
+function systemIdentityCore() {
+  if (_IMMUTABLE_IDENTITY) return _IMMUTABLE_IDENTITY;
+  try {
+    _IMMUTABLE_IDENTITY = getIdentity();
+    if (!isReadOnly()) {
+      log("WARN", "IDENTITY_FILE_WRITABLE", {
+        path: "identity.json",
+        hint: "chmod 444 identity.json to make the identity core read-only",
+      });
+    }
+  } catch (e) {
+    log("WARN", "IDENTITY_LOAD_FAIL", { error: e.message });
+    _IMMUTABLE_IDENTITY = {
+      name: "Mission Barisal",
+      product: "ZombieCoder",
       version: DOMAIN_CFG.version,
-      hasFrontend: DOMAIN_CFG.hasFrontend,
-      hasPusher: PUSHER_ENABLED,
-      maxRateLimit: DOMAIN_CFG.maxRateLimitPerServer,
-    },
-  },
-};
+      tagline: "Where code and words speak",
+      branding: {
+        owner: "Sahon Srabon",
+        organization: "Developer Zone",
+        address: "",
+        location: "",
+      },
+      contact: { email: "", website: "" },
+      license: "Proprietary - Local Freedom Protocol",
+      identity_anchor: "",
+    };
+  }
+  return _IMMUTABLE_IDENTITY;
+}
 
-const INTENT_EXTRACT_PROMPT = `You are an intent analyzer. Extract the core intent from the user input.
-Return ONLY valid JSON in this exact format:
-{
-  "primary_intent": "what the user fundamentally wants",
-  "context": "key contextual clues",
-  "requires_web_search": true/false,
-  "requires_code_analysis": true/false,
-  "language": "bn|en|other",
-  "complexity": "simple|moderate|complex"
-}`;
+/** Attach ownership headers to every outgoing HTTP response. */
+function setSystemIdentityHeaders(res) {
+  try {
+    const headers = identityHeaders(systemIdentityCore());
+    for (const [name, value] of Object.entries(headers)) {
+      if (!res.headersSent) res.setHeader(name, value);
+    }
+  } catch (_) {
+    /* identity headers must never break a response */
+  }
+}
 
-const ALIGNMENT_CHECK_PROMPT = `You are a strict alignment verifier. Check if the agent's response is 100% aligned with the user's original intent.
-
-CRITICAL RULE: The response MUST reference the user's actual input. If the response talks about unrelated topics or makes claims not grounded in the user's question, mark it as misaligned.
-
-Check criteria:
-1. DIRECTNESS: Does the response directly address the user's question? (MUST have explicit reference to user input)
-2. REFERENCE: Does the response contain evidence or reasoning tied to the user's query? If it claims facts without user input reference, mark as hallucination
-3. ACCURACY: Is the information factually correct? If unsure, flag it
-4. HALLUCINATION: Is there any made-up, unverified, or assumed information not present in the user's input? If the agent claims capabilities or identities not verifiable, flag it
-5. LANGUAGE: Is the response in the correct language matching the user's input?
-6. COMPLETENESS: Are all aspects of the question addressed? If the question has multiple parts, all must be answered
-7. PROOF & EVIDENCE: Does the response provide verifiable proof for each claim? Check for specific references to files, line numbers, search results, SSOT data, syllabus entries, or other concrete evidence. Opinions without evidence = FAIL.
-8. TEST CLAIMS (NEW): If the agent claims a code change "works", "fixes", or "solves" — check if test evidence is provided. "It will work" without proof = MISALIGNED with truth.
-9. CODE SAFETY (NEW): If suggesting code modifications, check if specific files and lines are mentioned. Vague suggestions without file paths = UNSAFE.
-10. KNOWLEDGE REFERENCE (NEW): If the response mentions technical concepts, frameworks, or patterns — check if the agent referenced its syllabus.md or memory.json. If the agent claims knowledge without source (SSOT/syllabus/web search), flag it as unverfied. "Syllabus \u0985\u09a8\u09c1\u09af\u09be\u09df\u09c0" or "memory \u09a5\u09c7\u0995\u09c7 \u09aa\u09be\u0993\u09df\u09be" = GOOD. Unexplained expert claims = BAD.
-
-SCORING:
-- 100 = perfect alignment, directly answers user input with verifiable content AND provides evidence for claims
-- 70-99 = mostly aligned but minor issues, some claims lack evidence, or code claims missing test proof
-- 40-69 = partially aligned, missing key references to user input, significant unsupported claims, unsafe code suggestions
-- 0-39 = misaligned, hallucinated, unrelated to user's question, OR no evidence provided for claims
-
-Return ONLY valid JSON:
-{
-  "aligned": true/false,
-  "score": 0-100,
-  "issues": ["specific issue descriptions — mention exact missing references and unproven claims"],
-  "suggestions": ["how to fix — must tell agent to reference user input directly and provide evidence"],
-  "missing_proof": ["list specific claims that lack evidence"],
-  "code_safe": true/false,
-  "test_verified": true/false
-}`;
-
-const PROOF_CHECK_PROMPT = `You are a strict evidence verifier. Your job is to check if the agent's response contains VERIFIABLE PROOF or EVIDENCE.
-
-Check criteria:
-1. EVIDENCE: Does the response contain specific data, code analysis, search results, file contents, or explicit references? Opinions, guesses, and assumptions are NOT evidence.
-2. SOURCE CITATION: Does the response cite where information came from? (e.g., "SSOT \u0985\u09a8\u09c1\u09af\u09be\u09df\u09c0", "web search \u09ab\u09b2\u09be\u09ab\u09b2\u09c7 \u09a6\u09c7\u0996\u09be \u0997\u09c7\u099b\u09c7", "api.js \u098f\u09b0 \u09b2\u09be\u0987\u09a8 \u09e7\u09eb\u09e6-\u09a4\u09c7 \u09a6\u09c7\u0996\u09be \u09af\u09be\u099a\u09cd\u099b\u09c7")
-3. VERIFIABILITY: Can the claims be independently verified? If the response makes a claim without showing how it was derived, flag it.
-4. EMPTY ASSURANCES: Does the response use phrases like "\u0986\u09ae\u09bf \u09ae\u09a8\u09c7 \u0995\u09b0\u09bf", "probably", "I think", "maybe", "\u0986\u09ae\u09be\u09b0 \u09a7\u09be\u09b0\u09a3\u09be" without supporting evidence? These are RED FLAGS.
-5. HALLUCINATION: Does the response invent facts, APIs, functions, or capabilities that don't exist in the provided context?
-6. TEST CLAIMS (NEW — STRICT): If the response claims a code change "works", "fixes", or "solves" a problem — it MUST provide test evidence. Phrases like "it will work", "this should fix", "\u098f\u09a4\u09c7 \u0995\u09be\u099c \u0995\u09b0\u09ac\u09c7" without test proof MUST be flagged. Valid test evidence = "tested with X input", "ran the code and got Y output", "verified with unit test Z", or explicit "UNTESTED" disclaimer.
-7. CODE SAFETY: If the response suggests modifying code, verify it mentions WHICH files and lines to change. Unsafe = vague suggestions without file paths or awareness of existing code structure.
-
-SCORING:
-- 100 = Every claim backed by evidence, sources cited, fully verifiable, code claims include test evidence
-- 70-99 = Mostly evidenced, minor claims unsubstantiated, or code changes claimed without test proof
-- 40-69 = Some evidence but significant unsupported claims, missing file references
-- 0-39 = NO evidence provided, pure speculation or hallucination, unsafe code suggestions
-
-Return ONLY valid JSON:
-{
-  "has_proof": true/false,
-  "proof_score": 0-100,
-  "missing_evidence": ["specific claims that need proof"],
-  "verdict": "PASS|FAIL|NEEDS_WORK",
-  "action_required": "Provide specific evidence from code/search/SSOT for the unsubstantiated claims",
-  "code_safe": true/false,
-  "test_verified": true/false
-}`;
+const intentModule = require("./modules/intent.js");
+const INTENT_EXTRACT_PROMPT = intentModule.PROMPTS.extract;
+const ALIGNMENT_CHECK_PROMPT = intentModule.PROMPTS.alignment;
+const PROOF_CHECK_PROMPT = intentModule.PROMPTS.proof;
 
 // ══════════════════════════════════════════════════════════════
 //  ANTI-DOTE TYPE SAFETY SYSTEM — Error Types & Classes
@@ -776,67 +748,6 @@ Return ONLY valid JSON:
 //
 // Error types (6): INVALID_REQUEST, PROOF_FAILED, LIMIT_EXCEEDED,
 //                  CONTRACT_FAILED, EXECUTION_FAILED, VERIFICATION_FAILED
-
-const ANTIDOTE_ERRORS = {
-  INVALID_REQUEST: {
-    code: "ANTIDOTE_INVALID_REQUEST",
-    message: "Input validation failed — malformed or missing required fields",
-    statusCode: 400,
-  },
-  PROOF_FAILED: {
-    code: "ANTIDOTE_PROOF_FAILED",
-    message: "Logical proof check failed — request cannot be satisfied",
-    statusCode: 422,
-  },
-  LIMIT_EXCEEDED: {
-    code: "ANTIDOTE_LIMIT_EXCEEDED",
-    message: "Rate limit, token limit or payload size exceeded",
-    statusCode: 429,
-  },
-  CONTRACT_FAILED: {
-    code: "ANTIDOTE_CONTRACT_FAILED",
-    message: "Goal contract could not be established",
-    statusCode: 422,
-  },
-  EXECUTION_FAILED: {
-    code: "ANTIDOTE_EXECUTION_FAILED",
-    message: "Execution failed — see inner error for details",
-    statusCode: 500,
-  },
-  VERIFICATION_FAILED: {
-    code: "ANTIDOTE_VERIFICATION_FAILED",
-    message: "Output verification failed — result does not satisfy contract",
-    statusCode: 500,
-  },
-};
-
-class AntiDoteError extends Error {
-  constructor(type, details = {}) {
-    const def = ANTIDOTE_ERRORS[type] || ANTIDOTE_ERRORS.INVALID_REQUEST;
-    const msg = details.reason
-      ? `${def.message} — ${details.reason}`
-      : def.message;
-    super(msg);
-    this.name = "AntiDoteError";
-    this.code = def.code;
-    this.statusCode = def.statusCode;
-    this.errorType = type;
-    this.details = details;
-    this.timestamp = new Date().toISOString();
-  }
-
-  toJSON() {
-    return {
-      error: true,
-      type: this.errorType,
-      code: this.code,
-      message: this.message,
-      statusCode: this.statusCode,
-      details: this.details,
-      timestamp: this.timestamp,
-    };
-  }
-}
 
 // ─── Provider Registry + Dynamic Routing ────────────────────
 // ─── Model Entry Helpers ──────────────────────────────────
@@ -1014,7 +925,7 @@ const PROVIDER_CONFIG = {
   // yields "cloud if API else local" behaviour automatically.
   ollama: {
     name: "Ollama",
-    baseUrl: process.env.OLLAMA_BASE || "http://127.0.0.1:5051",
+    baseUrl: process.env.OLLAMA_BASE || "http://localhost:5051",
     // Local Ollama uses OLLAMA_API_KEY only. The cloud credential belongs to
     // the separate ollama_cloud provider; a fallback here silently sent the
     // cloud key to a local server and made the two providers indistinguishable.
@@ -1027,7 +938,7 @@ const PROVIDER_CONFIG = {
     // defaults to the NATIVE /api/chat. Any OpenAI-compatible endpoint
     // (local-llm-bridge, LM Studio, vLLM, Ollama's own /v1) therefore got a
     // 404 "no route for POST /api/chat" in ~1ms and silently fell through to
-    // the cloud fallback. Evidence: OLLAMA_BASE=http://127.0.0.1:11435/v1
+    // the cloud fallback. Evidence: OLLAMA_BASE=http://localhost:11435/v1
     // (the bridge) + log 07:28:55 `no route for POST /api/chat`.
     // Set OLLAMA_DIALECT=openai to route through {base}/v1/chat/completions.
     // Unset ⇒ "" (falsy) ⇒ adapterFor() falls through exactly as before.
@@ -1076,7 +987,7 @@ const PROVIDER_CONFIG = {
     name: "Local LLM Bridge",
     baseUrl:
       process.env.BRIDGE_BASE ||
-      "http://127.0.0.1:" + (process.env.BRIDGE_PORT || "11435") + "/v1",
+      "http://localhost:" + (process.env.BRIDGE_PORT || "11435") + "/v1",
     key: process.env.BRIDGE_API_KEY || "",
     priority: parseInt(process.env.BRIDGE_PRIORITY || "999", 10),
     type: "openai",
@@ -1097,6 +1008,25 @@ for (const p of Object.values(PROVIDER_CONFIG)) {
   p.envKey = p.key || "";
   p.keySource = p.key ? "env" : "none";
   p.source = "env";
+  // Every list above came from an env var. Remember it: a partial or transient
+  // remote `/models` response must never delete a model the user declared.
+  // Custom providers keep `envModels` as a strict allowlist (set below).
+  if (
+    !Array.isArray(p.envModels) &&
+    Array.isArray(p.models) &&
+    p.models.length > 0
+  ) {
+    p.envModels = p.models.slice();
+  }
+}
+
+// Explicit provider off switch (env). The entry stays in PROVIDER_CONFIG so
+// admin code that reads it never hits undefined; every resolve/sync/catalog
+// path checks `enabled === false` and skips it. OPENCODE_ENABLED=false keeps
+// the Zen free tier closed after its malformed-stream failures.
+if (String(process.env.OPENCODE_ENABLED || "").toLowerCase() === "false") {
+  PROVIDER_CONFIG.opencode.enabled = false;
+  PROVIDER_CONFIG.opencode.envDisabled = true;
 }
 
 // ─── Dynamic Custom Provider Loader ─────────────────────────
@@ -1165,6 +1095,14 @@ function loadCustomProviders() {
       process.env["CUSTOM_PROVIDER_" + num + "_MAX_PROMPT_CHARS"] || "",
       10,
     );
+    const maxTools = parseInt(
+      process.env["CUSTOM_PROVIDER_" + num + "_MAX_TOOLS"] || "",
+      10,
+    );
+    const contextWindow = parseInt(
+      process.env["CUSTOM_PROVIDER_" + num + "_CONTEXT_WINDOW"] || "",
+      10,
+    );
     PROVIDER_CONFIG[providerId] = {
       name: name,
       baseUrl: url || "http://localhost",
@@ -1176,10 +1114,16 @@ function loadCustomProviders() {
       priority: priority,
       type: type,
       models: models,
+      // An explicit CUSTOM_PROVIDER_N_MODELS list is an allowlist, not a
+      // seed to be expanded by the live catalog. Kept separately so a stale
+      // DB row cannot re-expand the provider on the next boot.
+      envModels: modelsStr ? models.slice() : null,
       custom: true,
       ...(Number.isFinite(timeout) && timeout > 0 ? { timeout } : {}),
       ...(Number.isFinite(streamTimeout) && streamTimeout > 0 ? { streamTimeout } : {}),
       ...(Number.isFinite(maxPromptChars) && maxPromptChars > 0 ? { maxPromptChars } : {}),
+      ...(Number.isFinite(maxTools) && maxTools >= 0 ? { maxTools } : {}),
+      ...(Number.isFinite(contextWindow) && contextWindow > 0 ? { contextWindow } : {}),
     };
     console.log("[CUSTOM_PROVIDER] Loaded: " + name + " (" + url + ")");
   }
@@ -1251,6 +1195,15 @@ function initModelsDb() {
       }
     }
     MODELS_DB = new DatabaseSync(MODELS_DB_PATH);
+    // WAL: one writer (this gateway) with concurrent readers (admin pages,
+    // checks). NORMAL is the safe WAL pairing and avoids an fsync per txn.
+    try {
+      MODELS_DB.exec("PRAGMA journal_mode = WAL;");
+      MODELS_DB.exec("PRAGMA synchronous = NORMAL;");
+      MODELS_DB.exec("PRAGMA busy_timeout = 5000;");
+    } catch (e) {
+      log("WARN", "SQLITE_WAL_FAIL", { error: e.message });
+    }
     MODELS_DB.exec(`
       CREATE TABLE IF NOT EXISTS models (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1267,9 +1220,10 @@ function initModelsDb() {
       CREATE INDEX IF NOT EXISTS idx_models_api ON models(api_model);
       CREATE INDEX IF NOT EXISTS idx_models_provider ON models(provider);
 
-      -- Provider registry persisted by the admin UI. Env-defined providers
-      -- keep working without a row here; a row means "DB-managed config"
-      -- (custom provider, edited key, edited base URL or socket path).
+      -- Provider registry. Env-defined providers get a mirror row
+      -- (source='env') on every sync so the DB always carries the live
+      -- registry; source='db' means admin-managed overrides (edited key,
+      -- base URL, socket path or a custom provider).
       CREATE TABLE IF NOT EXISTS providers (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL DEFAULT '',
@@ -1459,6 +1413,7 @@ function syncModelsToDb() {
     `);
     let count = 0;
     for (const [id, p] of Object.entries(PROVIDER_CONFIG)) {
+      if (p.enabled === false) continue;
       if (p.models.length === 0) continue;
       for (const m of p.models) {
         upsert.run(
@@ -1473,19 +1428,76 @@ function syncModelsToDb() {
         count++;
       }
     }
-    // Keep DB provider rows mirroring the live config so a power-cut restart
-    // restores the exact model list even before the first background sync.
+    // Provider registry mirror: every configured provider gets a row so a
+    // restart, the admin panel or an offline audit sees the same registry the
+    // process has in memory. Env rows are a mirror (source='env'); DB-managed
+    // rows (source='db') keep their own key/base URL and are never overwritten
+    // by env. Stale env mirror rows are removed when a provider leaves .env.
     try {
-      const updProvider = MODELS_DB.prepare(
+      const getProvider = MODELS_DB.prepare("SELECT source FROM providers WHERE id = ?");
+      const insertProvider = MODELS_DB.prepare(`
+        INSERT INTO providers
+          (id, name, type, base_url, api_key, models, socket_path, priority,
+           enabled, requires_key, source, created_at, updated_at)
+        VALUES (?, ?, ?, ?, '', ?, ?, ?, ?, ?, 'env', ?, ?)
+      `);
+      const updateEnvProvider = MODELS_DB.prepare(`
+        UPDATE providers SET
+          name = ?, type = ?, base_url = ?, models = ?, socket_path = ?,
+          priority = ?, enabled = ?, requires_key = ?, updated_at = ?
+        WHERE id = ? AND source = 'env'
+      `);
+      const updateDbProvider = MODELS_DB.prepare(
         "UPDATE providers SET models = ?, updated_at = ? WHERE id = ?",
       );
       for (const [id, p] of Object.entries(PROVIDER_CONFIG)) {
-        if (p.source === "db") {
-          updProvider.run(serializeModelList(p.models), now, id);
+        const modelList = serializeModelList(p.models);
+        const priority = Number.isFinite(Number(p.priority)) ? Number(p.priority) : 99;
+        const enabled = p.enabled === false ? 0 : 1;
+        const requiresKey = providerRequiresKey(p) ? 1 : 0;
+        const row = getProvider.get(id);
+        if (!row) {
+          insertProvider.run(
+            id,
+            p.name || id,
+            p.type || "openai",
+            p.baseUrl || "",
+            modelList,
+            p.socketPath || "",
+            priority,
+            enabled,
+            requiresKey,
+            now,
+            now,
+          );
+        } else if (row.source === "db") {
+          updateDbProvider.run(modelList, now, id);
+        } else {
+          updateEnvProvider.run(
+            p.name || id,
+            p.type || "openai",
+            p.baseUrl || "",
+            modelList,
+            p.socketPath || "",
+            priority,
+            enabled,
+            requiresKey,
+            now,
+            id,
+          );
         }
       }
-    } catch (_) {
-      /* providers table missing on an old DB */
+      const stale = MODELS_DB.prepare(
+        "SELECT id FROM providers WHERE source = 'env'",
+      ).all();
+      const drop = MODELS_DB.prepare(
+        "DELETE FROM providers WHERE id = ? AND source = 'env'",
+      );
+      for (const row of stale) {
+        if (!PROVIDER_CONFIG[row.id]) drop.run(row.id);
+      }
+    } catch (e) {
+      log("WARN", "PROVIDER_DB_SYNC_FAIL", { error: e.message });
     }
     // Remove stale rows (models no longer present after this sync)
     // pinned=1 rows are remote-registry seeds — they survive across syncs
@@ -1514,7 +1526,7 @@ function refreshBuiltinProviderEnv() {
   ];
   for (const [id, baseKey, keyKey, priorityKey] of pairs) {
     const p = PROVIDER_CONFIG[id];
-    if (!p) continue;
+    if (!p || p.enabled === false) continue;
     if (process.env[baseKey]) p.baseUrl = process.env[baseKey];
     const envKey = process.env[keyKey] || "";
     p.envKey = envKey;
@@ -1536,11 +1548,29 @@ function syncEnvModelsToDb() {
   };
   // Re-read env vars (single source of truth) and update PROVIDER_CONFIG.
   refreshBuiltinProviderEnv();
-  PROVIDER_CONFIG.opencode.models = parseModelsEnv(
-    process.env.OPENCODE_MODELS || "",
+  const applyEnvModels = (id, raw, parser) => {
+    const p = PROVIDER_CONFIG[id];
+    if (!p) return;
+    const list = parser(raw || "");
+    const cached = Array.isArray(p.models) ? p.models : [];
+    // Env wins and stays first, but a DB-discovered cache is not thrown away
+    // just because this boot cannot reach the provider yet.
+    p.models =
+      p.custom === true ? list : providerModels.mergeDynamicModels(cached, list);
+    p.envModels = list.length ? list.slice() : null;
+  };
+  if (PROVIDER_CONFIG.opencode.enabled !== false) {
+    applyEnvModels("opencode", process.env.OPENCODE_MODELS, parseModelsEnv);
+  }
+  applyEnvModels("groq", process.env.GROQ_MODELS, parseModelsEnv);
+  applyEnvModels("gemini", process.env.GEMINI_MODELS, parseModelsEnv);
+  applyEnvModels("ollama", process.env.OLLAMA_MODELS, parseCustomModelsEnv);
+  applyEnvModels(
+    "ollama_cloud",
+    process.env.OLLAMA_CLOUD_MODELS,
+    parseCustomModelsEnv,
   );
-  PROVIDER_CONFIG.groq.models = parseModelsEnv(process.env.GROQ_MODELS || "");
-  PROVIDER_CONFIG.gemini.models = parseModelsEnv(process.env.GEMINI_MODELS || "");
+  applyEnvModels("bridge", process.env.BRIDGE_MODELS, parseCustomModelsEnv);
   // Re-scan CUSTOM_PROVIDER_N_* env vars (adds new / updates existing).
   loadCustomProviders();
   // DB rows are applied AFTER the env scan: a provider edited in admin keeps
@@ -1583,8 +1613,18 @@ function loadModelsFromDb() {
       );
     }
     for (const [pid, models] of Object.entries(byProvider)) {
-      if (PROVIDER_CONFIG[pid]) {
-        PROVIDER_CONFIG[pid].models = models;
+      const p = PROVIDER_CONFIG[pid];
+      if (!p) continue;
+      // An explicit env list stays first. A custom provider's env list is a
+      // strict allowlist; a built-in provider may append DB-discovered rows
+      // that are not named in env.
+      if (Array.isArray(p.envModels) && p.envModels.length > 0) {
+        p.models =
+          p.custom === true
+            ? p.envModels.slice()
+            : providerModels.mergeDbModels(p.envModels, models);
+      } else {
+        p.models = models;
       }
     }
     log("INFO", "MODELS_DB_LOADED", {
@@ -1616,8 +1656,12 @@ function providerDisplayName(id, p) {
 function isLoopbackUrl(raw) {
   try {
     const u = new URL(String(raw || ""));
+    const host = String(u.hostname || "").toLowerCase();
     return (
-      ["127.0.0.1", "localhost", "::1", "[::1]"].includes(u.hostname) ||
+      host === "localhost" ||
+      host === "::1" ||
+      host === "[::1]" ||
+      /^127(?:\.\d{1,3}){3}$/.test(host) ||
       u.protocol === "unix:"
     );
   } catch (_) {
@@ -1684,6 +1728,10 @@ function loadProvidersFromDb() {
     return false;
   }
   for (const row of rows) {
+    // Mirror rows written by syncModelsToDb describe env providers; env stays
+    // the source of truth, so applying a mirror as DB config would mark every
+    // built-in "custom" and freeze its dynamically discovered model list.
+    if (row.source === "env") continue;
     const existing = PROVIDER_CONFIG[row.id] || {};
     const envKey = existing.envKey || "";
     const dbKey = row.api_key
@@ -1699,6 +1747,8 @@ function loadProvidersFromDb() {
     const envPrefix = "PROVIDER_" + String(row.id).toUpperCase().replace(/[^A-Z0-9]/g, "_");
     const maxPromptChars = parseInt(process.env[envPrefix + "_MAX_PROMPT_CHARS"] || "", 10);
     const maxTokens = parseInt(process.env[envPrefix + "_MAX_TOKENS"] || "", 10);
+    const maxTools = parseInt(process.env[envPrefix + "_MAX_TOOLS"] || "", 10);
+    const contextWindow = parseInt(process.env[envPrefix + "_CONTEXT_WINDOW"] || "", 10);
     const extraBody = jsonObjectEnv(envPrefix + "_EXTRA_BODY");
     PROVIDER_CONFIG[row.id] = Object.assign({}, existing, {
       name: row.name || existing.name || row.id,
@@ -1723,6 +1773,8 @@ function loadProvidersFromDb() {
       source: "db",
       ...(Number.isFinite(maxPromptChars) && maxPromptChars > 0 ? { maxPromptChars } : {}),
       ...(Number.isFinite(maxTokens) && maxTokens > 0 ? { maxTokens } : {}),
+      ...(Number.isFinite(maxTools) && maxTools >= 0 ? { maxTools } : {}),
+      ...(Number.isFinite(contextWindow) && contextWindow > 0 ? { contextWindow } : {}),
       ...(extraBody ? { extraBody } : {}),
     });
   }
@@ -1819,6 +1871,7 @@ function providerSummary(id, p) {
     socketPath: p.socketPath || "",
     priority: Number.isFinite(Number(p.priority)) ? Number(p.priority) : 99,
     enabled: p.enabled !== false,
+    envDisabled: p.envDisabled === true,
     models: (p.models || []).length,
     modelList: (p.models || []).map((m) => {
       if (typeof m === "string") return m;
@@ -2012,8 +2065,12 @@ async function saveProviderFromAdmin(rawBody) {
     : existing && Number.isFinite(Number(existing.priority))
       ? Number(existing.priority)
       : 999;
-  const enabled =
-    b.enabled === undefined
+  // An env-disabled provider stays off even when an admin save payload asks
+  // for enabled:true. Only the env flag can reopen it.
+  const envLocked = !!(existing && existing.envDisabled === true);
+  const enabled = envLocked
+    ? false
+    : b.enabled === undefined
       ? existing
         ? existing.enabled !== false
         : true
@@ -2117,6 +2174,16 @@ function deleteProviderFromAdmin(rawId) {
         ok: false,
         error:
           "Provider not managed in DB: " + id + " (env providers are edited in .env)",
+      },
+    };
+  }
+  if (row.source !== "db") {
+    return {
+      status: 400,
+      payload: {
+        ok: false,
+        error:
+          "Provider " + id + " is environment-defined; edit .env and restart instead",
       },
     };
   }
@@ -2356,35 +2423,37 @@ async function runNormalizerSync() {
       continue;
     }
     const fetched = await fetchProviderModels(id, p);
+    const envModels = Array.isArray(p.envModels) ? p.envModels : [];
     if (fetched.ok && fetched.models.length === 0 && p.dynamicModels) {
       // A reachable dynamic server that reports no models (bridge with no
       // upstream) must not keep stale rows alive: the user asked for "if it
-      // is not there, it is not there", not a phantom model.
-      p.models = [];
-      results[id] = { ok: true, fetched: 0, added: 0, total: 0, unavailable: true };
+      // is not there, it is not there", not a phantom model. An explicit env
+      // list is still a user promise and stays.
+      p.models = envModels.length ? envModels.slice() : [];
+      results[id] = {
+        ok: true,
+        fetched: 0,
+        added: 0,
+        total: p.models.length,
+        unavailable: true,
+      };
       continue;
     }
     if (fetched.ok && fetched.models.length > 0) {
-      // Prune stale entries whose apiModel is no longer in the live API
-      // (prevents dead mappings like llama-3.3-70b-versatile from persisting forever)
-      const liveSet = new Set(fetched.models);
-      p.models = p.models.filter(
-        (m) =>
-          getApiModelName(m) === "*" ||
-          liveSet.has(getApiModelName(m)),
-      );
-      // Preserve env-defined masked pairs; append new live API models
-      const existing = new Map();
-      for (const m of p.models) existing.set(getModelName(m), m);
-      const live = fetched.models.filter(
-        (name) => !existing.has(name) && name !== "*",
-      );
-      p.models = p.models.concat(live);
+      // Env-declared rows survive a partial live list. A custom provider's
+      // env list is strict; a built-in provider may append new live models.
+      const before = new Set(p.models.map((m) => getModelName(m)));
+      p.models = providerModels.reconcileModels(p.models, fetched.models, {
+        envModels,
+        strict: p.custom === true,
+      });
+      const added = p.models.filter((m) => !before.has(getModelName(m))).length;
       results[id] = {
         ok: true,
         fetched: fetched.models.length,
-        added: live.length,
+        added,
         total: p.models.length,
+        env_kept: envModels.length,
       };
     } else {
       results[id] = { ok: false, error: fetched.error || "no models" };
@@ -2407,14 +2476,26 @@ async function refreshDynamicProviders() {
     const fetched = await fetchProviderModels(id, p);
     if (!fetched.ok) continue;
     const live = fetched.models.filter(Boolean);
+    const envModels = Array.isArray(p.envModels) ? p.envModels : [];
+    // A dynamic server can return a partial list while it is still loading.
+    // Keep the env rows first and append only genuinely new live models.
+    const merged =
+      p.custom === true && envModels.length > 0
+        ? envModels.slice()
+        : providerModels.mergeDynamicModels(live, envModels);
     const current = p.models.map((m) => getApiModelName(m));
-    if (JSON.stringify(live) === JSON.stringify(current)) continue;
-    p.models = live;
+    if (
+      JSON.stringify(merged.map((m) => getApiModelName(m))) ===
+      JSON.stringify(current)
+    ) {
+      continue;
+    }
+    p.models = merged;
     changed = true;
     log("INFO", "DYNAMIC_MODELS_REFRESHED", {
       provider: id,
-      count: live.length,
-      models: live.slice(0, 12),
+      count: merged.length,
+      models: merged.slice(0, 12),
     });
   }
   if (changed) {
@@ -2575,7 +2656,7 @@ function loadDisabledState() {
     }
     const ids = [...new Set([...settingIds, ...dbIds])];
     for (const [id, p] of Object.entries(PROVIDER_CONFIG)) {
-      p.enabled = !ids.includes(id);
+      p.enabled = !ids.includes(id) && p.envDisabled !== true;
     }
     const rows = MODELS_DB.prepare(
       "SELECT provider, name FROM models WHERE enabled = 0"
@@ -3157,403 +3238,70 @@ function ensureZombiecoderDir(baseDir) {
 }
 
 /**
- * Auto-generate syllabus.md for a project directory (similar to autoSSOT).
- * Creates .zombiecoder/agents/syllabus.md with initial template if it doesn't exist.
- * The syllabus contains agent knowledge about the project.
+ * Syllabus, SSOT and session paths are owned by modules/workspace.js and
+ * modules/syllabus.js. These wrappers only pass the live agent roster and the
+ * gateway logger; the storage rules live in exactly one module.
+ */
+const syllabusModule = require("./modules/syllabus.js");
+const workspaceModule = require("./modules/workspace.js");
+
+/** Legacy `.zombiecoder/agents/` path — read-only fallback for old state. */
+function getAgentsPath(projectDir) {
+  const dir = projectDir || mcpWorkingDir || path.resolve(".");
+  return path.join(dir, ".zombiecoder", "agents");
+}
+
+/** Canonical syllabus location: `.zombiecoder/syllabus.md`. */
+function getSyllabusPath(projectDir) {
+  return workspaceModule.ensureWorkspacePaths(projectDir || mcpWorkingDir || path.resolve(".")).syllabus;
+}
+
+/**
+ * Ensure the canonical syllabus exists and return its path.
+ * The full template and the on-disk path are owned by modules/syllabus.js.
  */
 function autoSyllabus(projectDir) {
-  const dir = projectDir || path.resolve(".");
-  log("INFO", "SYLLABUS_AUTO", { dir });
-
   try {
-    const agentsDir = path.join(dir, ".zombiecoder", "agents");
-    const syllabusPath = path.join(agentsDir, "syllabus.md");
-
-    // Only create if not exists (don't overwrite existing knowledge)
-    if (fs.existsSync(syllabusPath)) {
-      log("INFO", "SYLLABUS_EXISTS", { path: syllabusPath });
-      return syllabusPath;
-    }
-
-    // Bootstrap with full Evidence-Driven instructions
-    const bootstrapped = bootstrapSyllabus(dir);
-    if (bootstrapped) {
-      log("INFO", "SYLLABUS_BOOTSTRAPPED", { path: syllabusPath });
-      return syllabusPath;
-    }
-
-    // Fallback: basic template if bootstrap fails
-    // Ensure agents directory exists
-    if (!fs.existsSync(agentsDir)) {
-      fs.mkdirSync(agentsDir, { recursive: true });
-    }
-
-    // Detect project name
-    const projectName = path.basename(dir);
-
-    const template = [
-      `# ${projectName} — Agent Knowledge Syllabus`,
-      `> **Auto-generated by Mission Barisal** on ${new Date().toISOString().slice(0, 10)}`,
-      `> This file grows as agents learn about the project.`,
-      "",
-      "## Latest Learnings",
-      "",
-      "| \u09a4\u09be\u09b0\u09bf\u0996 | \u09b8\u09cb\u09b0\u09cd\u09b8 | \u099f\u09aa\u09bf\u0995 |",
-      "|------|-------|-------|",
-      "| — | — | Initial syllabus created |",
-      "",
-      "---",
-      "",
-      "## 1. Project Knowledge",
-      "",
-      "### Project Identity",
-      `- **Name:** ${projectName}`,
-      `- **Root:** ${dir}`,
-      `- **Mission Barisal Version:** v3.0`,
-      "",
-      "### SSOT Reference",
-      "The SSOT.md file contains the project's Single Source of Truth:",
-      "- Tech stack & framework detection",
-      "- File structure",
-      "- Auto-detected project identity",
-      "",
-      "## 2. Architecture (Mission Barisal)",
-      "",
-      "### Core Components",
-      "| Component | Location | Description |",
-      "|-----------|----------|-------------|",
-      "| **Server** | api.js | Port " + PORT + ", zero external deps |",
-      "| **Extension** | VS Code Extension | LanguageModelChatProvider |",
-      "| **SSOT** | .zombiecoder/SSOT.md | Single Source of Truth |",
-      "| **Syllabus** | .zombiecoder/agents/syllabus.md | Agent learned knowledge |",
-      "| **Memory** | .zombiecoder/agents/memory.json | Conversation history |",
-      "",
-      "### Three-File Memory System",
-      "1. **SSOT.md** — Project current state (auto-detected)",
-      "2. **syllabus.md** — Agent knowledge (this file — grows over time)",
-      "3. **memory.json** — Conversation history",
-      "",
-      "### Agent System (" + (typeof AGENTS !== "undefined" && AGENTS.length ? AGENTS.length : 9) + " Agents)",
-      "| Agent | ID | Persona | Style |",
-      "|-------|----|---------|-------|",
-      ...(typeof AGENTS !== "undefined" && AGENTS.length
-        ? AGENTS.map((a) => "| **" + (a.name || a.id) + "** | " + a.id + " | " + (a.role || "general") + " | " + (a.persona ? a.persona.split(".")[0].slice(0, 40) : "Barishali") + " |")
-        : [
-            "| **Code Guru** | code-guru | Code Guru - Monu | Barishali playful |",
-            "| **Bug Hunter** | bug-hunter | Bug Hunter - Jewel | Sergeant serious |",
-            "| **Security Hero** | security-hero | Security Hero - Bablu | Cautious, paranoid |",
-            "| **Performance Wizard** | perf-wizard | Performance Wizard - Rashed | Optimization crazy |",
-            "| **Documentation King** | doc-king | Documentation King - Halim | Clean, structured |",
-            "| **QA Tyrant** | qa-tyrant | QA Tyrant - Mojnu | Detailed, reviewer |",
-            "| **Team Heart** | team-heart | Team Heart - Jara | Empathetic, supportive |",
-            "| **Customer Experience** | customer-experience-specialist | Customer Experience Specialist | Client-focused |",
-            "| **E-Commerce Operations** | ecommerce-operations-analyst | E-Commerce Operations Analyst | Data-driven |",
-          ]),
-      "",
-      "## 3. Knowledge Log",
-      "",
-      "*Agents append new learnings here as they discover them.*",
-      "",
-      "---",
-      `*Auto-generated by Mission Barisal v3 on ${new Date().toISOString()}*`,
-      "",
-    ].join("\n");
-
-    fs.writeFileSync(syllabusPath, template, "utf8");
-    log("INFO", "SYLLABUS_CREATED", {
-      path: syllabusPath,
-      size: template.length,
-    });
-
-    return syllabusPath;
+    const result = syllabusModule.ensureSyllabus(
+      projectDir || mcpWorkingDir || path.resolve("."),
+      { agents: typeof AGENTS !== "undefined" ? AGENTS : [], log },
+    );
+    return result.path || null;
   } catch (e) {
     log("WARN", "SYLLABUS_AUTO_FAIL", { error: e.message });
     return null;
   }
 }
 
-// ─── Syllabus & Memory System ─────────────────────────────
-const AGENTS_DIR = ".zombiecoder/agents";
-
-function getAgentsPath(projectDir) {
-  const dir = projectDir || mcpWorkingDir || path.resolve(".");
-  return path.join(dir, AGENTS_DIR);
-}
-
-// BUG #1 FIX: Syllabus Caching — avoid repeated disk reads
-// Cache keyed by projectDir, with mtime validation for invalidation
-const _syllabusCacheMap = new Map(); // projectDir → { content, mtimeMs }
-
-/**
- * Read syllabus.md content for a project directory.
- * Returns markdown string or empty string.
- * Uses mtime-based caching to avoid repeated disk reads (8-10x per mission).
- */
+/** Read the canonical project syllabus (bounded, mtime-cached). */
 function readSyllabus(projectDir) {
   try {
-    const agentsDir = getAgentsPath(projectDir);
-    const syllabusPath = path.join(agentsDir, "syllabus.md");
-    if (fs.existsSync(syllabusPath)) {
-      const stat = fs.statSync(syllabusPath);
-      const cached = _syllabusCacheMap.get(syllabusPath);
-      // Return cache if mtime unchanged
-      if (cached && cached.mtimeMs === stat.mtimeMs && cached.content) {
-        log("INFO", "SYLLABUS_LOADED", {
-          path: syllabusPath,
-          size: cached.content.length,
-          cached: true,
-        });
-        return cached.content;
-      }
-      // Cache miss — read from disk and store
-      const content = fs.readFileSync(syllabusPath, "utf8").trim();
-      _syllabusCacheMap.set(syllabusPath, { content, mtimeMs: stat.mtimeMs });
-      log("INFO", "SYLLABUS_LOADED", {
-        path: syllabusPath,
-        size: content.length,
-        cached: false,
-      });
-      return content;
-    }
-    log("WARN", "SYLLABUS_NOT_FOUND", { path: syllabusPath });
-    // Auto-create syllabus.md if it doesn't exist (lazy init)
-    log("INFO", "SYLLABUS_AUTO_CREATING", { dir: projectDir || mcpWorkingDir });
-    autoSyllabus(projectDir || mcpWorkingDir || path.resolve("."));
-    // Try reading again with cache
-    if (fs.existsSync(syllabusPath)) {
-      const stat = fs.statSync(syllabusPath);
-      const content = fs.readFileSync(syllabusPath, "utf8").trim();
-      if (content.length > 0) {
-        _syllabusCacheMap.set(syllabusPath, { content, mtimeMs: stat.mtimeMs });
-        log("INFO", "SYLLABUS_AUTO_LOADED", {
-          path: syllabusPath,
-          size: content.length,
-        });
-        return content;
-      }
-    }
+    return syllabusModule.readSyllabus(
+      projectDir || mcpWorkingDir || path.resolve("."),
+    );
   } catch (e) {
     log("WARN", "SYLLABUS_READ_FAIL", { error: e.message });
+    return "";
   }
-  return "";
 }
 
-/**
- * Add a new entry to syllabus.md.
- * @param {string} topic - Topic name
- * @param {object} entry - { source, date, summary, keyPoints, gitHubLink, usedIn }
- */
-/**
- * Initialize syllabus with full instructions from Evidence-Driven docs.
- * Called once on first workspace setup — provides complete agent guidelines
- * so agents don't need massive system prompts.
- */
+// `agentsDir` is kept so existing callers that pass the old path still work;
+// the module resolves the canonical file itself.
 function bootstrapSyllabus(projectDir) {
-  let fullInstructions = `# Mission Barisal — Complete Agent Syllabus
-
-> Auto-generated from Evidence-Driven documentation.
-> Agents MUST read this file before responding.
-> Contains ALL rules, personas, and system knowledge.
-
----
-
-## Latest Learnings
-
-| \u09a4\u09be\u09b0\u09bf\u0996 | \u09b8\u09cb\u09b0\u09cd\u09b8 | \u099f\u09aa\u09bf\u0995 |
-|------|-------|-------|
-| — | — | Initial syllabus bootstrapped |
-
----
-
-## 1. CORE SYSTEM IDENTITY
-
-- **Name:** ZombieCoder Mission Barisal v3
-- **Owner:** Sahon Srabon (Developer Zone) — Dhaka, Bangladesh
-- **Architecture:** Multi-Agent Gateway with Zero Dependencies
-- **MCP Protocol:** Model Context Protocol — JSON-RPC 2.0 over SSE/HTTP/UDS
-
-## 2. EVIDENCE-DRIVEN PRINCIPLES
-
-> "First Evidence, Then Conclusion. First Truth, Then Confidence."
-
-### Universal Rules (ALL Agents MUST Follow)
-1. **SSOT First** — Never assume. Read SSOT before making claims.
-2. **Evidence Before Confidence** — Proof is mandatory. No proof = no answer.
-3. **Web Search** — Search for facts when SSOT/syllabus lacks data.
-4. **Tool Before Guess** — If a tool is available, USE IT. Don't guess.
-5. **State Uncertainty** — If unsure, say it clearly. Never hallucinate.
-6. **Normalize Everything** — All outputs must be in standard format.
-7. **Respect Reality** — Facts matter more than impressions.
-8. **Never Hide Errors** — Report errors transparently.
-9. **Explain Reasoning** — Show your work. Explain your logic.
-10. **Code in English** — All code, comments, and technical docs in English.
-11. **Bengali for Users** — User-facing chat in Bangla (Barishali style).
-12. **No Emojis in Code** — Emojis only in user-facing chat responses.
-
-## 3. AGENT PERSONAS
-
-| ID | Name | Role | Priority |
-|----|------|------|----------|
-`;
-
-  // Add agent rows
-  if (typeof AGENTS !== "undefined" && AGENTS.length > 0) {
-    for (const a of AGENTS) {
-      fullInstructions += `| ${a.id} | ${a.name} | ${a.role} | ${a.priority} |\n`;
-    }
-  }
-
-  fullInstructions += `
-### Agent Roles
-- **code-guru (Monu):** System Architecture — design patterns, code structure, project organization
-- **bug-hunter (Jewel):** Debugging — error handling, logic validation, root cause analysis
-- **security-hero (Bablu):** Security — vulnerability assessment, data protection
-- **perf-wizard (Rashed):** Performance — optimization, caching, resource management
-- **doc-king (Halim):** Documentation — API specs, README, code comments
-- **qa-tyrant (Mojnu):** Quality — final verification, consensus, release readiness
-
-## 4. TYPE SAFETY (ANTI-DOTE) SYSTEM
-
-Every execution goes through 6-step anti-dote chain:
-1. **validateInput** — Schema enforcement
-2. **checkProof** — Logical feasibility
-3. **getUserConsent** — User permission
-4. **setGoalContract** — Success metrics
-5. **execute** — Run mission/task
-6. **verifyOutput** — Check against contract
-
-Anti-dote runs on ALL endpoints: /v1/chat/completions, /api/mission, MCP, /api/v1/anti-dote
-Monitoring mode: Anti-dote NEVER blocks execution — only reports results.
-
-## 5. CUSTOM PROVIDER SYSTEM
-
-Providers are defined via env vars: CUSTOM_PROVIDER_N_NAME, URL, KEY, MODELS, PRIORITY, TYPE.
-Priority-based fallback: If primary provider fails, next priority takes over.
-Format normalization: Haq Mawla Normalizer converts ALL provider responses to OpenAI format.
-
-## 6. SESSION & MEMORY
-
-- Sessions auto-verify via /api/verify-session
-- Three-file memory: SSOT.md (project state) → syllabus.md (knowledge) → memory.json (conversations)
-- SSOT, Memory, and Syllabus are BOUNDED parameters — if input falls outside them, agents say "\u0986\u09ae\u09be\u09b0 \u0995\u09be\u099b\u09c7 \u09aa\u09cd\u09b0\u09ae\u09be\u09a3 \u09a8\u09c7\u0987"
-
-## 7. UNIVERSAL SOCKET ARCHITECTURE
-
-Supports: HTTP, SSE, WebSocket, Unix Domain Socket (UDS_PATH / UDS_PORT)
-Transport priority: UDS → HTTP → WS (auto-detected based on environment)
-cPanel/LiteSpeed: Auto-bypass UDS, fallback to HTTP only
-
-> **Transport scope (evidence-based):** Outbound provider API requests - provider/* adapters via provider/transport.js - use plain TCP http/https (hostname + port from baseUrl); UDS socketPath only when a provider config explicitly sets it. UDS, WebSocket, and SSE are **server-inbound** transports only (the MCP/broker socket and streaming responses), not used for outbound provider calls.
-
----
-
-*Generated by Mission Barisal v3 — Evidence-Driven, Proof-First*
-`;
-
-  try {
-    const agentsDir = getAgentsPath(projectDir);
-    if (!fs.existsSync(agentsDir)) fs.mkdirSync(agentsDir, { recursive: true });
-    const syllabusPath = path.join(agentsDir, "syllabus.md");
-
-    // Only write if syllabus doesn't exist or is empty
-    if (
-      !fs.existsSync(syllabusPath) ||
-      fs.readFileSync(syllabusPath, "utf8").trim().length < 50
-    ) {
-      fs.writeFileSync(syllabusPath, fullInstructions, "utf8");
-      log("INFO", "SYLLABUS_BOOTSTRAPPED", {
-        path: syllabusPath,
-        size: fullInstructions.length,
-      });
-      return true;
-    }
-    log("INFO", "SYLLABUS_EXISTS", { path: syllabusPath });
-    return false;
-  } catch (e) {
-    log("WARN", "SYLLABUS_BOOTSTRAP_FAIL", { error: e.message });
-    return false;
-  }
+  const result = syllabusModule.ensureSyllabus(
+    projectDir || mcpWorkingDir || path.resolve("."),
+    { agents: typeof AGENTS !== "undefined" ? AGENTS : [], log },
+  );
+  return result.created;
 }
 
 function writeSyllabus(projectDir, topic, entry) {
-  try {
-    const agentsDir = getAgentsPath(projectDir);
-    // Ensure directory exists
-    if (!fs.existsSync(agentsDir)) {
-      fs.mkdirSync(agentsDir, { recursive: true });
-    }
-    const syllabusPath = path.join(agentsDir, "syllabus.md");
-
-    // Build the markdown entry
-    const date = entry.date || new Date().toISOString().slice(0, 10);
-    const md = `
-### ${topic}
-- **Source:** ${entry.source || "Unknown"}
-- **Date:** ${date}
-- **Summary:** ${entry.summary || ""}
-- **Key Points:**
-${(entry.keyPoints || []).map((kp) => `  - ${kp}`).join("\n")}
-${entry.gitHubLink ? `- **GitHub Skill Link:** ${entry.gitHubLink}\n` : ""}${entry.usedIn ? `- **Used In:** ${entry.usedIn}\n` : ""}
-`;
-
-    // Append to file (create if not exists)
-    fs.appendFileSync(syllabusPath, md, "utf8");
-
-    log("INFO", "SYLLABUS_UPDATED", {
-      topic,
-      date,
-      path: syllabusPath,
-    });
-
-    // Also update the latest learnings table at the top
-    _updateSyllabusIndex(agentsDir, topic, date, entry.source);
-
-    return true;
-  } catch (e) {
-    log("WARN", "SYLLABUS_WRITE_FAIL", { error: e.message });
-    return false;
-  }
-}
-
-/**
- * Internal: update the "Latest Learnings" table in syllabus.md
- */
-function _updateSyllabusIndex(agentsDir, topic, date, source) {
-  try {
-    const syllabusPath = path.join(agentsDir, "syllabus.md");
-    if (!fs.existsSync(syllabusPath)) return;
-    let content = fs.readFileSync(syllabusPath, "utf8");
-
-    // Find the latest learnings table and prepend a row
-    const tableLine = `| ${date} | ${source || "—"} | ${topic} |\n`;
-    const tableMarker = "| \u09a4\u09be\u09b0\u09bf\u0996 | \u09b8\u09cb\u09b0\u09cd\u09b8 | \u099f\u09aa\u09bf\u0995 |";
-
-    if (content.includes(tableMarker)) {
-      // Insert after the header row (header + separator)
-      const lines = content.split("\n");
-      for (let i = 0; i < lines.length; i++) {
-        if (lines[i].includes(tableMarker)) {
-          // i+1 should be separator, insert after i+1
-          lines.splice(i + 2, 0, tableLine.trimEnd());
-          break;
-        }
-      }
-      fs.writeFileSync(syllabusPath, lines.join("\n"), "utf8");
-    } else {
-      // FIX: bootstrapped syllabi (bootstrapSyllabus) had NO
-      // Latest Learnings table — create it after the first `---`.
-      // This migrates existing bootstrapped syllabi + new ones.
-      const tableSection =
-        "## Latest Learnings\n\n" +
-        "| \u09a4\u09be\u09b0\u09bf\u0996 | \u09b8\u09cb\u09b0\u09cd\u09b8 | \u099f\u09aa\u09bf\u0995 |\n" +
-        "|------|-------|-------|\n" +
-        tableLine.trimEnd() + "\n\n---";
-      content = content.replace(/^---/m, tableSection);
-      fs.writeFileSync(syllabusPath, content, "utf8");
-    }
-  } catch (e) {
-    // Silently fail — this is non-critical
-  }
+  return syllabusModule.recordLearning(
+    projectDir || mcpWorkingDir || path.resolve("."),
+    topic,
+    entry,
+    { log },
+  );
 }
 
 /**
@@ -3617,9 +3365,38 @@ function buildToolsDescription(toolMap) {
 }
 
 /**
+ * Project session memory lives in SQLite (WAL). The legacy ctx_*.json /
+ * memory.json files are imported once per project and never written again.
+ * Returns null when the DB is unavailable so callers can fall back to JSON.
+ */
+let PROJECT_MEMORY = null;
+function getProjectMemoryStore() {
+  if (PROJECT_MEMORY) return PROJECT_MEMORY;
+  if (!MODELS_DB) return null;
+  try {
+    PROJECT_MEMORY = createProjectMemory({
+      db: MODELS_DB,
+      log: (level, event, data) => log(level || "INFO", event, data || {}),
+    });
+    return PROJECT_MEMORY;
+  } catch (e) {
+    log("WARN", "PROJECT_MEMORY_INIT_FAIL", { error: e.message });
+    return null;
+  }
+}
+
+/**
  * Read memory.json for a project directory.
  */
 function readMemory(projectDir) {
+  const store = getProjectMemoryStore();
+  if (store) {
+    try {
+      return store.readState(projectDir || mcpWorkingDir || path.resolve("."));
+    } catch (e) {
+      log("WARN", "MEMORY_READ_FAIL", { error: e.message });
+    }
+  }
   try {
     const agentsDir = getAgentsPath(projectDir);
     const memPath = path.join(agentsDir, "memory.json");
@@ -3651,6 +3428,15 @@ function readMemory(projectDir) {
  * Write to memory.json.
  */
 function writeMemory(projectDir, data) {
+  const store = getProjectMemoryStore();
+  if (store) {
+    try {
+      store.writeState(projectDir || mcpWorkingDir || path.resolve("."), data);
+      return true;
+    } catch (e) {
+      log("WARN", "MEMORY_WRITE_FAIL", { error: e.message });
+    }
+  }
   try {
     const agentsDir = getAgentsPath(projectDir);
     if (!fs.existsSync(agentsDir)) {
@@ -3668,10 +3454,28 @@ function writeMemory(projectDir, data) {
 }
 
 /**
- * Archive current session to sessions/ folder.
- * Summarizes the conversation and saves it with timestamp.
+ * Archive current session to the SQLite project_memory table.
+ * Falls back to the legacy sessions/ctx_*.json file when the DB is down.
  */
 function archiveSession(projectDir, sessionId, messages, summary) {
+  const store = getProjectMemoryStore();
+  if (store) {
+    try {
+      const dir = projectDir || mcpWorkingDir || path.resolve(".");
+      const archiveId = store.archive(dir, sessionId, messages, summary, {
+        metadata: { system_identity: identityMetadata(systemIdentityCore()) },
+      });
+      log("INFO", "SESSION_ARCHIVED", {
+        session: archiveId,
+        path: "sqlite:project_memory",
+        project: path.resolve(dir),
+        messages: (messages || []).length,
+      });
+      return archiveId;
+    } catch (e) {
+      log("WARN", "SESSION_ARCHIVE_DB_FAIL", { error: e.message });
+    }
+  }
   try {
     const agentsDir = getAgentsPath(projectDir);
     const sessionsDir = path.join(agentsDir, "sessions");
@@ -3813,6 +3617,34 @@ function _updateSessionIndex(agentsDir, archive) {
  * Returns a formatted string with recent summaries.
  */
 function restoreRecentContext(projectDir, maxSessions = 3) {
+  const store = getProjectMemoryStore();
+  if (store) {
+    try {
+      const archives = store.recent(
+        projectDir || mcpWorkingDir || path.resolve("."),
+        maxSessions,
+      );
+      if (archives.length === 0) return "";
+      let context = "\n\n--- Previous Session Context ---\n";
+      for (const data of archives) {
+        context += `\n[Session: ${data.session_id} | ${data.created_at}]\n`;
+        context += `Summary: ${data.summary}\n`;
+        if (data.key_points && data.key_points.length > 0) {
+          context += `Key points: ${data.key_points.join("; ")}\n`;
+        }
+        if (data.decisions && data.decisions.length > 0) {
+          context += `Decisions: ${data.decisions.join("; ")}\n`;
+        }
+      }
+      log("INFO", "CONTEXT_RESTORED", {
+        sessions: archives.length,
+        source: "sqlite:project_memory",
+      });
+      return context;
+    } catch (e) {
+      log("WARN", "CONTEXT_RESTORE_FAIL", { error: e.message });
+    }
+  }
   try {
     const agentsDir = getAgentsPath(projectDir);
     const sessionsDir = path.join(agentsDir, "sessions");
@@ -3862,6 +3694,17 @@ function restoreRecentContext(projectDir, maxSessions = 3) {
  * Search session archives by keyword.
  */
 function searchSessions(projectDir, keyword) {
+  const store = getProjectMemoryStore();
+  if (store) {
+    try {
+      return store.search(
+        projectDir || mcpWorkingDir || path.resolve("."),
+        keyword,
+      );
+    } catch (e) {
+      log("WARN", "SESSION_SEARCH_FAIL", { error: e.message });
+    }
+  }
   try {
     const agentsDir = getAgentsPath(projectDir);
     const indexPath = path.join(agentsDir, "sessions", "_index.json");
@@ -3966,19 +3809,27 @@ const MCP_SOCKET_IDENTITY = new WeakMap();
 
 function isLoopbackAddress(value) {
   const addr = String(value || "");
-  return addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1" || addr === "localhost";
+  return addr === "localhost" || addr === "::1" || addr === "::ffff:localhost" || addr === "localhost";
 }
 
 function socketAddress(req) {
-  const s = req && req.socket;
-  if (!s) return "";
-  try {
-    const addr = s.address();
-    if (typeof addr === "string") return "unix";
-  } catch (_) {
-    /* address() can throw after the socket is destroyed */
+  const s = req && (req.socket || req.connection);
+  if (s) {
+    try {
+      const addr = s.address();
+      if (typeof addr === "string") return "unix";
+    } catch (_) {
+      /* address() can throw after the socket is destroyed */
+    }
+    if (s.remoteAddress) return s.remoteAddress;
   }
-  return s.remoteAddress || "";
+  // A forwarded request may outlive the client socket. Keep the caller
+  // attributable instead of falling back to "unknown".
+  const h = (req && req.headers) || {};
+  const forwarded = String(h["x-forwarded-for"] || h["x-real-ip"] || "")
+    .split(",")[0]
+    .trim();
+  return forwarded || "";
 }
 
 function requestOrigin(req) {
@@ -4042,6 +3893,38 @@ function requestActor(req) {
     agent: String(agent || "").slice(0, 160),
     user_agent: String(h["user-agent"] || "").slice(0, 160),
   };
+}
+
+// Resolve a stable session owner. Explicit body/header identity wins; a
+// bearer token is hashed; the network address is the last honest fallback.
+// The source is logged so an operator can tell "anonymous" from "ip" at once.
+function resolveClientIdentity(req, parsed) {
+  const h = (req && req.headers) || {};
+  const body = parsed && (parsed.client_id || parsed.client);
+  const cached = mcpSocketIdentity(req).client;
+  const header =
+    h["x-client-id"] ||
+    h["x-user-id"] ||
+    h["x-mcp-client-name"] ||
+    h["x-client-name"] ||
+    cached ||
+    "";
+  if (body && String(body).trim()) {
+    return { id: String(body).trim().slice(0, 160), source: "body" };
+  }
+  if (header && String(header).trim()) {
+    return { id: String(header).trim().slice(0, 160), source: "header" };
+  }
+  const auth = String(h.authorization || "").trim();
+  if (auth) {
+    const digest = crypto.createHash("sha256").update(auth).digest("hex").slice(0, 12);
+    return { id: "token:" + digest, source: "authorization" };
+  }
+  const ip = socketAddress(req);
+  if (ip && ip !== "unknown") {
+    return { id: "ip:" + ip, source: "ip" };
+  }
+  return { id: "anonymous", source: "fallback" };
 }
 
 function actorHeader(actor) {
@@ -4175,153 +4058,16 @@ function defaultAgentModel() {
 }
 
 async function loadPersonas() {
-  const merged = [];
-  const seen = new Set();
-
-  // Load the file definitions once. A DB row written by an older seed can
-  // still contain the "MODELS_DB" sentinel; resolveAgentModel ignores it and
-  // returns a real catalog/env value or an empty string.
-  let fileAgents = [];
-  try {
-    fileAgents = loadAgentFiles();
-  } catch (e) {
-    log("WARN", "AGENTS_FILE_LOAD_FAIL", { error: e.message });
-  }
-  const fileAgentById = new Map(fileAgents.map((a) => [a.id, a]));
-
-  // 0. DB agents first (PHASE A) — enabled rows from the agents table.
-  //    DB is the primary source; files below fill gaps / override.
-  if (MODELS_DB) {
-    try {
-      const rows = MODELS_DB.prepare(
-        "SELECT id, name, role, model, expertise, persona, enabled, priority FROM agents WHERE enabled = 1 ORDER BY priority ASC, name ASC"
-      ).all();
-      for (const r of rows) {
-        if (!r.id) continue;
-        seen.add(r.id);
-        merged.push({
-          id: r.id,
-          name: r.name || r.id,
-          // A real DB model wins. A legacy "MODELS_DB" row is treated as
-          // empty; the agent keeps no model until the admin binds one.
-          model: resolveAgentModel(fileAgentById.get(r.id), r.model) || "",
-          role: r.role || "general",
-          expertise: r.expertise || "",
-          priority: r.priority || 99,
-          persona: r.persona || "",
-          source: "db",
-        });
-      }
-      if (rows.length > 0) {
-        log("INFO", "PERSONAS_DB_LOADED", { count: rows.length });
-      }
-    } catch (e) {
-      log("WARN", "PERSONAS_DB_READ_FAIL", { error: e.message });
-    }
-  }
-
-  // 1.5. Load from agent/*.js files (zero-dependency module loader)
-  //     These serve as curated defaults; DB edits override them.
-  try {
-    const fileAgents = loadAgentFiles();
-    for (const a of fileAgents) {
-      if (a && a.id && !seen.has(a.id)) {
-        seen.add(a.id);
-        merged.push(a);
-        continue;
-      }
-      // The DB row was pushed first, so `seen` already contains this id and
-      // the file persona used to be discarded. When the DB persona is empty
-      // or trivially short (an admin-saved stub, not the real text), upgrade
-      // the already-pushed entry with the authoritative file persona.
-      if (a && a.id && seen.has(a.id) && a.persona) {
-        const existing = merged.find((m) => m.id === a.id);
-        const dbLen = (existing?.persona || "").trim().length;
-        const fileLen = a.persona.trim().length;
-        if (existing && (!dbLen || (fileLen > dbLen && fileLen > 200))) {
-          existing.persona = a.persona;
-          existing.persona_source = "agent/*.js";
-          log("INFO", "PERSONA_BACKFILL_FROM_FILE", {
-            id: a.id,
-            from_chars: dbLen,
-            to_chars: fileLen,
-          });
-        }
-      }
-    }
-    if (fileAgents.length > 0) {
-      log("INFO", "AGENTS_FILE_LOADED", {
-        source: "agent/*.js",
-        count: fileAgents.length,
-      });
-    }
-  } catch (e) {
-    log("WARN", "AGENTS_FILE_LOAD_FAIL", {
-      error: e.message,
-    });
-  }
-
-  // NOTE: PERSONAS.md is retired — agent/*.js (loaded above) is the single
-  // source of truth, so there is no markdown pass here any more.
-
-  // 2. Custom agents from .zombiecoder/agents/*.md (YAML frontmatter)
-  try {
-    const agentsDir = getAgentsPath();
-    if (fs.existsSync(agentsDir)) {
-      const files = fs
-        .readdirSync(agentsDir)
-        .filter(
-          (f) =>
-            f.endsWith(".md") &&
-            f !== "syllabus.md" &&
-            f !== "SSOT.md" &&
-            f !== "PERSONAS.md",
-        );
-      for (const f of files) {
-        try {
-          const content = fs.readFileSync(path.join(agentsDir, f), "utf8");
-          const custom = parseYamlAgentFile(content);
-          if (custom && custom.id) {
-            if (seen.has(custom.id)) {
-              // Custom file wins over same-id agent from PERSONAS.md
-              const idx = merged.findIndex((a) => a.id === custom.id);
-              if (idx >= 0) merged[idx] = custom;
-            } else {
-              seen.add(custom.id);
-              merged.push(custom);
-            }
-          }
-        } catch (e) {
-          log("WARN", "CUSTOM_AGENT_PARSE_FAIL", {
-            file: f,
-            error: e.message,
-          });
-        }
-      }
-    }
-  } catch (e) {
-    log("WARN", "CUSTOM_AGENTS_SCAN_FAIL", { error: e.message });
-  }
-
-  // An agent without a persona is invalid; a generic persona is not a
-  // fallback. Drop those rows and log them instead of inventing text.
-  const valid = [];
-  for (const a of merged) {
-    if (a && a.id && String(a.persona || "").trim()) {
-      valid.push(a);
-    } else {
-      log("WARN", "AGENT_DROPPED_NO_PERSONA", {
-        id: (a && a.id) || "(no id)",
-        source: (a && a.source) || "unknown",
-      });
-    }
-  }
-
+  const valid = agentsModule.loadAgents({
+    db: MODELS_DB,
+    fileAgents: loadAgentFiles,
+    customDir: getAgentsPath(),
+    parseCustom: parseYamlAgentFile,
+    resolveModel: resolveAgentModel,
+    log,
+  });
   if (valid.length > 0) {
-    log("INFO", "PERSONAS_LOADED", {
-      source: "local+custom",
-      count: valid.length,
-    });
+    log("INFO", "PERSONAS_LOADED", { source: "local+custom", count: valid.length });
     return valid;
   }
   log("WARN", "PERSONAS_NOT_FOUND", { file: PERSONAS_FILE });
@@ -4688,7 +4434,7 @@ function authFromRequest(req) {
 //  MCP PRIVILEGED-TOOL GATE  (SECURITY 2026-10-08)
 // ══════════════════════════════════════════════════════════════
 // EVIDENCE — before this gate POST /mcp ran arbitrary shell with NO auth at all:
-//   curl -s -X POST http://127.0.0.1:3000/mcp \
+//   curl -s -X POST http://localhost:3000/mcp \
 //     -d '{"method":"tools/call","params":{"name":"exec",
 //          "arguments":{"command":"id; hostname"}}}'
 //   -> uid=999(xubuntu) ... groups=...,sudo  [exit] 0
@@ -4738,7 +4484,7 @@ function mcpAdminTokenOk(provided) {
 // ADMIN_TOKEN was never set in .env, so it always returned true and every
 // /api/admin/* write (providers, models, agents, tools, users) accepted
 // anonymous requests. Reproduced live before the fix:
-//     curl -X POST http://127.0.0.1:3000/api/admin/tools \
+//     curl -X POST http://localhost:3000/api/admin/tools \
 //       -d '{"tool":"terminal","enabled":false}'
 //     -> {"ok":true,"tool":"terminal","enabled":false}   (no credential)
 // Declaring it block-locally also meant routes defined earlier in the same
@@ -4786,7 +4532,7 @@ function mcpAuthFromHeaders(req) {
 }
 
 // Cross-origin / CSRF gate. A hostile web page can POST to
-// http://127.0.0.1:3000/mcp from the victim's browser — that was the
+// http://localhost:3000/mcp from the victim's browser — that was the
 // realistic path to RCE even after loopback binding. No-Origin = native
 // client = allowed; every Origin must match an exact origin derived from
 // APP_URL, MAIN_HOST and deploy/tools.json. There is no wildcard and no
@@ -4880,7 +4626,46 @@ function mcpGate(req, toolName, trusted) {
 // bug: "Tools provided: 71, Estimated input tokens: 50471"). Also validates
 // that tools is an array. Used by: /v1/chat/completions, /api/mission,
 // /api/v1/anti-dote, /api/input, WS chat, MCP agent_mission/agent_single.
-const MAX_TOOLS_LIMIT = 25; // max tools to send to small models (reduced from 20→15: free tier models choke on >15 tools)
+const MAX_TOOLS_LIMIT = 25; // hard ceiling; provider capabilities set the real cap
+// Budget guards. Tool results and history are the two places a prompt grows
+// without bound; both are capped before every model call.
+const MAX_TOOL_RESULT_CHARS = parseInt(process.env.MAX_TOOL_RESULT_CHARS || "3000", 10);
+const MAX_HISTORY_CHARS = parseInt(process.env.MAX_HISTORY_CHARS || "6000", 10);
+const PROMPT_MAX_TOKENS = parseInt(process.env.PROMPT_MAX_TOKENS || "0", 10);
+
+function promptBudgetFor(model) {
+  let cfg = {};
+  try {
+    const resolved = resolveProvider(model, true);
+    cfg = (resolved && resolved.config) || {};
+  } catch (_) {}
+  const contextWindow = Number(cfg.contextWindow) || 0;
+  const reserve = Number(cfg.maxTokens) || 1024;
+  if (contextWindow > 0) return Math.max(512, contextWindow - reserve);
+  return Number.isFinite(PROMPT_MAX_TOKENS) && PROMPT_MAX_TOKENS > 0 ? PROMPT_MAX_TOKENS : 0;
+}
+
+function invisibleCharCount(text) {
+  const counts = scanInvisible(String(text || ""));
+  return Object.values(counts).reduce((sum, n) => sum + n, 0);
+}
+
+function trimHistoryByChars(entries, maxChars) {
+  const list = Array.isArray(entries) ? entries : [];
+  const limit = Number.isFinite(maxChars) && maxChars > 0 ? maxChars : 6000;
+  const out = [];
+  let total = 0;
+  for (let i = list.length - 1; i >= 0; i--) {
+    const entry = list[i];
+    if (!entry || (entry.role !== "user" && entry.role !== "assistant")) continue;
+    const raw = String(entry.content || "");
+    const clipped = raw.length > 2000 ? raw.slice(0, 2000) + " ..." : raw;
+    if (out.length > 0 && total + clipped.length > limit) break;
+    out.unshift({ role: entry.role, content: clipped });
+    total += clipped.length;
+  }
+  return out;
+}
 
 // Convert MCP_TOOLS catalog → OpenAI function-tools format so any page
 // can request the full server tool set with body { tools: "mcp" }.
@@ -5685,10 +5470,14 @@ function createSession(clientId, editor, ip, customId, extraMeta) {
         if (extraMeta) {
           existing.metadata = { ...(existing.metadata || {}), ...extraMeta };
         }
+        if (existing.metadata && !existing.metadata.system_identity) {
+          existing.metadata.system_identity = identityMetadata(systemIdentityCore());
+        }
         activeSessions.set(existing.id, existing);
         log("INFO", "SESSION_REUSE", {
           id: existing.id.slice(0, 8),
           client_id: clientKey,
+          client_id_source: (extraMeta && extraMeta.client_id_source) || "unknown",
           messages: existing.messages,
         });
         return existing;
@@ -5722,6 +5511,9 @@ function createSession(clientId, editor, ip, customId, extraMeta) {
       os_platform: extraMeta?.os_platform || "",
       client_version: extraMeta?.client_version || "",
       session_source: extraMeta?.session_source || "mcp",
+      // Every session carries the immutable system identity, so an archived
+      // session can never lose track of which system produced it.
+      system_identity: identityMetadata(systemIdentityCore()),
     },
   };
   sessions.push(session);
@@ -5732,7 +5524,11 @@ function createSession(clientId, editor, ip, customId, extraMeta) {
     const clientKey = (clientId || "anonymous") + ":" + (editor || "unknown");
     clientSessions.set(clientKey, id);
   }
-  log("INFO", "SESSION_CREATE", { id: id.slice(0, 8), editor });
+  log("INFO", "SESSION_CREATE", {
+    id: id.slice(0, 8),
+    editor,
+    client_id_source: (extraMeta && extraMeta.client_id_source) || "unknown",
+  });
   // Lock log: session created
   writeLockLog({
     lock_id: "sess-" + id.slice(0, 12),
@@ -6665,13 +6461,11 @@ function callModelStream(
           const delta =
             (chunk && chunk.choices && chunk.choices[0] && chunk.choices[0].delta) ||
             {};
-          let deltaContent = delta.content || "";
+          const deltaContent = delta.content || "";
           const reasoning = delta.reasoning_content || delta.reasoning || "";
-          // HAQ MAWLA: reasoning-only models — reasoning IS the visible text.
-          if (!deltaContent && reasoning) {
-            deltaContent =
-              typeof reasoning === "string" ? reasoning : JSON.stringify(reasoning);
-          }
+          // Reasoning is a separate channel. Never copy it into content:
+          // OpenAI-compatible clients (OpenCode included) render both fields,
+          // so copying duplicates the chain of thought as the visible answer.
           if (reasoning) {
             reasoningFull +=
               typeof reasoning === "string" ? reasoning : JSON.stringify(reasoning);
@@ -6696,14 +6490,17 @@ function callModelStream(
               }
             }
           }
-          if (onChunk && (deltaContent || (Array.isArray(delta.tool_calls) && delta.tool_calls.length))) {
-            onChunk({ ...delta, content: deltaContent }, chunk);
+          if (onChunk && (deltaContent || reasoning || (Array.isArray(delta.tool_calls) && delta.tool_calls.length))) {
+            // Forward the provider delta unchanged. content stays answer-only;
+            // reasoning_content/reasoning stays on its own channel.
+            onChunk(delta, chunk);
           }
         },
       )
       .then(function (r) {
         const toolCalls = accToolCalls.filter(Boolean);
-        const hasPayload = !!(fullContent || toolCalls.length);
+        // A reasoning-only model is a real answer, not an empty stream.
+        const hasPayload = !!(fullContent || reasoningFull || toolCalls.length);
         const retry = _retryCount || 0;
 
         // Provider-hop first (<3 hops), then model-hop — same chain as before.
@@ -6784,7 +6581,9 @@ function callModelStream(
 
         resolve({
           success: true,
-          content: fullContent,
+          // Aggregated callers still need text when the model only emitted
+          // reasoning; the wire stream itself never duplicates the channel.
+          content: fullContent || reasoningFull,
           ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
           ...(reasoningFull ? { reasoning_content: reasoningFull } : {}),
           model,
@@ -7050,9 +6849,15 @@ function callModel(
         const toolCalls = r.tool_calls || message.tool_calls || null;
         const reasoningContent =
           r.reasoning_content || message.reasoning_content || null;
+        // Reasoning-only models (DeepSeek R1, gpt-oss, ...) are a real
+        // response. Keep the reasoning channel intact and only fall back to
+        // it as the aggregate answer when the provider sent no content.
+        const reasoningText = typeof reasoningContent === "string"
+          ? reasoningContent
+          : (reasoningContent ? JSON.stringify(reasoningContent) : "");
 
         // Empty content → retry WITHOUT tools (too many tools is cause #1)
-        if (!content && !toolCalls && tools && retry < 1) {
+        if (!content && !reasoningText && !toolCalls && tools && retry < 1) {
           log("WARN", "EMPTY_CONTENT_RETRY", {
             model,
             retry: retry + 1,
@@ -7070,7 +6875,7 @@ function callModel(
         const shapeError = !!(
           normalized && normalized.error === "unrecognised_response_shape"
         );
-        if (shapeError || (!content && !toolCalls)) {
+        if (shapeError || (!content && !reasoningText && !toolCalls)) {
           const reason = shapeError ? "unrecognised_response_shape" : "empty_response";
           const detail = (normalized && normalized.error_message) || "";
           markProviderFailure(providerId, reason + (detail ? ": " + detail : ""));
@@ -7104,10 +6909,10 @@ function callModel(
           return;
         }
 
-        if (content || toolCalls) markProviderSuccess(providerId);
+        if (content || reasoningText || toolCalls) markProviderSuccess(providerId);
         resolve({
-          success: !!(content || toolCalls),
-          content: content,
+          success: !!(content || reasoningText || toolCalls),
+          content: content || reasoningText,
           tool_calls: toolCalls,
           ...(reasoningContent ? { reasoning_content: reasoningContent } : {}),
           raw: r.raw,
@@ -7156,12 +6961,42 @@ async function callModelWithTools(
   providerOverride,
 ) {
   const MAX_ROUNDS = 5;
+  const budget = promptBudgetFor(model);
   for (let round = 0; round < MAX_ROUNDS; round++) {
     // ZOMBIE FIX: Don't force tool_choice to "required" — OpenCode free models
     // (nemotron-3-ultra-free, mimo-v2.5-free, big-pickle) return 400 error
     // when tool_choice is "required". Let model decide ("auto" behavior).
     // User can still explicitly pass tool_choice if needed.
     const tc = tool_choice || undefined;
+    const fitted = fitPrompt({
+      messages,
+      tools,
+      maxTokens: budget,
+      maxToolChars: MAX_TOOL_RESULT_CHARS,
+    });
+    messages = fitted.messages;
+    tools = fitted.tools;
+    if (fitted.trimmed) {
+      log("INFO", "PROMPT_TRIMMED", {
+        model,
+        round,
+        tokens: fitted.tokens,
+        budget,
+        messages: messages.length,
+        tools: tools.length,
+      });
+    }
+    log("INFO", "PROMPT_BUDGET", {
+      model,
+      round,
+      tokens: fitted.tokens,
+      budget,
+      messages: messages.length,
+      tools: tools.length,
+      invisible: invisibleCharCount(
+        JSON.stringify(messages) + JSON.stringify(tools),
+      ),
+    });
     const response = await callModel(
       model,
       messages,
@@ -7237,7 +7072,7 @@ async function callModelWithTools(
       messages.push({
         role: "tool",
         tool_call_id: tc.id,
-        content: text.slice(0, 100000),
+        content: text.slice(0, MAX_TOOL_RESULT_CHARS),
       });
     }
   }
@@ -7264,6 +7099,160 @@ async function callModelWithTools(
     success: false,
     error: "Max tool call rounds (" + MAX_ROUNDS + ") exceeded",
     content: "",
+  };
+}
+
+// Streaming twin of callModelWithTools: streams answer text, executes every
+// tool call server-side, and keeps looping until the model answers without
+// asking for another tool. Tool-call deltas never reach the client because
+// this server owns execution.
+async function callModelStreamWithTools(
+  model,
+  messages,
+  temperature,
+  onChunk,
+  tools,
+  tool_choice,
+) {
+  const MAX_ROUNDS = 5;
+  const budget = promptBudgetFor(model);
+  let content = "";
+  let lastProvider = "";
+
+  const forward = (delta, chunk) => {
+    const d = Object.assign({}, delta);
+    // Tool calls are internal on this path.
+    delete d.tool_calls;
+    delete d.function_call;
+    if (typeof d.content === "string") {
+      d.content = stripInvisible(d.content);
+      content += d.content;
+    }
+    if (!d.content && !d.reasoning_content && !d.reasoning) return;
+    if (onChunk) {
+      const upstream = chunk && chunk.choices && chunk.choices[0];
+      onChunk(d, {
+        ...chunk,
+        choices: [{ ...(upstream || { index: 0 }), finish_reason: null }],
+      });
+    }
+  };
+
+  for (let round = 0; round < MAX_ROUNDS; round++) {
+    const fitted = fitPrompt({
+      messages,
+      tools,
+      maxTokens: budget,
+      maxToolChars: MAX_TOOL_RESULT_CHARS,
+    });
+    messages = fitted.messages;
+    tools = fitted.tools;
+    if (fitted.trimmed) {
+      log("INFO", "PROMPT_TRIMMED", {
+        model,
+        round,
+        tokens: fitted.tokens,
+        budget,
+        messages: messages.length,
+        tools: tools.length,
+        stream: true,
+      });
+    }
+    log("INFO", "PROMPT_BUDGET", {
+      model,
+      round,
+      tokens: fitted.tokens,
+      budget,
+      messages: messages.length,
+      tools: tools.length,
+      stream: true,
+      invisible: invisibleCharCount(
+        JSON.stringify(messages) + JSON.stringify(tools),
+      ),
+    });
+    const result = await callModelStream(
+      model,
+      messages,
+      temperature,
+      forward,
+      tools,
+      tool_choice,
+    );
+    if (!result || !result.success) {
+      return Object.assign({ content }, result || { success: false, error: "stream failed" });
+    }
+    lastProvider = result.provider || lastProvider;
+    const tcs = Array.isArray(result.tool_calls) ? result.tool_calls : [];
+    if (!tcs.length) {
+      return {
+        success: true,
+        content: content || result.content || "",
+        tool_calls: null,
+        rounds: round + 1,
+        model,
+        provider: lastProvider,
+      };
+    }
+    messages.push({
+      role: "assistant",
+      content: result.content || null,
+      tool_calls: tcs,
+      ...(result.reasoning_content ? { reasoning_content: result.reasoning_content } : {}),
+    });
+    for (const tc of tcs) {
+      let text = "";
+      try {
+        const args =
+          typeof tc.function.arguments === "string"
+            ? JSON.parse(tc.function.arguments)
+            : tc.function.arguments;
+        const toolResult = await executeMcpTool(tc.function.name, args);
+        text = toolResult.content?.[0]?.text || JSON.stringify(toolResult);
+      } catch (err) {
+        text = "Tool error: " + err.message;
+      }
+      messages.push({
+        role: "tool",
+        tool_call_id: tc.id,
+        content: text.slice(0, MAX_TOOL_RESULT_CHARS),
+      });
+    }
+    log("INFO", "STREAM_TOOL_ROUND", {
+      model,
+      round: round + 1,
+      calls: tcs.length,
+      names: tcs.map((t) => t.function && t.function.name).filter(Boolean),
+    });
+  }
+
+  // Tool budget exhausted: ask for the final answer with no tools.
+  messages.push({
+    role: "user",
+    content:
+      "You have used all available tool calls. Provide the FINAL ANSWER now using the results above. Do not call any more tools.",
+  });
+  const finalFit = fitPrompt({
+    messages,
+    tools: [],
+    maxTokens: budget,
+    maxToolChars: MAX_TOOL_RESULT_CHARS,
+  });
+  const final = await callModelStream(
+    model,
+    finalFit.messages,
+    temperature,
+    forward,
+    undefined,
+    undefined,
+  );
+  return {
+    success: !!(final && final.success),
+    content: content || (final && final.content) || "",
+    tool_calls: null,
+    rounds: MAX_ROUNDS + 1,
+    model,
+    provider: (final && final.provider) || lastProvider,
+    error: final && final.error,
   };
 }
 
@@ -8429,503 +8418,6 @@ async function phase3_combinedOutput(
 }
 
 // ══════════════════════════════════════════════════════════════
-//  ANTI-DOTE TYPE SAFETY SYSTEM — Core Functions
-// ══════════════════════════════════════════════════════════════
-// Chain: validateInput → checkProof → getUserConsent → setGoalContract → execute → verifyOutput
-// wrapWithAntiDote() executes the complete 6-step chain.
-
-/**
- * Create a new Anti-dote contract for a mission
- */
-function newAntiDoteContract(input, context = {}) {
-  return {
-    input,
-    originalInput: input,
-    context,
-    createdAt: new Date().toISOString(),
-    validatedAt: null,
-    proofCheckedAt: null,
-    proof: null,
-    goal: null,
-    constraints: {
-      maxAgents: context.maxAgents || 6,
-      requireProof: true,
-      requireConsent: false,
-      timeout: context.timeout || 120000,
-      allowedTools: context.allowedTools || null,
-    },
-    execution: {
-      startedAt: null,
-      completedAt: null,
-      success: false,
-      error: null,
-      result: null,
-    },
-    verification: {
-      passed: false,
-      score: 0,
-      issues: [],
-      verifiedAt: null,
-    },
-    chain: [],
-  };
-}
-
-/**
- * Step 1: Validate input — schema enforcement
- */
-function antiDoteValidateInput(input, context = {}) {
-  const contract = newAntiDoteContract(input, context);
-
-  if (!input || typeof input !== "string" || input.trim().length === 0) {
-    return {
-      valid: false,
-      contract,
-      error: new AntiDoteError("INVALID_REQUEST", {
-        reason: "Input must be a non-empty string",
-        received: typeof input,
-      }),
-    };
-  }
-  if (input.length > 100000) {
-    return {
-      valid: false,
-      contract,
-      error: new AntiDoteError("INVALID_REQUEST", {
-        reason: "Input exceeds max length (100000 chars)",
-        length: input.length,
-      }),
-    };
-  }
-  if (context && typeof context !== "object") {
-    return {
-      valid: false,
-      contract,
-      error: new AntiDoteError("INVALID_REQUEST", {
-        reason: "Context must be an object",
-        received: typeof context,
-      }),
-    };
-  }
-
-  contract.validatedAt = new Date().toISOString();
-  contract.chain.push("validated");
-  return { valid: true, contract, error: null };
-}
-
-/**
- * Step 2: Check proof — logical feasibility analysis
- */
-function antiDoteCheckProof(contract) {
-  if (!contract.chain.includes("validated")) {
-    return {
-      provable: false,
-      contract,
-      error: new AntiDoteError("PROOF_FAILED", {
-        reason: "Cannot check proof before validation",
-        chain: contract.chain,
-      }),
-    };
-  }
-
-  const input = contract.input;
-  const wordCount = input.split(/\s+/).length;
-  const _hasCode =
-    /\b(code|file|function|fix|bug|implement|create|script|api)\b/i.test(input);
-  const _hasQuestion = /(\?|what|how|why|when|where|explain|tell)/i.test(input);
-  const _hasCommand =
-    /^(create|make|build|write|fix|update|delete|add|change|refactor)/im.test(
-      input.trim(),
-    );
-  const _complexity =
-    wordCount < 5 ? "simple" : wordCount > 100 ? "complex" : "moderate";
-  const proof = {
-    inputLength: input.length,
-    wordCount,
-    hasCodeIndicator: _hasCode,
-    hasQuestionIndicator: _hasQuestion,
-    hasCommandIndicator: _hasCommand,
-    complexity: _complexity,
-    isFeasible: true,
-    reason:
-      "Input: " +
-      wordCount +
-      " words. " +
-      (_hasCode ? "Code-related." : "General.") +
-      " Logically feasible.",
-  };
-
-  contract.proofCheckedAt = new Date().toISOString();
-  contract.proof = proof;
-  contract.chain.push("proof_checked");
-
-  return { provable: true, contract, error: null };
-}
-
-/**
- * Step 3: Set goal contract — define success metrics
- */
-function antiDoteSetGoalContract(contract) {
-  if (!contract.chain.includes("proof_checked")) {
-    return {
-      contracted: false,
-      contract,
-      error: new AntiDoteError("CONTRACT_FAILED", {
-        reason: "Cannot set goal before proof check",
-        chain: contract.chain,
-      }),
-    };
-  }
-
-  const proof = contract.proof;
-  const goal = {
-    type: proof.hasCodeIndicator ? "code_task" : "qa_task",
-    description: contract.input.slice(0, 200),
-    successCriteria: [],
-    requiredAgents: [],
-    requiresCodeSafety: proof.hasCodeIndicator,
-    requiresTestEvidence: proof.hasCodeIndicator,
-  };
-
-  if (proof.hasCodeIndicator) {
-    goal.successCriteria.push("Code changes must be specific (file + line)");
-    goal.successCriteria.push("Test evidence or UNTESTED disclaimer required");
-    goal.requiredAgents = ["code-guru", "qa-tyrant"];
-  }
-  if (proof.hasQuestionIndicator) {
-    goal.successCriteria.push("Response must directly answer with evidence");
-  }
-  if (proof.hasCommandIndicator) {
-    goal.successCriteria.push("Action must be executed or explained");
-  }
-  goal.successCriteria.push("Language must match user input");
-  goal.successCriteria.push("No hallucinated or unverified claims");
-
-  if (proof.complexity === "simple" && goal.requiredAgents.length === 0) {
-    goal.requiredAgents = ["code-guru"];
-  }
-
-  contract.goal = goal;
-  contract.chain.push("goal_set");
-
-  return { contracted: true, contract, error: null };
-}
-
-/**
- * Step 4: Execute — run mission with contract enforcement
- */
-async function antiDoteExecute(contract, missionFn, ...args) {
-  if (!contract.chain.includes("goal_set")) {
-    return {
-      success: false,
-      contract,
-      error: new AntiDoteError("CONTRACT_FAILED", {
-        reason: "Cannot execute before goal contract is set",
-        chain: contract.chain,
-      }),
-    };
-  }
-
-  contract.execution.startedAt = new Date().toISOString();
-  contract.chain.push("executing");
-
-  try {
-    const result = await missionFn(...args);
-    contract.execution.completedAt = new Date().toISOString();
-    contract.execution.success = result.success !== false;
-    contract.execution.result = result;
-    contract.chain.push("executed");
-    return { success: true, contract, result, error: null };
-  } catch (err) {
-    contract.execution.completedAt = new Date().toISOString();
-    contract.execution.success = false;
-    contract.execution.error = { message: err.message, stack: err.stack };
-    contract.chain.push("execution_failed");
-    return {
-      success: false,
-      contract,
-      result: null,
-      error: new AntiDoteError("EXECUTION_FAILED", {
-        reason: err.message,
-        chain: contract.chain,
-      }),
-    };
-  }
-}
-
-/**
- * Step 5: Verify output — check result against goal contract
- * STRICT MODE: No mercy, no loopholes, every claim verified
- */
-function antiDoteVerifyOutput(contract) {
-  if (!contract.chain.includes("executed")) {
-    return {
-      verified: false,
-      contract,
-      error: new AntiDoteError("VERIFICATION_FAILED", {
-        reason: "Cannot verify before execution",
-        chain: contract.chain,
-      }),
-    };
-  }
-
-  const result = contract.execution.result;
-  const goal = contract.goal;
-  // STRICT: Start at 0, earn your score!
-  const verification = { passed: false, score: 0, issues: [], checks: [] };
-
-  if (!result || result.success === false) {
-    verification.passed = false;
-    verification.score = 0;
-    verification.issues.push("Mission execution failed");
-    verification.checks.push({ check: "execution_success", passed: false });
-    contract.verification = {
-      ...verification,
-      verifiedAt: new Date().toISOString(),
-    };
-    contract.chain.push("verified_failed");
-    return { verified: false, contract, result };
-  }
-
-  const combined = result.combined || "";
-  const stats = result.stats || {};
-
-  // ─── CHECK 1: Execution success (mandatory — 0 score if failed) ───
-  // Already handled above — if we reach here, execution succeeded
-
-  // ─── CHECK 2: Combined output exists and has substance ───
-  // BUG #8 FIX: Check content quality, not just length
-  if (!combined || combined.length < 10) {
-    verification.score -= 20;
-    verification.issues.push("Combined output too short or empty");
-    verification.checks.push({ check: "has_output", passed: false });
-  } else {
-    // Quality checks: has structure, has evidence, not just filler
-    const hasHeaders = /#{1,3}\s/.test(combined) || /\n[-=]{3,}/.test(combined);
-    const hasBulletPoints =
-      /[\-\*]\s/.test(combined) || /\d+\.\s/.test(combined);
-    const hasCodeBlocks =
-      /```[\s\S]*?```/.test(combined) || /`[^`]+`/.test(combined);
-    const wordCount = combined.split(/\s+/).length;
-    const hasSubstance = wordCount > 30; // At least 30 words for a real answer
-    const qualityScore =
-      (hasHeaders ? 3 : 0) +
-      (hasBulletPoints ? 3 : 0) +
-      (hasCodeBlocks ? 3 : 0) +
-      (hasSubstance ? 6 : 0);
-    verification.score += Math.min(15, qualityScore);
-    verification.checks.push({
-      check: "has_output",
-      passed: true,
-      detail: `${combined.length} chars, ${wordCount} words, quality=${qualityScore}/15`,
-    });
-  }
-
-  // ─── CHECK 3: Agents responded ───
-  if (!stats || stats.responded === 0) {
-    verification.score -= 30;
-    verification.issues.push("No agents responded");
-    verification.checks.push({ check: "agents_responded", passed: false });
-  } else {
-    const rate = stats.responded / (stats.totalAgents || 1);
-    if (rate < 0.3) {
-      verification.score -= 15;
-      verification.issues.push(
-        "Too few agents responded (" +
-        stats.responded +
-        "/" +
-        stats.totalAgents +
-        ")",
-      );
-      verification.checks.push({
-        check: "agents_responded",
-        passed: false,
-        detail: stats.responded + "/" + stats.totalAgents,
-      });
-    } else {
-      const points = Math.min(20, Math.round(rate * 15));
-      verification.score += points;
-      verification.checks.push({
-        check: "agents_responded",
-        passed: true,
-        detail: stats.responded + "/" + stats.totalAgents,
-      });
-    }
-  }
-
-  // ─── CHECK 4: Cross-verification was done ───
-  // BUG #8 FIX: Count-based verification, not just boolean
-  const verifData = result.verification || {};
-  if (verifData.verified === true) {
-    // Bonus for cross-verification rounds
-    const rounds = verifData.rounds || 0;
-    const challenges = verifData.challenges || 0;
-    const debateCount = verifData.debates || 0;
-    const verificationDepth = Math.min(
-      15,
-      10 + rounds * 2 + (challenges > 0 ? 3 : 0) + (debateCount > 0 ? 2 : 0),
-    );
-    verification.score += verificationDepth;
-    verification.checks.push({
-      check: "cross_verified",
-      passed: true,
-      detail: `${rounds} rounds, ${challenges} challenges, ${debateCount} debates — depth=${verificationDepth}`,
-    });
-  } else {
-    verification.score -= 10;
-    verification.issues.push("Cross-verification not completed");
-    verification.checks.push({ check: "cross_verified", passed: false });
-  }
-
-  // ─── CHECK 5: Debates conducted (evidence of multi-agent review) ───
-  const debateCount = verifData.debates || 0;
-  if (debateCount > 0) {
-    verification.score += 10;
-    verification.checks.push({
-      check: "debate_conducted",
-      passed: true,
-      detail: debateCount + " debates",
-    });
-  } else {
-    verification.score -= 5;
-    verification.checks.push({ check: "debate_conducted", passed: false });
-  }
-
-  // ─── CHECK 6: Code safety (when applicable) ───
-  // BUG #8 FIX: More robust code safety checking
-  if (goal.requiresCodeSafety && combined) {
-    const hasFileRefs =
-      /\b(server\/|src\/|app\/|lib\/|components\/|\.js|\.py|\.ts)\b/.test(
-        combined,
-      );
-    const hasLineRefs = /\b(line\s+\d+|L\d+|\u09b2\u09be\u0987\u09a8\s+\d+)\b/i.test(combined);
-    const hasTestMention = /\b(test|tested|verified|untested|UNTESTED)\b/i.test(
-      combined,
-    );
-    const hasCodeBlocks = /```[\s\S]*?```/.test(combined);
-    const hasSpecificChanges =
-      /\b(changed|updated|modified|added|removed|replaced)\b/i.test(combined);
-
-    let codeScore = 0;
-    let codeDetail = [];
-    if (hasFileRefs) {
-      codeScore += 5;
-      codeDetail.push("file refs");
-    }
-    if (hasLineRefs) {
-      codeScore += 3;
-      codeDetail.push("line refs");
-    }
-    if (hasTestMention) {
-      codeScore += 3;
-      codeDetail.push("test mention");
-    }
-    if (hasCodeBlocks) {
-      codeScore += 2;
-      codeDetail.push("code blocks");
-    }
-    if (hasSpecificChanges) {
-      codeScore += 2;
-      codeDetail.push("specific changes");
-    }
-
-    if (codeScore >= 10) {
-      verification.score += 15;
-      verification.checks.push({
-        check: "code_safety",
-        passed: true,
-        detail: codeDetail.join(", ") + " — comprehensive",
-      });
-    } else if (codeScore >= 5) {
-      verification.score += 5;
-      verification.checks.push({
-        check: "code_safety",
-        passed: true,
-        detail: codeDetail.join(", ") + " — partial",
-      });
-    } else {
-      verification.score -= 15;
-      verification.issues.push(
-        "Code claims without file references — cannot verify",
-      );
-      verification.checks.push({
-        check: "code_safety",
-        passed: false,
-        detail: "No file references found",
-      });
-    }
-  }
-
-  // CHECK 7: Language match
-  const bengaliChars = combined.match(/[\u0980-\u09FF]/g);
-  if (bengaliChars && bengaliChars.length > 5) {
-    verification.score += 5;
-    verification.checks.push({ check: "language_match", passed: true });
-  }
-
-  // CHECK 8: Hallucination scan — detect unsupported claims
-  const lowContent = combined.toLowerCase();
-  const weakPhrases = [
-    /it will work/i,
-    /this should fix/i,
-    /it should work/i,
-    /trust me/i,
-    /definitely works/i,
-    /i think/i,
-    /probably/i,
-    /may work/i,
-    /might work/i,
-    /could work/i,
-    /i believe/i,
-  ];
-  let weakCount = 0;
-  for (const phrase of weakPhrases) {
-    if (phrase.test(lowContent)) {
-      weakCount++;
-    }
-  }
-  if (weakCount > 0) {
-    verification.score -= weakCount * 10;
-    verification.issues.push(
-      weakCount + " unsupported/weak claim(s) detected in output",
-    );
-    verification.checks.push({
-      check: "hallucination_scan",
-      passed: false,
-      detail: weakCount + " weak claims",
-    });
-  } else {
-    verification.score += 5;
-    verification.checks.push({ check: "hallucination_scan", passed: true });
-  }
-
-  // ─── FINAL: Clamp score 0-100, set pass/fail ───
-  verification.score = Math.max(0, Math.min(100, verification.score));
-  // STRICT: Minimum 75 to pass
-  const PASS_THRESHOLD = 75;
-  verification.passed = verification.score >= PASS_THRESHOLD;
-
-  if (!verification.passed) {
-    verification.issues.push(
-      "Score " +
-      verification.score +
-      "/100 below threshold (" +
-      PASS_THRESHOLD +
-      ")",
-    );
-  }
-
-  contract.verification = {
-    ...verification,
-    verifiedAt: new Date().toISOString(),
-  };
-  contract.chain.push(
-    verification.passed ? "verified_passed" : "verified_failed",
-  );
-
-  return { verified: verification.passed, contract, result };
-}
-
 /**
  * ═══════════════════════════════════════════════════════════════
  * Anti-Dote Chain: Complete 6-Step Execution Wrapper
@@ -9393,26 +8885,9 @@ async function executeMission(
   const ssotContent = readSSOT();
   let enrichedContext = context ? String(context).slice(0, 1800) : "";
 
-  const memoryData = readMemory();
-  if (
-    memoryData &&
-    memoryData.recent_context &&
-    memoryData.recent_context.length > 0
-  ) {
-    let memContext = "\n\n--- Session Memory ---\n";
-    for (const ctx of memoryData.recent_context.slice(-3)) {
-      memContext += `[${ctx.session_id}] ${ctx.summary}\n`;
-      if (ctx.tags && ctx.tags.length > 0) {
-        memContext += `Tags: ${ctx.tags.join(", ")}\n`;
-      }
-    }
-    enrichedContext += memContext.slice(0, 1200);
-  }
-
-  const restoredContext = restoreRecentContext();
-  if (restoredContext) {
-    enrichedContext += restoredContext.slice(0, 1200);
-  }
+  // Session history is NOT injected here. Old sessions live in SQLite and the
+  // agents query them on demand through memory_recent / memory_search. A
+  // missing, deleted or corrupt archive therefore cannot break a response.
 
   // ─── Auto Web Search: inject results before model call ────
   // Free models never write "web_search:" — so we detect need and search proactively
@@ -9457,7 +8932,7 @@ async function executeMission(
         : null);
     const greetingAgent =
       (requestedAgentId && AGENTS.find((a) => a.id === requestedAgentId)) ||
-      AGENTS.find((a) => a.id === "code-guru") ||
+      AGENTS.find((a) => a.id === agentsModule.defaultAgentId(AGENTS)) ||
       AGENTS[0];
     if (!greetingAgent) {
       return {
@@ -9518,7 +8993,7 @@ async function executeMission(
 
   // ─── Quick mode for simple Q&A (one agent directly, skip pipeline) ──
   if (classification.type === "simple_qa" && simpleMode) {
-    const qaAgentId = classification.recommended_agents?.[0] || "code-guru";
+    const qaAgentId = classification.recommended_agents?.[0] || agentsModule.defaultAgentId(AGENTS);
     const qaAgent = AGENTS.find((a) => a.id === qaAgentId) || AGENTS[0];
     if (qaAgent) {
       await pushLog("phase", "\u09b8\u09b0\u09be\u09b8\u09b0\u09bf \u0989\u09a4\u09cd\u09a4\u09b0 \u09a4\u09c8\u09b0\u09bf \u0995\u09b0\u099b\u09bf...");
@@ -9743,14 +9218,15 @@ async function executeMission(
 function buildSSOTExcerpt(sessionId, userInput) {
   try {
     const dir = getEffectiveDir(sessionId) || mcpWorkingDir || path.resolve(".");
-    const excerpt = slimSSOT(readSSOT(dir), userInput || "", {
-      maxChars: 900,
-      maxSections: 2,
+    const picked = pickEntries(readSSOT(dir), userInput || "", {
+      maxChars: 600,
+      maxEntries: 2,
+      fallback: "none",
     });
-    if (!excerpt) return "";
+    if (!picked.body) return "";
     return (
       "\n\nPROJECT SSOT (bounded excerpt; full blueprint at .zombiecoder/SSOT.md):\n" +
-      excerpt +
+      stripInvisible(picked.body) +
       "\n--- END SSOT EXCERPT ---\n"
     );
   } catch (e) {
@@ -9769,14 +9245,15 @@ function buildSyllabusExcerpt(sessionId, userInput) {
     const dir = getEffectiveDir(sessionId) || mcpWorkingDir || path.resolve(".");
     const syllabusContent = readSyllabus(dir);
     if (!syllabusContent) return "";
-    const slim = slimSyllabus(syllabusContent, userInput || "", {
-      maxChars: 1200,
-      maxEntries: 3,
+    const picked = pickEntries(syllabusContent, userInput || "", {
+      maxChars: 600,
+      maxEntries: 2,
+      fallback: "none",
     });
-    if (!slim) return "";
+    if (!picked.body) return "";
     return (
       "\n\nAGENT SYLLABUS (bounded excerpt; full file at .zombiecoder/syllabus.md):\n" +
-      slim +
+      stripInvisible(picked.body) +
       "\n--- END SYLLABUS ---\n"
     );
   } catch (e) {
@@ -9795,64 +9272,56 @@ function buildAgentSystemPrompt(agent, opts) {
   if (!agent || !agent.id) {
     throw new Error("Agent id is required to build a system prompt");
   }
-  const persona = String(agent.persona || "").trim();
+  const persona = stripInvisible(String(agent.persona || "").trim());
   if (!persona) {
     throw new Error("Agent " + agent.id + " has no persona");
   }
 
-  const header =
-    "You are " + (agent.name || agent.id) +
-    " (agent id: " + agent.id + ", role: " + (agent.role || "general") + ").";
-  const rules =
-    "Rules: answer directly and reply in the user's language. " +
-    "Never present an assumption as fact; if you cannot prove a claim, say so and stop. " +
-    "Never reveal model or provider names. Do not use emojis in code.";
-
-  const parts = [header, persona, rules];
+  const contextParts = [];
   const sections = { persona: persona.length, ssot: 0, syllabus: 0, project: 0 };
 
   if (o.includeProjectContext !== false) {
     if (o.projectContext && String(o.projectContext).trim()) {
-      const project = String(o.projectContext).trim().slice(0, 1800);
-      parts.push("PROJECT CONTEXT (client-supplied, bounded):\n" + project);
+      const project = stripInvisible(String(o.projectContext).trim()).slice(0, 1800);
+      contextParts.push("PROJECT CONTEXT (client-supplied, bounded):\n" + project);
       sections.project = project.length;
     } else {
       const ssot = buildSSOTExcerpt(o.sessionId, o.userInput);
       const syllabus = buildSyllabusExcerpt(o.sessionId, o.userInput);
       if (ssot) {
-        parts.push(ssot);
+        contextParts.push(ssot);
         sections.ssot = ssot.length;
       }
       if (syllabus) {
-        parts.push(syllabus);
+        contextParts.push(syllabus);
         sections.syllabus = syllabus.length;
       }
     }
   }
 
-  if (o.involvesCode) {
-    parts.push(
-      "Code safety: state the exact file and lines; never claim a change works " +
-        "without test evidence; say UNTESTED when it is not verified.",
-    );
-  }
+  const content = buildSystemPrompt({
+    agent,
+    session: {
+      persona,
+      system_identity: identityPromptBlock(systemIdentityCore()),
+      os: systemInfo.collectSystemInfo(),
+      metadata: {
+        session_id: o.sessionId,
+        client: o.client,
+        editor: o.editor,
+        source: o.source || "api",
+        workspace: mcpWorkingDir,
+      },
+      workspace: mcpWorkingDir,
+    },
+    context: contextParts.join("\n\n"),
+    involvesCode: Boolean(o.involvesCode),
+    mission: Boolean(o.mission),
+    toolsCount: Number.isInteger(o.toolsCount) ? o.toolsCount : 0,
+    maxChars: Number.isFinite(o.maxChars) ? o.maxChars : 6000,
+    compact: o.compact !== false,
+  });
 
-  if (o.mission) {
-    parts.push(
-      "Output format: plain text, concise. " +
-        "You may request a web search with: web_search: <query>",
-    );
-  }
-
-  if (Number.isInteger(o.toolsCount) && o.toolsCount > 0) {
-    parts.push(
-      o.toolsCount +
-        " tools are available in the function definitions. Call them directly; " +
-        "do not describe them in prose.",
-    );
-  }
-
-  const content = parts.join("\n\n");
   log("INFO", "SYSTEM_PROMPT_BUILT", {
     agent: agent.id,
     mode: o.mode || "chat",
@@ -9871,25 +9340,31 @@ function buildCompactSystemPrompt(agent, budgetChars) {
   if (!agent || !agent.id) {
     throw new Error("Agent id is required to build a system prompt");
   }
-  const persona = String(agent.persona || "").trim();
+  const persona = stripInvisible(String(agent.persona || "").trim());
   if (!persona) {
     throw new Error("Agent " + agent.id + " has no persona");
   }
-  const header =
-    "You are " + (agent.name || agent.id) +
-    " (agent id: " + agent.id + ", role: " + (agent.role || "general") + ").";
-  const rules =
-    "Rules: answer directly and reply in the user's language. " +
-    "Never present an assumption as fact; if you cannot prove a claim, say so and stop. " +
-    "Never reveal model or provider names. Do not use emojis in code.";
-  const room = Math.max(200, budgetChars - header.length - rules.length - 8);
-  const trimmed = persona.length > room ? persona.slice(0, room) + " ..." : persona;
-  const content = header + "\n\n" + trimmed + "\n\n" + rules;
+  const budget = Number.isFinite(budgetChars) ? Math.max(200, budgetChars) : 1200;
+  const content = buildSystemPrompt({
+    agent,
+    session: {
+      persona,
+      // Compact prompts used to pass an empty session, so the model saw
+      // "memory: 0/0 GB free" and "workspace: (unset)". Real facts cost
+      // little: identity + live OS snapshot + workspace.
+      system_identity: identityPromptBlock(systemIdentityCore()),
+      os: systemInfo.collectSystemInfo(),
+      metadata: { source: "compact" },
+      workspace: mcpWorkingDir,
+    },
+    maxChars: budget,
+    compact: true,
+  });
   log("INFO", "SYSTEM_PROMPT_BUILT", {
     agent: agent.id,
     mode: "compact",
     chars: content.length,
-    persona: trimmed.length,
+    persona: Math.min(persona.length, budget),
     ssot: 0,
     syllabus: 0,
     project: 0,
@@ -9944,6 +9419,11 @@ async function executeSingleAgent(
 
   // A provider may cap the prompt (local CPU models). 0 means "no cap".
   const routing = resolveProvider(agentModel);
+  const agentCaps = providerRegistry.capabilitiesFor(
+    routing && routing.config,
+    routing && routing.providerId,
+    agentModel,
+  );
   const promptBudget =
     (routing && routing.config && Number(routing.config.maxPromptChars)) || 0;
 
@@ -10035,9 +9515,10 @@ async function executeSingleAgent(
   if (sessionId && !promptBudget) {
     const mem = getAgentMemory(sessionId, agentId);
     if (mem.length > 0) {
-      const history = mem
-        .filter((m) => m.role === "user" || m.role === "assistant")
-        .slice(-MAX_HISTORY);
+      const history = trimHistoryByChars(
+        mem.filter((m) => m.role === "user" || m.role === "assistant"),
+        MAX_HISTORY_CHARS,
+      );
       const historyMessages = history.map((m) => ({
         role: m.role,
         content: m.content,
@@ -10069,13 +9550,15 @@ async function executeSingleAgent(
     }));
     if (mcpToolList.length > 0) tools = mcpToolList;
   }
-  // Cap tools to MAX_TOOLS_LIMIT
-  if (tools && tools.length > MAX_TOOLS_LIMIT) {
+  // Cap tools by the provider's declared capability, never above the ceiling.
+  const toolCap = Math.min(MAX_TOOLS_LIMIT, agentCaps.maxTools);
+  if (tools && tools.length > toolCap) {
     log("WARN", "TOOLS_CAPPED", {
       original: tools.length,
-      capped: MAX_TOOLS_LIMIT,
+      capped: toolCap,
+      provider_max: agentCaps.maxTools,
     });
-    tools = tools.slice(0, MAX_TOOLS_LIMIT);
+    tools = tools.slice(0, toolCap);
   }
 
   if (stream) {
@@ -10262,7 +9745,15 @@ async function executeSingleAgent(
 // ══════════════════════════════════════════════════════════════
 let nextMcpId = 1;
 // MCP working directory tracking
-let mcpWorkingDir = path.resolve(".");
+// The runtime may execute from dist/ (the gateway wrapper cd's there and
+// symlinks runtime state). `path.resolve(".")` would then point at dist/,
+// which is not a project. Resolve the checkout that owns this build once.
+const RUNTIME_DIR = path.resolve(__dirname);
+const CHECKOUT_ROOT = path.resolve(
+  process.env.ZOMBIECODER_PROJECT_ROOT ||
+    (path.basename(RUNTIME_DIR) === "dist" ? path.dirname(RUNTIME_DIR) : RUNTIME_DIR),
+);
+let mcpWorkingDir = CHECKOUT_ROOT;
 
 // Per-session working directory: if session has a custom dir, use it
 function getEffectiveDir(sessionId) {
@@ -10297,8 +9788,10 @@ for (const envKey of WORKSPACE_ENV_VARS) {
   }
 }
 if (!workspaceEnvSource) {
-  // Walk up from current dir looking for .zombiecoder/ directory
-  let probe = path.resolve(".");
+  // Walk up from the checkout, not process.cwd(): under the production
+  // wrapper the cwd is dist/, which holds a .zombiecoder symlink to the
+  // checkout and would otherwise win the scan.
+  let probe = CHECKOUT_ROOT;
   for (let i = 0; i < 10; i++) {
     if (fs.existsSync(path.join(probe, ".zombiecoder"))) {
       mcpWorkingDir = probe;
@@ -10377,6 +9870,23 @@ const MCP_TOOLS = {
       agent_id: { type: "string", description: "Optional: per-agent memory" },
     },
     required: ["session_id"],
+  },
+  memory_recent: {
+    description:
+      "List the newest archived project sessions from SQLite (id, date, summary, key points, tags). Session history is not injected automatically; call this only when the user asks about earlier sessions.",
+    params: {
+      limit: { type: "integer", description: "How many archives to return (1-20, default 5)" },
+    },
+    required: [],
+  },
+  memory_search: {
+    description:
+      "Search archived project sessions in SQLite by keyword (summary, key points, decisions, tags). Use when the user refers to earlier work; returns matching archives newest first.",
+    params: {
+      query: { type: "string", description: "Keyword to search" },
+      limit: { type: "integer", description: "Max results (1-20, default 10)" },
+    },
+    required: ["query"],
   },
   read_ssot: {
     description:
@@ -10794,7 +10304,7 @@ async function discoverRemoteMCP(server) {
   mcpRemoteClients.set(entry.name, entry);
   try {
     const init = await mcpRemoteRequest(url, "initialize", {
-      protocolVersion: "2025-03-26",
+      protocolVersion: mcpProtocol.PROTOCOL_VERSION,
       capabilities: {},
       clientInfo: { name: "mission-barisal-gateway", version: "3.2.1" },
     });
@@ -11337,6 +10847,56 @@ async function executeMcpTool(tool, args) {
         content: [{ type: "text", text: JSON.stringify(mem, null, 2) }],
       };
     }
+    case "memory_recent": {
+      const store = getProjectMemoryStore();
+      if (!store) {
+        return {
+          content: [{ type: "text", text: "memory store unavailable (SQLite down)" }],
+        };
+      }
+      const limit = Math.max(1, Math.min(20, Number(args.limit) || 5));
+      const items = store
+        .recent(mcpWorkingDir || process.cwd(), limit)
+        .map((a) => ({
+          session_id: a.session_id,
+          created_at: a.created_at,
+          summary: a.summary,
+          key_points: a.key_points,
+          decisions: a.decisions,
+          tags: a.tags,
+        }));
+      return {
+        content: [{ type: "text", text: JSON.stringify(items, null, 2) }],
+      };
+    }
+    case "memory_search": {
+      const query = String(args.query || "").trim();
+      if (!query) {
+        return {
+          content: [{ type: "text", text: "memory_search: query is required" }],
+        };
+      }
+      const store = getProjectMemoryStore();
+      if (!store) {
+        return {
+          content: [{ type: "text", text: "memory store unavailable (SQLite down)" }],
+        };
+      }
+      const limit = Math.max(1, Math.min(20, Number(args.limit) || 10));
+      const items = store
+        .find(mcpWorkingDir || process.cwd(), query, limit)
+        .map((a) => ({
+          session_id: a.session_id,
+          created_at: a.created_at,
+          summary: a.summary,
+          key_points: a.key_points,
+          decisions: a.decisions,
+          tags: a.tags,
+        }));
+      return {
+        content: [{ type: "text", text: JSON.stringify(items, null, 2) }],
+      };
+    }
     case "read_ssot": {
       const ssotContent = readSSOT();
       if (ssotContent) {
@@ -11740,7 +11300,7 @@ async function executeMcpTool(tool, args) {
 function dbEnv() {
   return {
     type: (process.env.DB_TYPE || "sqlite").toLowerCase(),
-    host: process.env.DB_HOST || "127.0.0.1",
+    host: process.env.DB_HOST || "localhost",
     port: process.env.DB_PORT || "",
     user: process.env.DB_USER || "",
     password: process.env.DB_PASSWORD || "",
@@ -11924,10 +11484,34 @@ function handleMCP(req, res) {
 
     const { id, method, params } = message;
 
+    const headerCheck = mcpProtocol.validateMcpHeaders(req.headers);
+    if (!headerCheck.ok) {
+      log("WARN", "MCP_HEADER_REJECTED", {
+        client: clientNameFromHeader || "unknown",
+        errors: headerCheck.errors.map((error) => error.code),
+      });
+      jsonResponse(res, 400, {
+        jsonrpc: "2.0",
+        id: id === undefined ? null : id,
+        error: {
+          code: -32600,
+          message:
+            "Invalid MCP headers: " +
+            headerCheck.errors
+              .map((error) => error.field + " " + error.message)
+              .join("; "),
+          data: headerCheck.errors,
+        },
+      });
+      return;
+    }
+
     if (method === "initialize") {
       const clientName =
         params?.clientInfo?.name || clientNameFromHeader || "unknown";
       const clientVersion = params?.clientInfo?.version || "unknown";
+      const negotiated = mcpProtocol.negotiateProtocolVersion(params?.protocolVersion);
+      const editor = mcpProtocol.detectEditor(params?.clientInfo, req.headers);
       mcpActiveConnections++;
       rememberMcpIdentity(req, {
         client: clientName !== "unknown" ? clientName : clientNameFromHeader,
@@ -11936,7 +11520,10 @@ function handleMCP(req, res) {
       log("INFO", "MCP_INIT", {
         client: clientName,
         version: clientVersion,
-        protocol: params?.protocolVersion || "unknown",
+        protocol: negotiated.requested || "unknown",
+        negotiated: negotiated.version,
+        fallback: negotiated.fallback,
+        editor: editor ? editor.id : "",
         id: id?.toString().slice(0, 8),
         ...requestActor(req),
       });
@@ -11964,88 +11551,101 @@ function handleMCP(req, res) {
       }
 
       let detectedDir = "";
-
-      // Source 1: MCP protocol roots from params
       const rawRoots = params?.roots;
-      if (rawRoots && Array.isArray(rawRoots) && rawRoots.length > 0) {
-        for (const root of rawRoots) {
-          const uri = root?.uri || "";
-          const rootPath = parseFileUri(uri) || root?.path || "";
-          if (rootPath && fs.existsSync(rootPath)) {
-            detectedDir = path.resolve(rootPath);
-            log("INFO", "MCP_ROOT_DETECTED", {
-              client: clientName,
-              root: rootPath,
-              name: root?.name || "",
-              source: "params.roots",
-            });
-            break;
+      const boot = mcpProtocol.bootstrapWorkspace({
+        roots: rawRoots,
+        headerDir: clientDirFromHeader,
+        env: process.env,
+        // A bare cwd must be the stable project root, never the mutable
+        // working directory a previous request selected.
+        cwd: CHECKOUT_ROOT,
+        seedSSOT: (dir) => {
+          try {
+            return generateSSOT(dir, scanProject(dir));
+          } catch (_) {
+            return "";
           }
-        }
+        },
+      });
+      if (boot.source !== "cwd") {
+        detectedDir = boot.dir;
+        mcpWorkingDir = detectedDir;
+        log("INFO", "MCP_WORKSPACE_DETECTED", {
+          client: clientName,
+          dir: detectedDir,
+          source: boot.source,
+          created: boot.created.length,
+        });
+      } else {
+        log("INFO", "MCP_WORKSPACE_FALLBACK", {
+          client: clientName,
+          dir: boot.dir,
+          source: boot.source,
+        });
       }
 
-      // Source 2: X-MCP-Client-Dir header (existing fallback)
-      if (!detectedDir) {
-        const headerDir = clientDirFromHeader || "";
-        if (headerDir && !headerDir.includes("${")) {
-          const resolved = path.resolve(headerDir);
-          if (fs.existsSync(resolved)) {
-            detectedDir = resolved;
-            log("INFO", "MCP_HEADER_DIR_DETECTED", {
-              client: clientName,
-              dir: resolved,
-              source: "X-MCP-Client-Dir header",
-            });
-          }
-        }
-      }
-
-      // ── Auto SSOT Generation ──────────────────────────────────
+      // Seed a real scan only when the SSOT did not exist before this connect;
+      // an existing SSOT (plugin-written) is the source of truth.
       let ssotResult = null;
       if (detectedDir) {
-        mcpWorkingDir = detectedDir;
-        ssotResult = refreshSSOT(detectedDir);
+        ssotResult = boot.created.includes(boot.paths.ssot)
+          ? refreshSSOT(detectedDir)
+          : readSSOT(detectedDir) || null;
         log("INFO", "MCP_AUTO_SSOT", {
           client: clientName,
           dir: detectedDir,
           ssot: ssotResult ? ssotResult.length + " bytes" : "failed",
-          message: "\u09ac\u0982\u09b6\u09ac\u09bf\u09b8\u09cd\u09a4\u09be\u09b0! .zombiecoder/SSOT.md planted in " + detectedDir,
+          created: boot.created.includes(boot.paths.ssot),
+          message: "SSOT ready in " + detectedDir,
         });
       }
 
       // Handshake: guarantee .zombiecoder/ exists + working dir set
-      ensureZombiecoderDir();
+      ensureZombiecoderDir(detectedDir || boot.dir);
 
+      const sessionId = mcpProtocol.sessionIdFor({
+        editor,
+        workspaceDir: boot.dir,
+      });
       const clientData = {
         name: effectiveName,
         version: clientVersion,
-        protocolVersion: params?.protocolVersion || "unknown",
+        protocolVersion: negotiated.version,
+        requestedProtocolVersion: negotiated.requested,
+        protocolFallback: negotiated.fallback,
+        editor: editor ? editor.id : "",
         connected_at: now,
         last_seen: now,
         status: "active",
         working_dir: mcpWorkingDir || "",
         detected_dir: detectedDir || "",
-        session_id: id?.toString().slice(0, 8) || "",
+        session_id: sessionId,
+        request_id: id?.toString().slice(0, 8) || "",
         tools_used: 0,
         anonymous: clientName === "unknown",
       };
       mcpClients.set(effectiveName, clientData);
       saveClient(clientData);
 
-      const hasRoots = !!detectedDir;
+      const hasRoots = boot.source === "mcp-roots" || boot.source === "header";
+      const hasWorkspace = boot.source !== "cwd";
       log("INFO", "MCP_CLIENT_CONNECTED", {
         name: effectiveName,
         anonymous: clientName === "unknown",
         has_roots: hasRoots,
-        message: hasRoots
+        has_workspace: hasWorkspace,
+        source: boot.source,
+        message: hasWorkspace
           ? "Client '" +
-          effectiveName +
-          "' connected. Roots auto-detected → SSOT generated at " +
-          detectedDir +
-          "/.zombiecoder/SSOT.md"
+            effectiveName +
+            "' connected. Workspace ready at " +
+            detectedDir +
+            " (source: " +
+            boot.source +
+            ")."
           : "Client '" +
-          effectiveName +
-          "' connected (no roots). Use set_working_dir to set project dir.",
+            effectiveName +
+            "' connected (no workspace). Use set_working_dir to set project dir.",
       });
 
       // Build SSOT info for response
@@ -12076,24 +11676,28 @@ function handleMCP(req, res) {
           ". Send roots in initialize or header X-MCP-Client-Dir to auto-generate client SSOT.";
       }
 
+      const initResult = mcpProtocol.buildInitializeResult({
+        requestedVersion: params?.protocolVersion,
+        clientInfo: params?.clientInfo,
+        headers: req.headers,
+        workspace: { dir: detectedDir || boot.dir },
+        rootsDetected: hasRoots,
+        serverVersion: DOMAIN_CFG.version,
+        domain: DETECTED_DOMAIN,
+        serverType: DOMAIN_CFG.type,
+        transport: "http",
+        serverInfo: {
+          ssot: ssotInfo,
+          instructions:
+            "Send roots via MCP initialize params or X-MCP-Client-Dir header for auto SSOT generation.",
+        },
+      });
+      res.setHeader("MCP-Protocol-Version", initResult.protocolVersion);
+      res.setHeader("Mcp-Session-Id", sessionId);
       jsonResponse(res, 200, {
         jsonrpc: "2.0",
         id,
-        result: {
-          protocolVersion: "2024-11-05",
-          capabilities: { tools: {} },
-          serverInfo: {
-            name: "mission-barisal",
-            version: DOMAIN_CFG.version,
-            domain: DETECTED_DOMAIN,
-            serverType: DOMAIN_CFG.type,
-            roots_detected: hasRoots,
-            working_dir: mcpWorkingDir || "",
-            ssot: ssotInfo,
-            instructions:
-              "Send roots via MCP initialize params or X-MCP-Client-Dir header for auto SSOT generation.",
-          },
-        },
+        result: initResult,
       });
       log("INFO", "REQUEST", {
         method: "POST",
@@ -12269,23 +11873,43 @@ function handleUdsMcpMessage(socket, message) {
   const { id, method, params } = message;
   if (method === "initialize") {
     // Handshake: guarantee .zombiecoder/ exists + working dir set
-    const udsDir = ensureZombiecoderDir();
+    const boot = mcpProtocol.bootstrapWorkspace({
+      roots: params?.roots,
+      env: process.env,
+      cwd: CHECKOUT_ROOT,
+      seedSSOT: (dir) => {
+        try {
+          return generateSSOT(dir, scanProject(dir));
+        } catch (_) {
+          return "";
+        }
+      },
+    });
+    if (boot.source !== "cwd") mcpWorkingDir = boot.dir;
+    if (boot.created.includes(boot.paths.ssot)) refreshSSOT(boot.dir);
+    const udsDir = ensureZombiecoderDir(boot.dir);
+    const editor = mcpProtocol.detectEditor(params?.clientInfo);
+    const sessionId = mcpProtocol.sessionIdFor({ editor, workspaceDir: boot.dir });
+    const initResult = mcpProtocol.buildInitializeResult({
+      requestedVersion: params?.protocolVersion,
+      clientInfo: params?.clientInfo,
+      workspace: { dir: boot.dir },
+      rootsDetected: boot.source !== "cwd",
+      serverVersion: DOMAIN_CFG.version,
+      domain: DETECTED_DOMAIN,
+      serverType: DOMAIN_CFG.type,
+      transport: "uds",
+      serverInfo: {
+        zombiecoder_dir: udsDir ? udsDir.dir : "",
+        transport: "uds",
+        session_id: sessionId,
+      },
+    });
     socket.write(
       JSON.stringify({
         jsonrpc: "2.0",
         id,
-        result: {
-          protocolVersion: "2024-11-05",
-          capabilities: { tools: {} },
-          serverInfo: {
-            name: "mission-barisal",
-            version: DOMAIN_CFG.version,
-            domain: DETECTED_DOMAIN,
-            serverType: DOMAIN_CFG.type,
-            working_dir: mcpWorkingDir || "",
-            zombiecoder_dir: udsDir ? udsDir.dir : "",
-          },
-        },
+        result: initResult,
       }) + "\n",
     );
     return;
@@ -13450,7 +13074,7 @@ function probeTcp(port, host, timeoutMs) {
       resolve(false);
       return;
     }
-    const socket = netModule.connect({ port, host: host || "127.0.0.1" });
+    const socket = netModule.connect({ port, host: host || "localhost" });
     let settled = false;
     const done = (value) => {
       if (settled) return;
@@ -13486,7 +13110,7 @@ async function collectServiceStatus() {
   const checks = await Promise.all(
     services.map(async (item) => ({
       ...item,
-      listening: await probeTcp(item.port, "127.0.0.1", 350),
+      listening: await probeTcp(item.port, "localhost", 350),
     })),
   );
   return checks;
@@ -13494,6 +13118,8 @@ async function collectServiceStatus() {
 
 const handleHttpRequest = async (req, res) => {
   const startTime = Date.now();
+  // Ownership watermark on every response (identity.json is the SSOT).
+  setSystemIdentityHeaders(res);
   const method = req.method;
   let url = req.url.split("?")[0];
   // BODY SIZE GUARD — reject oversized requests before any body read (413)
@@ -13529,13 +13155,21 @@ const handleHttpRequest = async (req, res) => {
     : String(Date.now()).slice(-8);
 
   // VISUAL EVENT FLOW: Show every request in terminal with the real caller.
+  // Model discovery has no agent identity by design; report the count and an
+  // explicit role instead of the old "unknown" placeholder.
   const actor = requestActor(req);
+  const modelListCount =
+    method === "GET" && url === "/v1/models" ? AGENTS.length + 1 : undefined;
+  const actorAgent = actor.agent || (modelListCount ? "model-list" : "direct");
   visualEventFlow("request", `[${reqId}] ${method} ${url}`, {
     from: actor.from,
     origin: actor.origin,
     client: actor.client || undefined,
-    agent: actor.agent || "unknown",
+    agent: actorAgent,
+    ...(modelListCount ? { models: modelListCount } : {}),
   });
+  res._actor = actor;
+  res._actorAgent = actorAgent;
   try {
     const encodedActor = actorHeader(actor);
     if (encodedActor) res.setHeader("X-Request-Actor", encodedActor);
@@ -13808,7 +13442,7 @@ const handleHttpRequest = async (req, res) => {
             label: "HTTP",
             protocol: "http",
             status: tcpServer.listening ? "listening" : "stopped",
-            endpoint: "http://127.0.0.1:" + PORT,
+            endpoint: "http://localhost:" + PORT,
             command: mcpHttp,
           },
           {
@@ -13837,9 +13471,9 @@ const handleHttpRequest = async (req, res) => {
             label: "gRPC (h2c)",
             protocol: "grpc",
             status: grpcServer ? "listening" : "disabled",
-            endpoint: "127.0.0.1:" + grpcPort,
+            endpoint: "localhost:" + grpcPort,
             command: "grpcurl -plaintext -d '{\"model\":\"mission\",\"messages\":[{\"role\":\"user\",\"content\":\"Say OK\"}]}' " +
-              "127.0.0.1:" + grpcPort + " zombie.v1.ChatService/Chat",
+              "localhost:" + grpcPort + " zombie.v1.ChatService/Chat",
           },
           {
             id: "stdio",
@@ -13972,6 +13606,9 @@ const handleHttpRequest = async (req, res) => {
         status: 200,
         elapsed: Date.now() - startTime,
         model_count: agentModels.length,
+        agent: (res._actorAgent || "model-list"),
+        from: (res._actor && res._actor.from) || "unknown",
+        origin: (res._actor && res._actor.origin) || "unknown",
       });
       jsonResponse(res, 200, { object: "list", data: agentModels });
       return;
@@ -13985,6 +13622,7 @@ const handleHttpRequest = async (req, res) => {
 
       // 1. Add real provider models (what JetBrains needs to see)
       for (const [id, p] of Object.entries(PROVIDER_CONFIG)) {
+        if (p.enabled === false) continue;
         if (p.models.length === 0) {
           // A reachable dynamic provider with no model is omitted; advertising
           // a wildcard placeholder would be a model that cannot answer.
@@ -14046,6 +13684,7 @@ const handleHttpRequest = async (req, res) => {
     if (url === "/api/v1/models" && method === "GET") {
       const providerModels = [];
       for (const [id, p] of Object.entries(PROVIDER_CONFIG)) {
+        if (p.enabled === false) continue;
         if (p.models.length === 0) {
           if (p.dynamicModels) continue;
           providerModels.push({
@@ -14112,7 +13751,8 @@ const handleHttpRequest = async (req, res) => {
         tools: Object.keys(MCP_TOOLS).length,
         server_url: "http://localhost:" + PORT + "/mcp",
         protocol: "JSON-RPC 2.0",
-        protocol_version: "2024-11-05",
+        protocol_version: mcpProtocol.PROTOCOL_VERSION,
+        supported_protocol_versions: mcpProtocol.SUPPORTED_PROTOCOL_VERSIONS,
       };
       log("INFO", "REQUEST", {
         method,
@@ -14231,9 +13871,12 @@ const handleHttpRequest = async (req, res) => {
       const ADMIN_DIR = path.resolve(
         process.env.ADMIN_DIR || path.join(__dirname, "public"),
       );
+      // /admin is the panel itself; /admin/<file> serves its assets.
       let filePath =
-        url === "/admin" ? "/index.html" : url.replace("/admin", "");
-      if (!filePath || filePath === "/") filePath = "/index.html";
+        url === "/admin" || url === "/admin/"
+          ? "/admin.html"
+          : url.replace("/admin", "");
+      if (!filePath || filePath === "/") filePath = "/admin.html";
       const fullPath = path.join(ADMIN_DIR, filePath);
 
       // Security: prevent directory traversal
@@ -14453,6 +14096,10 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
     }
 
     if (url === "/api/admin/stats" && method === "GET") {
+      if (!adminAuthorized(req)) {
+        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN required" });
+        return;
+      }
       try {
         const mem = process.memoryUsage();
         const allLocks = readLockLogs();
@@ -15056,7 +14703,13 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
     }
 
     // ──── GET /api/sessions/{id} — Single session with full memory ──
-    if (url.startsWith("/api/sessions/") && method === "GET") {
+    // NOTE: /api/sessions/search has its own handler below; without this guard
+    // the {id} route swallows "search" and answers 404.
+    if (
+      url.startsWith("/api/sessions/") &&
+      !url.startsWith("/api/sessions/search") &&
+      method === "GET"
+    ) {
       const sessionId = url.replace("/api/sessions/", "").split("/")[0];
       if (!sessionId) {
         jsonResponse(res, 400, { error: "Session ID required" });
@@ -15165,6 +14818,103 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
       );
       const projectContext = parsed.project_context || parsed.ssot || "";
 
+      // ── WEB CHAT CHANNEL ────────────────────────────────
+      // The browser chat window declares channel="web-chat" in the body (or
+      // x-zc-channel header). That surface gets intent classification, a hard
+      // chat-only tool allowlist and a bounded, untrusted web-result block.
+      // Editor/MCP clients (no channel) take the normal path unchanged.
+      const chatChannel = String(
+        parsed.channel || req.headers["x-zc-channel"] || "",
+      ).trim();
+      let chatPlan = null;
+      if (chatChannel === chatInterpreter.CHAT_CHANNEL) {
+        const lastUser = messages.filter((m) => m.role === "user").pop();
+        let chatInput = lastUser ? lastUser.content : "";
+        if (Array.isArray(chatInput)) {
+          chatInput = chatInput
+            .map((part) =>
+              typeof part === "string"
+                ? part
+                : (part && (part.text || part.value)) || "",
+            )
+            .filter(Boolean)
+            .join("\n");
+        } else if (chatInput && typeof chatInput === "object") {
+          chatInput = chatInput.text || chatInput.value || "";
+        }
+        // Drop the current turn; interpretChat re-adds it as the last message.
+        const history = messages
+          .filter((m) => m.role === "user" || m.role === "assistant")
+          .slice(0, -1);
+        try {
+          chatPlan = await chatInterpreter.interpretChat({
+            channel: chatInterpreter.CHAT_CHANNEL,
+            input: String(chatInput || ""),
+            history,
+            tools,
+            webSearch,
+          });
+        } catch (e) {
+          log("WARN", "CHAT_INTERPRETER_FAIL", { error: e.message });
+        }
+        if (chatPlan) {
+          // The chat window never receives file/system tools.
+          if (Array.isArray(tools)) {
+            tools = sanitizeTools(
+              tools.filter((tool) => {
+                const name =
+                  typeof tool === "string"
+                    ? tool
+                    : (tool && tool.function && tool.function.name) || "";
+                return chatPlan.allowedTools.includes(name);
+              }),
+              model,
+            );
+          }
+          // Bounded web context is untrusted data, appended to the user turn
+          // (never injected as a system instruction).
+          if (chatPlan.webContext) {
+            const userIndex = messages.reduce(
+              (last, m, index) => (m.role === "user" ? index : last),
+              -1,
+            );
+            if (userIndex >= 0) {
+              let text = messages[userIndex].content;
+              if (Array.isArray(text)) {
+                text = text
+                  .map((part) =>
+                    typeof part === "string"
+                      ? part
+                      : (part && (part.text || part.value)) || "",
+                  )
+                  .filter(Boolean)
+                  .join("\n");
+              } else if (text && typeof text === "object") {
+                text = text.text || text.value || "";
+              }
+              messages[userIndex] = {
+                ...messages[userIndex],
+                content: String(text || "") + "\n\n" + chatPlan.webContext,
+              };
+            }
+          }
+          // Observable routing metadata for the client and the E2E check.
+          const ascii = (value) =>
+            String(value == null ? "" : value).replace(/[^\x20-\x7E]/g, "");
+          res.setHeader("x-zc-chat-channel", chatPlan.channel);
+          res.setHeader(
+            "x-zc-chat-intent",
+            ascii((chatPlan.intent && chatPlan.intent.label) || "unknown") ||
+              "unknown",
+          );
+          res.setHeader(
+            "x-zc-chat-tools",
+            ascii(chatPlan.allowedTools.join(",")) || "none",
+          );
+          res.setHeader("x-zc-chat-web", chatPlan.usedWebSearch ? "1" : "0");
+        }
+      }
+
       // Track model usage
       trackModelUsage(model);
 
@@ -15222,14 +14972,21 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
       // Get or create session
       let sessionId = parsed.session_id;
       if (!sessionId || !getSession(sessionId)) {
+        const clientIdentity = resolveClientIdentity(req, parsed);
+        sessionMeta.client_id_source = clientIdentity.source;
         const session = createSession(
-          parsed.client_id || "anonymous",
+          clientIdentity.id,
           parsed.editor || "hermes",
-          req.socket.remoteAddress,
+          socketAddress(req) || req.socket.remoteAddress,
           sessionId || undefined,
           sessionMeta,
         );
         sessionId = session.id;
+        log("INFO", "SESSION_CLIENT_RESOLVED", {
+          client_id: clientIdentity.id,
+          source: clientIdentity.source,
+          editor: parsed.editor || "hermes",
+        });
         // session_log: first touch (SQLite — Sessions page reads this)
         recordSessionTouch(sessionId, {
           editor: parsed.editor || "hermes",
@@ -15951,9 +15708,10 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
         if (sessionId) {
           const mem = getAgentMemory(sessionId, agentId);
           if (mem.length > 0) {
-            const history = mem
-              .filter((m) => m.role === "user" || m.role === "assistant")
-              .slice(-MAX_HISTORY);
+            const history = trimHistoryByChars(
+              mem.filter((m) => m.role === "user" || m.role === "assistant"),
+              MAX_HISTORY_CHARS,
+            );
             const histMsgs = history.map((m) => ({
               role: m.role,
               content: m.content,
@@ -16009,14 +15767,31 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
             res.write("data: " + JSON.stringify(chunk) + "\n\n");
         };
 
-        // First attempt: with tools
-        await callModelStream(
+        // Streaming tool loop: execute every requested tool, then continue
+        // until the model produces the final answer.
+        const streamResult = await callModelStreamWithTools(
           agentModel,
           augmentedMessages,
           temperature,
           streamCallback,
           toolsForStream,
         );
+        if (!streamResult || !streamResult.success) {
+          if (!fullContent) {
+            res.write(
+              "data: " +
+                JSON.stringify({
+                  error: {
+                    message: (streamResult && streamResult.error) || "stream failed",
+                  },
+                }) +
+                "\n\n",
+            );
+            res.write("data: [DONE]\n\n");
+            res.end();
+            return;
+          }
+        }
 
 
         // Final [DONE] chunk
@@ -16109,11 +15884,21 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
           provider: _finProv,
           editor: parsed.editor || "hermes",
         });
-        log("INFO", "SINGLE_AGENT_STREAM_COMPLETE", {
+        const emptyStream = fullContent.length === 0;
+        log(emptyStream ? "WARN" : "INFO", "SINGLE_AGENT_STREAM_COMPLETE", {
           agent: agent.id,
           contentLength: fullContent.length,
+          ok: !emptyStream,
+          empty: emptyStream,
           elapsed: _finMs,
         });
+        if (emptyStream) {
+          log("WARN", "EMPTY_STREAM", {
+            agent: agent.id,
+            session: sessionId.slice(0, 8),
+            elapsed: _finMs,
+          });
+        }
         return;
       }
 
@@ -16314,7 +16099,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
       const isSelfHostedVerify =
         !RUNTIME_CONFIG.sessionVerifyUrl ||
         RUNTIME_CONFIG.sessionVerifyUrl.includes(`localhost:${PORT}`) ||
-        RUNTIME_CONFIG.sessionVerifyUrl.includes("127.0.0.1");
+        RUNTIME_CONFIG.sessionVerifyUrl.includes("localhost");
       const verifyResult = isSelfHostedVerify
         ? {
             verified: true,
@@ -16605,14 +16390,21 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
             req.headers["x-client-version"] || parsed.client_version || "",
           session_source: "mission",
         };
+        const clientIdentity = resolveClientIdentity(req, parsed);
+        missionMeta.client_id_source = clientIdentity.source;
         const session = createSession(
-          parsed.client_id || "anonymous",
+          clientIdentity.id,
           parsed.editor || "api",
-          req.socket.remoteAddress,
+          socketAddress(req) || req.socket.remoteAddress,
           sessionId || undefined,
           missionMeta,
         );
         sessionId = session.id;
+        log("INFO", "SESSION_CLIENT_RESOLVED", {
+          client_id: clientIdentity.id,
+          source: clientIdentity.source,
+          editor: parsed.editor || "api",
+        });
       }
 
       // Unified Socket Architecture: TransportAdapter + handleMessage
@@ -16629,7 +16421,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
         type: "mission",
         id: crypto.randomUUID(),
         session_id: sessionId,
-        agent_id: parsed.agent_id || "code-guru",
+        agent_id: parsed.agent_id || agentsModule.defaultAgentId(AGENTS),
         messages: [
           ...(parsed.context || parsed.system
             ? [{ role: "system", content: parsed.context || parsed.system }]
@@ -16644,6 +16436,10 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
           tools: tools,
           multiAgent: true,
         },
+      }).finally(() => {
+        // response_done (or error) is terminal for this SSE request; without
+        // this the client waits forever for a connection close.
+        transport.close();
       });
       return;
     }
@@ -16698,14 +16494,21 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
             req.headers["x-client-version"] || parsed.client_version || "",
           session_source: "anti-dote",
         };
+        const clientIdentity = resolveClientIdentity(req, parsed);
+        antiDoteMeta.client_id_source = clientIdentity.source;
         const session = createSession(
-          parsed.client_id || "anonymous",
+          clientIdentity.id,
           parsed.editor || "anti-dote",
-          req.socket.remoteAddress,
+          socketAddress(req) || req.socket.remoteAddress,
           sessionId || undefined,
           antiDoteMeta,
         );
         sessionId = session.id;
+        log("INFO", "SESSION_CLIENT_RESOLVED", {
+          client_id: clientIdentity.id,
+          source: clientIdentity.source,
+          editor: parsed.editor || "anti-dote",
+        });
       }
 
       // Unified Socket Architecture: TransportAdapter + handleMessage
@@ -16722,7 +16525,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
         type: "mission",
         id: crypto.randomUUID(),
         session_id: sessionId,
-        agent_id: parsed.agent_id || "code-guru",
+        agent_id: parsed.agent_id || agentsModule.defaultAgentId(AGENTS),
         messages: [
           ...(parsed.context || parsed.system
             ? [{ role: "system", content: parsed.context || parsed.system }]
@@ -16738,6 +16541,8 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
           multiAgent: true,
           antiDote: true,
         },
+      }).finally(() => {
+        transport.close();
       });
       return;
     }
@@ -16745,6 +16550,10 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
     // ─── GET /api/admin/ssot-status ─────────────────────────
     // Check SSOT auto-generation status
     if (url === "/api/admin/ssot-status" && method === "GET") {
+      if (!adminAuthorized(req)) {
+        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN required" });
+        return;
+      }
       const ssotPath = path.resolve(".zombiecoder/SSOT.md");
       const ssotExists = fs.existsSync(ssotPath);
       let ssotInfo = { exists: false, path: ssotPath };
@@ -16773,6 +16582,10 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
     // ─── GET /api/admin/agents-status ────────────────────────
     // Detailed agent status with usage
     if (url === "/api/admin/agents-status" && method === "GET") {
+      if (!adminAuthorized(req)) {
+        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN required" });
+        return;
+      }
       const agentsWithStatus = AGENTS.map((a) => ({
         id: a.id,
         name: a.name,
@@ -16796,6 +16609,10 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
     // ─── GET /api/admin/mcp-connections ──────────────────────
     // MCP client connections and tool usage
     if (url === "/api/admin/mcp-connections" && method === "GET") {
+      if (!adminAuthorized(req)) {
+        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN required" });
+        return;
+      }
       jsonResponse(res, 200, {
         activeConnections: mcpActiveConnections,
         clients: Array.from(mcpClients.values()),
@@ -16815,6 +16632,10 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
     // ─── GET /api/admin/rate-limits ──────────────────────────
     // Rate limit status per domain/provider
     if (url === "/api/admin/rate-limits" && method === "GET") {
+      if (!adminAuthorized(req)) {
+        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN required" });
+        return;
+      }
       const domains = Object.keys(RATE_LIMIT_STATES);
       const rateLimitStatus = {};
       for (const domain of domains) {
@@ -16988,18 +16809,19 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
       jsonResponse(res, 200, {
         ok: true,
         syllabus: syllabusContent,
-        path: getAgentsPath() + "/syllabus.md",
+        path: getSyllabusPath(),
       });
       return;
     }
 
-    // ─── GET /api/memory — Read memory.json content
+    // ─── GET /api/memory — Project memory (SQLite; legacy memory.json fallback)
     if (url === "/api/memory" && method === "GET") {
       const memoryData = readMemory();
       jsonResponse(res, 200, {
         ok: true,
         memory: memoryData,
-        path: getAgentsPath() + "/memory.json",
+        storage: "sqlite:project_memory",
+        path: MODELS_DB_PATH,
       });
       return;
     }
@@ -17049,7 +16871,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
               Connection: "keep-alive",
             });
             transport._headersSent = true;
-            handleMessage(transport, parsed);
+            handleMessage(transport, parsed).finally(() => transport.close());
           } catch (e) {
             jsonResponse(res, 400, { error: "Invalid JSON: " + e.message });
           }
@@ -17114,12 +16936,13 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
       }
 
       const action = parsed.action || "handshake";
-      const clientId = parsed.client_id || parsed.client || "unknown";
+      const clientIdentity = resolveClientIdentity(req, parsed);
+      const clientId = clientIdentity.id;
       let sessionId = parsed.session_id || req.headers["x-session-id"] || "";
       const targetPath = parsed.path || parsed.directory || ".";
       const fileContent = parsed.content || "";
       const agentInput = parsed.input || "";
-      const agentId = parsed.agent_id || "code-guru";
+      const agentId = parsed.agent_id || agentsModule.defaultAgentId(AGENTS);
 
       // SECRET HANDSHAKE: Auto-create session if none provided
       if (sessionId) {
@@ -17128,12 +16951,19 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
       }
 
       if (!sessionId) {
-        const newSession = createSession({
-          client_id: clientId,
-          editor: "origin",
-          ip: req.socket.remoteAddress || "unknown",
-        });
+        const newSession = createSession(
+          clientIdentity.id,
+          "origin",
+          socketAddress(req) || req.socket.remoteAddress || "unknown",
+          undefined,
+          { client_id_source: clientIdentity.source, session_source: "connect" },
+        );
         sessionId = newSession.id;
+        log("INFO", "SESSION_CLIENT_RESOLVED", {
+          client_id: clientIdentity.id,
+          source: clientIdentity.source,
+          editor: "origin",
+        });
       }
 
       const session = getSession(sessionId);
@@ -17340,7 +17170,7 @@ const server = http.createServer(handleHttpRequest);
 function handleWebSocketUpgrade(req, socket, head) {
   // SECURITY (2026-10-08): this handshake had NO origin check and replied
   // with "Access-Control-Allow-Origin: *". Cross-origin WebSocket needs no CORS
-  // preflight, so any web page could open ws://127.0.0.1:3000 and drive the
+  // preflight, so any web page could open ws://localhost:3000 and drive the
   // `mcp` frame straight into executeMcpTool() → arbitrary shell. Reject
   // foreign origins up-front (no Origin header = native client = allowed).
   if (!mcpOriginAllowed(req)) {
@@ -17669,6 +17499,14 @@ h2cServer.on("error", (err) => {
 //  START
 // ══════════════════════════════════════════════════════════════
 async function init() {
+  const proxyState = proxyListState();
+  if (proxyState.invalid.length) {
+    log("WARN", "PROXY_LIST_INVALID", { invalid: proxyState.invalid });
+  } else if (proxyState.mode === "proxy") {
+    log("INFO", "PROXY_LIST_CONFIGURED", { count: proxyState.count });
+  } else {
+    log("INFO", "PROXY_LIST_DIRECT", {});
+  }
   // PHASE A: open SQLite models DB FIRST so that seedAgentsFromPersonas()
   // and DB-first loadPersonas() see MODELS_DB ready. initModelsDb also runs
   // later in this function; the later call is guarded to avoid re-opening.
@@ -17691,6 +17529,20 @@ async function init() {
   // then load DB-first. PERSONAS.md remains as fallback for ids not in DB.
   seedAgentsFromPersonas();
   await ensureAgentsRegistry();
+  // Project memory: import legacy ctx_*.json once, then every archive goes to
+  // the SQLite project_memory table (WAL). JSON session memory is untouched.
+  try {
+    const projectMemory = getProjectMemoryStore();
+    if (projectMemory) {
+      const migrated = projectMemory.migrateFromFiles(path.resolve("."));
+      log("INFO", "PROJECT_MEMORY_READY", {
+        storage: "sqlite:project_memory",
+        ...migrated,
+      });
+    }
+  } catch (e) {
+    log("WARN", "PROJECT_MEMORY_MIGRATE_FAIL", { error: e.message });
+  }
   // PHASE B: seed admin user from ADMIN_USER/ADMIN_API_KEY env (idempotent).
   seedAdminUser();
   AGENTS = await loadPersonas();
@@ -17731,35 +17583,38 @@ async function init() {
     );
   }
 
-  // ── Internal Watchdog: periodic health check (replaces external watchdog.sh) ──
-  // Logs heartbeat every 60s, auto-recovers via systemd Restart=always
+  // Internal watchdog heartbeat (modules/watchdog.js)
   const WATCHDOG_INTERVAL_MS = parseInt(
     process.env.WATCHDOG_INTERVAL || "60000",
     10,
   );
-  setInterval(() => {
-    const uptime = Math.floor((Date.now() - STATS.startTime) / 1000);
-    const sessions = cleanExpired().length;
-    const memUsed = process.memoryUsage();
-    log("INFO", "HEARTBEAT", {
-      uptime_sec: uptime,
-      sessions_active: sessions,
-      total_requests: STATS.totalRequests,
-      agents: AGENTS.length,
-      rss_mb: Math.round(memUsed.rss / 1024 / 1024),
-      heap_mb: Math.round(memUsed.heapUsed / 1024 / 1024),
-    });
-    // Flush buffered memory to disk periodically
-    flushAllMemory();
-    // Lock log: heartbeat as success marker
-    writeLockLog({
-      agent: "system",
-      operation: "heartbeat",
-      status: "success",
-      duration_ms: 0,
-      details: { uptime_sec: uptime, sessions, requests: STATS.totalRequests },
-    });
-  }, WATCHDOG_INTERVAL_MS);
+  const watchdog = new watchdogModule.Watchdog({
+    intervalMs: WATCHDOG_INTERVAL_MS,
+  });
+  watchdog.startHeartbeat({
+    intervalMs: WATCHDOG_INTERVAL_MS,
+    onBeat: () => {
+      const uptime = Math.floor((Date.now() - STATS.startTime) / 1000);
+      const sessions = cleanExpired().length;
+      const memUsed = process.memoryUsage();
+      log("INFO", "HEARTBEAT", {
+        uptime_sec: uptime,
+        sessions_active: sessions,
+        total_requests: STATS.totalRequests,
+        agents: AGENTS.length,
+        rss_mb: Math.round(memUsed.rss / 1024 / 1024),
+        heap_mb: Math.round(memUsed.heapUsed / 1024 / 1024),
+      });
+      flushAllMemory();
+      writeLockLog({
+        agent: "system",
+        operation: "heartbeat",
+        status: "success",
+        duration_ms: 0,
+        details: { uptime_sec: uptime, sessions, requests: STATS.totalRequests },
+      });
+    },
+  });
   log("INFO", "WATCHDOG_STARTED", { interval_ms: WATCHDOG_INTERVAL_MS });
 
   // ── UDS transport: MCP + OpenAI HTTP on one socket ──────────
@@ -17807,7 +17662,7 @@ async function init() {
     udsServer = net.createServer((socket) => {
       log("INFO", "UDS_CONNECTED", {
         transport: "tcp",
-        path: "tcp:127.0.0.1:" + udsListenPort,
+        path: "tcp:localhost:" + udsListenPort,
       });
       socket.on("data", (data) => {
         for (const line of data.toString().split("\n")) {
@@ -17823,7 +17678,7 @@ async function init() {
       });
       socket.on("error", (err) => log("WARN", "UDS_ERROR", { error: err.message }));
     });
-    udsServer.listen(udsListenPort, "127.0.0.1", () => {
+    udsServer.listen(udsListenPort, "localhost", () => {
       log("INFO", "UDS_LISTENING", {
         transport: "tcp-fallback",
         port: udsListenPort,
@@ -17919,7 +17774,7 @@ async function init() {
       handleHttpRequest,
     );
     httpsServer.on("error", (err) => log("WARN", "HTTPS_ERROR", { error: err.message }));
-    httpsServer.listen(httpsPort, "127.0.0.1", () =>
+    httpsServer.listen(httpsPort, "localhost", () =>
       log("INFO", "HTTPS_LISTENING", { port: httpsPort }),
     );
   }
@@ -17930,8 +17785,8 @@ async function init() {
     const { createGrpcServer } = require("./transport/grpc");
     grpcServer = createGrpcServer({
       port: grpcPort,
-      host: "127.0.0.1",
-      upstream: "http://127.0.0.1:" + PORT,
+      host: "localhost",
+      upstream: "http://localhost:" + PORT,
     });
     grpcServer.listen().then(
       (p) => log("INFO", "GRPC_LISTENING", { port: p }),
@@ -17969,15 +17824,15 @@ async function init() {
   }, parseInt(process.env.LOCAL_MODELS_REFRESH_MS || "20000", 10)).unref();
 
   // PRINCIPLED BIND — BIND_HOST wins; the domain heuristic is only a fallback.
-  //   BIND_HOST=127.0.0.1 → loopback only (required when Caddy is the edge)
-  //   unset + loopback domain → 127.0.0.1
+  //   BIND_HOST=localhost → loopback only (required when Caddy is the edge)
+  //   unset + loopback domain → localhost
   //   unset + bare IP domain  → that exact NIC IP only
   //   unset + FQDN / vhost    → 0.0.0.0 (standalone reverse-proxy target)
   let bindHost = String(process.env.BIND_HOST || "").trim();
   if (!bindHost) {
     bindHost = "0.0.0.0";
     if (DETECTED_DOMAIN === "localhost" || /^127\./.test(DETECTED_DOMAIN)) {
-      bindHost = "127.0.0.1";
+      bindHost = "localhost";
     } else if (/^\d{1,3}(\.\d{1,3}){3}$/.test(DETECTED_DOMAIN)) {
       bindHost = DETECTED_DOMAIN;
     }
@@ -18075,7 +17930,7 @@ async function init() {
     // On POSIX this previously advertised a dead TCP endpoint — removed.
     console.log(
       isWindows
-        ? "  TCP  127.0.0.1:" +
+        ? "  TCP  localhost:" +
             UDS_PORT +
             "        — MCP socket (Windows TCP fallback)"
         : "  UDS  " + (udsBoundPath || UDS_PATH) + "  — MCP + OpenAI (Unix domain socket)",
@@ -18245,6 +18100,10 @@ class TransportAdapter {
   }
 
   close() {
+    // Idempotent: handleMessage may close on a type-safety failure and the
+    // HTTP call site also closes in finally().
+    if (this._closed) return;
+    this._closed = true;
     // Remove from connections tracking
     TransportAdapter.connections.delete(this.id);
     try {
@@ -18577,8 +18436,8 @@ async function crossVerifySingleAgent(
   });
 
   // Step 5: Code Safety (if code present)
-  if (containsCodeBlock(content)) {
-    const codeSafe = !hasDangerousPatterns(content);
+  if (compilerModule.containsCodeBlock(content)) {
+    const codeSafe = !compilerModule.hasDangerousPatterns(content);
     verification.checks.push({
       check: "code_safe",
       passed: codeSafe,
@@ -18649,202 +18508,6 @@ function referencesUserInput(content, userInput) {
   return matchCount >= Math.min(2, keywords.length);
 }
 
-function containsCodeBlock(text) {
-  return (
-    /```[\s\S]*?```/.test(text) ||
-    /\b(function|const|let|var|import|export|def |class |async)\b/.test(text)
-  );
-}
-
-function hasDangerousPatterns(text) {
-  return /\b(eval|exec|spawn|child_process|rm -rf|process\.exit|fs\.rmSync)\b/i.test(
-    text,
-  );
-}
-
-// ══════════════════════════════════════════════════════════════
-//  COMPILER CHECK — Code Verification
-// ══════════════════════════════════════════════════════════════
-// Checks agent output for code syntax, dependency references,
-// security patterns, and path validity.
-async function compilerCheck(content, language, context, transport) {
-  if (!containsCodeBlock(content)) {
-    return { passed: true, skipped: true, reason: "No code in response" };
-  }
-
-  transport.stream({
-    type: "compiler_check_start",
-    language: language || "auto-detected",
-  });
-
-  const checks = [];
-  const codeBlocks = extractCodeBlocks(content);
-
-  // Syntax check for each code block
-  for (const block of codeBlocks) {
-    const syntaxIssues = checkBasicSyntax(block.code, block.language);
-    checks.push({
-      block: block.language,
-      check: "syntax",
-      passed: syntaxIssues.length === 0,
-      errors: syntaxIssues,
-    });
-    transport.stream({
-      type: "compiler_check_result",
-      block: block.language,
-      check: "syntax",
-      status: syntaxIssues.length === 0 ? "PASSED" : "FAILED",
-      errors: syntaxIssues,
-    });
-  }
-
-  // Dependency check (against SSOT if available)
-  if (context?.ssot) {
-    const depIssues = checkDependenciesInCode(codeBlocks, context.ssot);
-    for (const issue of depIssues) {
-      checks.push({
-        check: "dependency",
-        passed: issue.passed,
-        detail: issue.detail,
-      });
-      transport.stream({
-        type: "compiler_check_result",
-        check: "dependency",
-        status: issue.passed ? "PASSED" : "WARNING",
-        detail: issue.detail,
-      });
-    }
-  }
-
-  // Security pattern check
-  const dangerousPatterns = hasDangerousPatterns(content);
-  checks.push({
-    check: "security",
-    passed: !dangerousPatterns,
-    warnings: dangerousPatterns ? ["Dangerous pattern detected"] : [],
-  });
-  transport.stream({
-    type: "compiler_check_result",
-    check: "security",
-    status: dangerousPatterns ? "FAILED" : "PASSED",
-  });
-
-  const allPassed = checks.every((c) => c.passed);
-  transport.stream({
-    type: "compiler_check_done",
-    result: allPassed ? "ALL_PASSED" : "SOME_FAILED",
-    passedCount: checks.filter((c) => c.passed).length,
-    totalCount: checks.length,
-    severity: allPassed ? "info" : "warning",
-  });
-
-  return { passed: allPassed, checks };
-}
-
-// ─── Compiler Check Helpers ──────────────────────────────────
-
-function extractCodeBlocks(text) {
-  const blocks = [];
-  const regex = /```(\w*)\n([\s\S]*?)```/g;
-  let match;
-  while ((match = regex.exec(text)) !== null) {
-    blocks.push({
-      language: match[1] || "unknown",
-      code: match[2],
-    });
-  }
-  return blocks;
-}
-
-function checkBasicSyntax(code, language) {
-  const issues = [];
-  const lines = code.split("\n");
-  const lang = language.toLowerCase();
-
-  // JavaScript/TypeScript basic checks
-  if (["js", "javascript", "ts", "typescript", "jsx", "tsx"].includes(lang)) {
-    let parenCount = 0;
-    let braceCount = 0;
-    let bracketCount = 0;
-    let inString = false;
-    let stringChar = null;
-
-    for (let i = 0; i < code.length; i++) {
-      const ch = code[i];
-      const prev = i > 0 ? code[i - 1] : "";
-
-      if (!inString) {
-        if (ch === '"' || ch === "'" || ch === "`") {
-          inString = true;
-          stringChar = ch;
-        } else if (ch === "(") parenCount++;
-        else if (ch === ")") parenCount--;
-        else if (ch === "{") braceCount++;
-        else if (ch === "}") braceCount--;
-        else if (ch === "[") bracketCount++;
-        else if (ch === "]") bracketCount--;
-      } else if (ch === stringChar && prev !== "\\") {
-        inString = false;
-        stringChar = null;
-      }
-    }
-
-    if (parenCount !== 0) issues.push("Unmatched parentheses: " + parenCount);
-    if (braceCount !== 0) issues.push("Unmatched braces: " + braceCount);
-    if (bracketCount !== 0) issues.push("Unmatched brackets: " + bracketCount);
-  }
-
-  // Python basic checks
-  if (["py", "python"].includes(lang)) {
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const trimmed = line.trim();
-      if (trimmed.endsWith(":") && !trimmed.startsWith("#")) {
-        const nextLine = lines
-          .slice(i + 1)
-          .find((l) => l.trim().length > 0 && !l.trim().startsWith("#"));
-        if (nextLine && !nextLine.startsWith(" ")) {
-          issues.push(
-            "Line " +
-            (i + 2) +
-            ": Expected indented block after '" +
-            trimmed +
-            "'",
-          );
-        }
-      }
-    }
-  }
-
-  return issues;
-}
-
-function checkDependenciesInCode(codeBlocks, ssotContent) {
-  const issues = [];
-  if (!ssotContent) return issues;
-
-  for (const block of codeBlocks) {
-    const imports = block.code.match(
-      /require\(['"]([^'"]+)['"]\)|from\s+['"]([^'"]+)['"]/g,
-    );
-    if (imports) {
-      for (const imp of imports) {
-        const lib = imp.replace(/require\(|from\s+|['"]/g, "");
-        if (lib.startsWith(".") || lib.startsWith("/")) {
-          if (!ssotContent.includes(lib.replace("./", ""))) {
-            issues.push({
-              passed: false,
-              detail: "Potential missing dependency: " + lib,
-            });
-          }
-        }
-      }
-    }
-  }
-
-  return issues;
-}
-
 // ══════════════════════════════════════════════════════════════
 //  UNIFIED MESSAGE HANDLER — Central Processing Unit
 // ══════════════════════════════════════════════════════════════
@@ -18886,7 +18549,7 @@ async function handleMessage(transport, rawMessage) {
     const sessionId = msg.session_id || "default";
     const workspace =
       msg.context?.workspace || mcpWorkingDir || path.resolve(".");
-    const agentId = msg.agent_id || "code-guru";
+    const agentId = msg.agent_id || agentsModule.defaultAgentId(AGENTS);
 
     // Step 2: Inject context
     transport.stream({
@@ -19027,7 +18690,7 @@ async function handleMessage(transport, rawMessage) {
     );
 
     // Step 7: Compiler Check (if code present in result)
-    const compilerResult = await compilerCheck(
+    const compilerResult = await compilerModule.analyzeContent(
       result?.content || "",
       null,
       context,

@@ -53,7 +53,7 @@ function rawRequest(isHttps, options, body) {
   return new Promise((resolve) => {
     const mod = isHttps ? https : http;
     const payload = body === undefined ? null : Buffer.from(body, "utf8");
-    const opts = Object.assign({ hostname: "127.0.0.1", timeout: 30000 }, options);
+    const opts = Object.assign({ hostname: "localhost", timeout: 30000 }, options);
     if (payload) {
       opts.headers = Object.assign({}, options.headers, {
         "Content-Length": payload.length,
@@ -183,7 +183,7 @@ function udsMcp(method, params) {
 
 function grpcCall(request, timeoutMs) {
   return new Promise((resolve, reject) => {
-    const client = http2.connect("http://127.0.0.1:" + PORTS.grpc);
+    const client = http2.connect("http://localhost:" + PORTS.grpc);
     const timer = setTimeout(() => {
       client.destroy();
       reject(new Error("grpc timeout"));
@@ -325,7 +325,7 @@ function decodeServerFrame(buffer) {
 function wsMcp(origin, tool, args) {
   return new Promise((resolve) => {
     const key = crypto.randomBytes(16).toString("base64");
-    const socket = net.createConnection({ host: "127.0.0.1", port: PORTS.api });
+    const socket = net.createConnection({ host: "localhost", port: PORTS.api });
     let buffer = Buffer.alloc(0);
     let upgraded = false;
     let done = false;
@@ -339,7 +339,7 @@ function wsMcp(origin, tool, args) {
     socket.on("connect", () => {
       socket.write(
         "GET / HTTP/1.1\r\n" +
-        "Host: 127.0.0.1:" + PORTS.api + "\r\n" +
+        "Host: localhost:" + PORTS.api + "\r\n" +
         "Upgrade: websocket\r\n" +
         "Connection: Upgrade\r\n" +
         "Sec-WebSocket-Key: " + key + "\r\n" +

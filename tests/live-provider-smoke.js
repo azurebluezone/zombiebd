@@ -4,7 +4,7 @@
 /*
  * Live gateway smoke after the provider-matrix deploy.
  *
- * Reads only the running service on 127.0.0.1:5050:
+ * Reads only the running service on localhost:5050:
  *   - local Ollama is a first-class provider on 11434
  *   - ollama_cloud owns the cloud key and serves gpt-oss:20b
  *   - /v1/chat/completions returns an OpenAI envelope for both
@@ -18,7 +18,7 @@ const { readEnvFile } = require("../lib/env.js");
 const ROOT = path.resolve(__dirname, "..");
 const ENV = Object.assign({}, readEnvFile(path.join(ROOT, ".env")), process.env);
 const PORT = Number(ENV.PORT || 5050);
-const BASE = process.env.ZOMBIE_API_URL || "http://127.0.0.1:" + PORT;
+const BASE = process.env.ZOMBIE_API_URL || "http://localhost:" + PORT;
 const ADMIN_TOKEN = ENV.ADMIN_TOKEN || ENV.ADMIN_API_KEY || "";
 
 let passed = 0;

@@ -5,7 +5,7 @@
  * Agent -> provider matrix acceptance test.
  *
  * Real inputs, no mocks:
- *   - live gateway http://127.0.0.1:5050
+ *   - live gateway http://localhost:5050
  *   - live agents table (data/models.db; GET /api/agents masks names)
  *   - live model catalogue (GET /api/v1/models)
  *   - a throw-away directory under /tmp/opencode with one vault file
@@ -27,7 +27,7 @@ const path = require("path");
 const { DatabaseSync } = require("node:sqlite");
 
 const ROOT = path.resolve(__dirname, "..");
-const BASE = process.env.BASE_URL || "http://127.0.0.1:5050";
+const BASE = process.env.BASE_URL || "http://localhost:5050";
 const TMP = process.env.TEST_DIR || path.join("/tmp/opencode", "agent-provider-matrix-" + process.pid);
 const ACCESS_CODE = "ZOMBIE-7421";
 const ROUND_TIMEOUT_MS = 75000;

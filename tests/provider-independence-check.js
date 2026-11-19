@@ -65,7 +65,7 @@ function post(target, p, obj, extra) {
     options.socketPath = UDS;
     options.host = "localhost";
   } else {
-    options.host = "127.0.0.1";
+    options.host = "localhost";
     options.port = PORT;
   }
   return send(options, body);
@@ -180,9 +180,9 @@ function auditSse(raw) {
 
 async function main() {
   console.log("=== provider independence gate ===");
-  console.log("api=http://127.0.0.1:" + PORT + " uds=" + (UDS || "(none)"));
+  console.log("api=http://localhost:" + PORT + " uds=" + (UDS || "(none)"));
 
-  const catalog = await send({ host: "127.0.0.1", port: PORT, path: "/v1/models", method: "GET" });
+  const catalog = await send({ host: "localhost", port: PORT, path: "/v1/models", method: "GET" });
   let models = [];
   try {
     models = (JSON.parse(catalog.raw).data || []).map((m) => m && m.id).filter(Boolean);
@@ -247,7 +247,7 @@ async function main() {
     check("uds-chat-completion", false, "no UDS path resolved from .env");
   }
 
-  const origin = "http://127.0.0.1:" + PORT;
+  const origin = "http://localhost:" + PORT;
   const mcpBody = { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} };
   const toolsHttp = await post("http", "/mcp", mcpBody, { Origin: origin });
   const httpTools = JSON.parse(toolsHttp.raw || "{}");

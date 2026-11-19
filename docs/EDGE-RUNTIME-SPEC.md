@@ -44,18 +44,18 @@ its SQLite database at runtime, and prove the result with live checks.
 
 | Check | Observed |
 | --- | --- |
-| `ss -ltnp` | `127.0.0.1:5050` API, `127.0.0.1:5052` gRPC, `127.0.0.1:9932` llama.cpp |
+| `ss -ltnp` | `localhost:5050` API, `localhost:5052` gRPC, `localhost:9932` llama.cpp |
 | `systemctl is-active caddy` | active; Caddy v2.11.7 owns `:80` and `:443` |
 | `curl https://localhost/health` | HTTP 200, verify code 0 (no `--resolve`) |
 | `getent hosts localhost` | `::1 localhost` |
 | `/health` | version 3.2.1, agents 9, model rows 111, Node v24.22.2 |
 | `/api/v0/models` | 121 catalogue entries |
-| `tools/list` over `/mcp` | 153 tools |
+| `tools/list` over `/mcp` | 155 tools |
 | `data/models.db` | 9 agent rows, no `MODELS_DB` sentinel after repair |
 | `agent/*.js` | 9 agent definitions, each with an inline persona |
-| Ollama | reachable on `127.0.0.1:11434` |
-| local bridge | `127.0.0.1:11435`, backend `ollama`, model `qwen2:0.5b` |
-| llama.cpp | OpenAI-compatible `http://127.0.0.1:9932/v1`, model `qwen3-1.7b-abliterated` |
+| Ollama | reachable on `localhost:11434` |
+| local bridge | `localhost:11435`, backend `ollama`, model `qwen2:0.5b` |
+| llama.cpp | OpenAI-compatible `http://localhost:9932/v1`, model `qwen3-1.7b-abliterated` |
 | Process manager | systemd user unit `zombiecoder-gateway.service`, `Restart=always`; inactive while a terminal run owns the port |
 | KDE Plasma | installed (`plasma-desktop 4:5.24.7`, `startplasma-x11` present) |
 | active desktop session | XFCE; the installer did not switch display managers |
@@ -98,14 +98,14 @@ client (https/wss)
         v
   Caddy :443 / :80          TLS termination, redirect, fixed upstreams
         |
-        +--> 127.0.0.1:5050   main API + MCP (/mcp, /status, /api/*)
-        +--> 127.0.0.1:3110   OCR MCP
-        +--> 127.0.0.1:3111   screen recorder MCP
-        +--> 127.0.0.1:3112   TTS MCP
-        +--> 127.0.0.1:3121   Facebook Ads MCP
-        +--> 127.0.0.1:3122   public API MCP
-        +--> 127.0.0.1:3123   combined MCP
-        +--> 127.0.0.1:5400   universal adapter (HTTP only)
+        +--> localhost:5050   main API + MCP (/mcp, /status, /api/*)
+        +--> localhost:3110   OCR MCP
+        +--> localhost:3111   screen recorder MCP
+        +--> localhost:3112   TTS MCP
+        +--> localhost:3121   Facebook Ads MCP
+        +--> localhost:3122   public API MCP
+        +--> localhost:3123   combined MCP
+        +--> localhost:5400   universal adapter (HTTP only)
 
 internal only: Ollama 11434, bridge 11435, adapter HTTPS 5443,
                UDS /tmp/zombiecoder/mcp.sock (fallback /var/tmp/...),
@@ -123,23 +123,23 @@ them only from loopback.
 
 | Env key | Default | Service | Bind | Public via Caddy |
 | --- | ---: | --- | --- | --- |
-| `PORT` | `5050` | main API / MCP | `127.0.0.1` | yes (`MAIN_HOST`) |
-| `UDS_PORT` | `5150` | Windows TCP fallback for UDS | `127.0.0.1` | no |
+| `PORT` | `5050` | main API / MCP | `localhost` | yes (`MAIN_HOST`) |
+| `UDS_PORT` | `5150` | Windows TCP fallback for UDS | `localhost` | no |
 | `UDS` | `/tmp/zombiecoder/mcp.sock,/var/tmp/zombiecoder/mcp.sock` | one inbound socket: MCP JSON-RPC + OpenAI HTTP | first usable path binds; next is immediate fallback | filesystem `0660` | no |
 | `UDS_OPENAI` | `1` | expose OpenAI HTTP on the UDS (`0` = MCP only) | - | no |
-| `GRPC_PORT` | `5052` | gRPC (h2c + protobuf) | `127.0.0.1` | no |
-| `HTTPS_PORT` | `5444` | optional in-process TLS | `127.0.0.1` | no |
-| `OCR_MCP_PORT` | `3110` | OCR MCP | `127.0.0.1` | tool host |
-| `SCREEN_MCP_PORT` | `3111` | screen recorder MCP | `127.0.0.1` | tool host |
-| `TTS_MCP_PORT` | `3112` | TTS MCP | `127.0.0.1` | tool host |
-| `FB_ADS_MCP_PORT` | `3121` | Facebook Ads MCP | `127.0.0.1` | tool host |
-| `PUBLIC_API_MCP_PORT` | `3122` | public API MCP | `127.0.0.1` | tool host |
-| `COMBINED_MCP_PORT` | `3123` | combined gateway | `127.0.0.1` | tool host |
-| `ADAPTER_HTTP_PORT` | `5400` | universal adapter HTTP | `127.0.0.1` | tool host |
-| `ADAPTER_HTTPS_PORT` | `5443` | adapter self-signed TLS | `127.0.0.1` | no |
-| `BRIDGE_PORT` | `11435` | local LLM bridge | `127.0.0.1` | no |
-| `BRIDGE_INTERNAL_PORT` | `11437` | bridge backend | `127.0.0.1` | no |
-| `LLAMA_CPP_URL` | `http://127.0.0.1:9932/v1` | llama.cpp OpenAI endpoint | `127.0.0.1` | no |
+| `GRPC_PORT` | `5052` | gRPC (h2c + protobuf) | `localhost` | no |
+| `HTTPS_PORT` | `5444` | optional in-process TLS | `localhost` | no |
+| `OCR_MCP_PORT` | `3110` | OCR MCP | `localhost` | tool host |
+| `SCREEN_MCP_PORT` | `3111` | screen recorder MCP | `localhost` | tool host |
+| `TTS_MCP_PORT` | `3112` | TTS MCP | `localhost` | tool host |
+| `FB_ADS_MCP_PORT` | `3121` | Facebook Ads MCP | `localhost` | tool host |
+| `PUBLIC_API_MCP_PORT` | `3122` | public API MCP | `localhost` | tool host |
+| `COMBINED_MCP_PORT` | `3123` | combined gateway | `localhost` | tool host |
+| `ADAPTER_HTTP_PORT` | `5400` | universal adapter HTTP | `localhost` | tool host |
+| `ADAPTER_HTTPS_PORT` | `5443` | adapter self-signed TLS | `localhost` | no |
+| `BRIDGE_PORT` | `11435` | local LLM bridge | `localhost` | no |
+| `BRIDGE_INTERNAL_PORT` | `11437` | bridge backend | `localhost` | no |
+| `LLAMA_CPP_URL` | `http://localhost:9932/v1` | llama.cpp OpenAI endpoint | `localhost` | no |
 | `CADDY_HTTP_PORT` | `80` | Caddy HTTP | `0.0.0.0` | - |
 | `CADDY_HTTPS_PORT` | `443` | Caddy HTTPS | `0.0.0.0` | - |
 
@@ -167,7 +167,7 @@ CADDY_HTTPS_PORT=443
 
 # Runtime
 APP_ROOT=
-BIND_HOST=127.0.0.1
+BIND_HOST=localhost
 PORT=5050
 UDS_PORT=5150
 UDS=data/run/mcp.sock,data/run/mcp2.sock
@@ -176,7 +176,7 @@ UDS_OPENAI=1
 # Providers
 CUSTOM_PROVIDER_5_ENABLED=true
 CUSTOM_PROVIDER_5_NAME=llama-cpp
-CUSTOM_PROVIDER_5_URL=http://127.0.0.1:9932/v1
+CUSTOM_PROVIDER_5_URL=http://localhost:9932/v1
 CUSTOM_PROVIDER_5_KEY=
 CUSTOM_PROVIDER_5_MODELS=
 CUSTOM_PROVIDER_5_PRIORITY=0
@@ -191,7 +191,7 @@ CUSTOM_PROVIDER_5_MAX_PROMPT_CHARS=2500
 # id on custom_5; the masked name resolves here exactly.
 CUSTOM_PROVIDER_6_ENABLED=true
 CUSTOM_PROVIDER_6_NAME=llama-native
-CUSTOM_PROVIDER_6_URL=http://127.0.0.1:9932
+CUSTOM_PROVIDER_6_URL=http://localhost:9932
 CUSTOM_PROVIDER_6_PRIORITY=1
 CUSTOM_PROVIDER_6_TYPE=llamacpp
 CUSTOM_PROVIDER_6_MODELS=llama-native-qwen=>qwen3-1.7b-abliterated
@@ -223,7 +223,7 @@ adds the local and main-host origins. It prints key names, never values.
 
 - Global: `http_port {$CADDY_HTTP_PORT}`, `https_port {$CADDY_HTTPS_PORT}`,
   `email {$ACME_EMAIL}` when set.
-- Main site: `https://{$MAIN_HOST}` -> `127.0.0.1:{$PORT}`.
+- Main site: `https://{$MAIN_HOST}` -> `localhost:{$PORT}`.
 - Tool sites: one block per non-empty host from `deploy/tools.json`.
 - TLS: `tls internal` when `TLS_MODE=internal`; automatic ACME otherwise.
 - Proxy headers: `Host`, `X-Real-IP`, `X-Forwarded-For`, `X-Forwarded-Proto`.
@@ -304,7 +304,7 @@ Windows: `scripts/install.ps1` exists; it is **NOT_TESTED** on this Linux host.
   shutdown, and only when its inode still belongs to this process.
 - `UDS_OPENAI=0` keeps the socket MCP-only. `UDS_PATH` / `OPENAI_UDS_PATH` remain
   legacy test inputs and are not part of the production contract.
-- Windows fallback is TCP on `UDS_PORT` (`127.0.0.1` only).
+- Windows fallback is TCP on `UDS_PORT` (`localhost` only).
 - DB path comes from `DB_SQLITE_PATH`, default `data/models.db`.
 - First boot creates all tables and seeds agents from `agent/*.js`.
 - Agent seeding stores a concrete model: the DB value when it is real, else the
@@ -353,7 +353,7 @@ transport suite passed; run that suite for its own evidence.
 ## 10. Install sentinel
 
 ```text
-RESULT: MISSION BARISAL PASS env=ok installer=ok node=24 kde=present tls=ok origins=ok tools=153 providers=ok native=ok db=seed build=ok start=ok agents=9 workdir=ok reply=ok
+RESULT: MISSION BARISAL PASS env=ok installer=ok node=24 kde=present tls=ok origins=ok tools=155 providers=ok native=ok db=seed build=ok start=ok agents=9 workdir=ok reply=ok
 ```
 
 `bash scripts/install-verify.sh --quick` prints this line only when every check

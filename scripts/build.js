@@ -25,12 +25,30 @@ function liveRuntimePids() {
   if (process.platform === "win32") return [];
   try {
     const out = execSync("ps -eo pid=,args=", { encoding: "utf8" });
+    // Match a real node runtime, not a shell command that merely mentions
+    // dist/api.js (the build command itself used to trip this guard).
+    const runtimeRe = new RegExp(
+      "(?:^|\\s)\\S*node\\s+\\S*" +
+        DIST.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") +
+        "/(?:start|api)\\.js(?:\\s|$)",
+    );
     return out
       .split("\n")
       .map((line) => line.trim())
-      .filter((line) => line.includes(DIST) && /(start|api)\.js/.test(line))
+      .filter((line) => runtimeRe.test(line))
       .map((line) => parseInt(line, 10))
-      .filter((pid) => Number.isFinite(pid) && pid !== process.pid);
+      .filter((pid) => Number.isFinite(pid) && pid !== process.pid)
+      .filter((pid) => {
+        // A defunct (zombie) process keeps its old argv in ps but cannot be
+        // the live runtime. Ignoring it prevents an unreaped child from
+        // blocking every rebuild.
+        try {
+          const stat = fs.readFileSync("/proc/" + pid + "/stat", "utf8");
+          return stat.split(" ")[2] !== "Z";
+        } catch (_) {
+          return false;
+        }
+      });
   } catch (_) {
     return [];
   }
@@ -54,6 +72,7 @@ const VERSION = fs.existsSync(path.join(ROOT, "package.json"))
 const COPY_DIRS = [
   "agent",
   "lib",
+  "modules",
   "provider",
   "tools",
   "normalizer",

@@ -11,7 +11,7 @@ module.exports = {
   expertise: "security audit, vulnerability detection, secure coding, OWASP, SQL injection, XSS, CSRF, authentication, data protection",
   priority: 3,
   // llama.cpp CPU (llama-uds): local security reasoning, proven native tool calls.
-  model: "qwen3-1.7b-abliterated",
+  model: "nvidia/nemotron-3.5-lightning-30b-a3b",
   enabled: 1,
   mission: "Identify security vulnerabilities, enforce secure coding practices, and protect data integrity",
   decisionRule: "Research latest CVEs and security advisories via web search before reporting vulnerabilities",

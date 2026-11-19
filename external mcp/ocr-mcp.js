@@ -599,8 +599,8 @@ if (require.main === module) {
     res.end(JSON.stringify(reply));
   });
 
-  server.listen(PORT, "127.0.0.1", () => {
-    console.log(`[OCR-MCP] v2 running on http://127.0.0.1:${PORT}`);
+  server.listen(PORT, "localhost", () => {
+    console.log(`[OCR-MCP] v2 running on http://localhost:${PORT}`);
     console.log(`[OCR-MCP] default langs=${DEFAULT_LANGS} scale=${DEFAULT_SCALE}x`);
     console.log(`[OCR-MCP] Tools: ${TOOLS.map((t) => t.name).join(", ")}`);
   });

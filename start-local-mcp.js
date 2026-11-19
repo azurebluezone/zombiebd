@@ -12,11 +12,11 @@
  *   - Reads "external mcp/servers.json", spawns every entry with
  *     local:true && enabled:true && a script path.
  *   - Binds stay loopback-only (the scripts themselves listen on
- *     127.0.0.1; we additionally pin the contract-table port env vars):
+ *     localhost; we additionally pin the contract-table port env vars):
  *         ocr → OCR_MCP_PORT (3100)
  *         screen-recorder → SCREEN_MCP_PORT (3101)
  *         tts → TTS_MCP_PORT (3102)
- *   - Readiness = TCP accept on 127.0.0.1:<port> (polled, bounded).
+ *   - Readiness = TCP accept on localhost:<port> (polled, bounded).
  *   - "already-running" short circuit: if the port is already accepting
  *     (server up from a previous run / another manager), we do NOT spawn
  *     a duplicate — result is still status:"ready".
@@ -116,7 +116,7 @@ function loadLocalServerEntries() {
 // ─── TCP readiness probe ──────────────────────────────────────────────
 function isPortListening(port) {
   return new Promise((resolve) => {
-    const sock = net.connect({ host: "127.0.0.1", port });
+    const sock = net.connect({ host: "localhost", port });
     let settled = false;
     const done = (v) => {
       if (settled) return;
@@ -224,7 +224,7 @@ async function startLocalServers() {
 
     // Already-running short circuit — no duplicate spawn.
     if (await isPortListening(entry.port)) {
-      log(entry.name + " already-running on 127.0.0.1:" + entry.port);
+      log(entry.name + " already-running on localhost:" + entry.port);
       results.push({
         name: entry.name, status: "ready", port: entry.port,
         mcpPath: entry.mcpPath, detail: "already-running",
@@ -269,7 +269,7 @@ async function startLocalServers() {
     child.removeListener("exit", onExit);
 
     if (ready) {
-      log(entry.name + " ready on 127.0.0.1:" + entry.port + " (pid " + child.pid + ")");
+      log(entry.name + " ready on localhost:" + entry.port + " (pid " + child.pid + ")");
       results.push({
         name: entry.name, status: "ready", port: entry.port,
         mcpPath: entry.mcpPath, detail: "spawned",
@@ -358,7 +358,7 @@ async function standaloneSmoke() {
     // fetch handles the chunked transfer-encoding these servers use.
     let tools = null;
     try {
-      const res = await fetch("http://127.0.0.1:" + r.port + (r.mcpPath || "/"), {
+      const res = await fetch("http://localhost:" + r.port + (r.mcpPath || "/"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),

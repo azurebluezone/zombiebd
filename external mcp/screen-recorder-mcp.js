@@ -416,8 +416,8 @@ const server = http.createServer(async (req, res) => {
   res.end(JSON.stringify(reply));
 });
 
-server.listen(PORT, "127.0.0.1", () => {
-  console.log(`[SCREEN-MCP] Running on http://127.0.0.1:${PORT}`);
+server.listen(PORT, "localhost", () => {
+  console.log(`[SCREEN-MCP] Running on http://localhost:${PORT}`);
   console.log(`[SCREEN-MCP] Tools: ${TOOLS.map(t => t.name).join(", ")}`);
   console.log(`[SCREEN-MCP] Recordings dir: ${RECORDINGS_DIR}`);
 });

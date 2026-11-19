@@ -8,7 +8,7 @@
  *
  * WHAT IS CHECKED
  *   1. systemd user unit (supervisor for the whole stack)   [if available]
- *   2. main MCP server        MAIN_SERVER_MCP (default http://127.0.0.1:5050/mcp)
+ *   2. main MCP server        MAIN_SERVER_MCP (default http://localhost:5050/mcp)
  *   3. every local server in "external mcp/servers.json"    (port + tools/list)
  *   4. adapter over HTTPS      with certificate verification ON
  *   5. unified log file writable (logs/zc.jsonl)
@@ -48,7 +48,7 @@ ensureEnv();
 
 const FIX = process.argv.includes("--fix");
 const UNIT = process.env.ZC_UNIT || "zombiecoder-gateway.service";
-const MAIN_URL = process.env.MAIN_SERVER_MCP || "http://127.0.0.1:5050/mcp";
+const MAIN_URL = process.env.MAIN_SERVER_MCP || "http://localhost:5050/mcp";
 const CERT = process.env.UNIVERSAL_ADAPTER_CA ||
   path.join(os.homedir(), ".zombiecoder", "certs", "adapter-cert.pem");
 const SERVERS_JSON = path.join(ROOT, "external mcp", "servers.json");
@@ -193,7 +193,7 @@ function spawnDetached(entry) {
 
 async function waitForPort(port, deadlineMs) {
   while (Date.now() < deadlineMs) {
-    if (await tcpUp("127.0.0.1", port, 400)) return true;
+    if (await tcpUp("localhost", port, 400)) return true;
     await new Promise((r) => setTimeout(r, 300));
   }
   return false;
@@ -249,16 +249,16 @@ async function main() {
       record(e.name, false, "bad url (no port) in servers.json");
       continue;
     }
-    const up = await tcpUp("127.0.0.1", e.port, 800);
+    const up = await tcpUp("localhost", e.port, 800);
     if (up) {
-      const reply = await rpc(`http://127.0.0.1:${e.port}${e.mcpPath}`, {
+      const reply = await rpc(`http://localhost:${e.port}${e.mcpPath}`, {
         jsonrpc: "2.0", id: 1, method: "tools/list", params: {},
       });
       const n = toolsCount(reply);
-      record(e.name, n > 0, `127.0.0.1:${e.port}${e.mcpPath} → ${n} tools`);
+      record(e.name, n > 0, `localhost:${e.port}${e.mcpPath} → ${n} tools`);
     } else {
       dead.push(e);
-      record(e.name, false, `127.0.0.1:${e.port} not listening`);
+      record(e.name, false, `localhost:${e.port} not listening`);
     }
   }
 
@@ -274,7 +274,7 @@ async function main() {
       let n = 0;
       if (ok) {
         await new Promise((r) => setTimeout(r, 500));
-        n = toolsCount(await rpc(`http://127.0.0.1:${e.port}${e.mcpPath}`, {
+        n = toolsCount(await rpc(`http://localhost:${e.port}${e.mcpPath}`, {
           jsonrpc: "2.0", id: 1, method: "tools/list", params: {},
         }));
       }

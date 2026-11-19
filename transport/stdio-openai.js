@@ -9,7 +9,7 @@
  *   {"done":true,"finish_reason":"..."}   stream finished
  *   {"error":{...}}                       request failed
  * Target: OPENAI_UDS_PATH (legacy), the first UDS candidate, or
- * OPENAI_BASE_URL (default http://127.0.0.1:5050). Zero dependencies.
+ * OPENAI_BASE_URL (default http://localhost:5050). Zero dependencies.
  */
 
 const http = require("http");
@@ -18,7 +18,7 @@ const readline = require("readline");
 const UDS_PATH = process.env.OPENAI_UDS_PATH ||
   String(process.env.UDS || "").split(",")[0].trim() ||
   "";
-const BASE_URL = process.env.OPENAI_BASE_URL || "http://127.0.0.1:5050";
+const BASE_URL = process.env.OPENAI_BASE_URL || "http://localhost:5050";
 const API_KEY = process.env.OPENAI_API_KEY || "";
 
 function writeLine(obj) {

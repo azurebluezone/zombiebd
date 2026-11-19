@@ -376,11 +376,11 @@ const server = http.createServer(async (req, res) => {
 
 // Loopback-only bind: unauthenticated local tool backend — main server talks
 // to it on the same machine, so it must never be exposed on the network.
-server.listen(PORT, "127.0.0.1", () => {
-  log("INFO", "SERVER_START", { port: PORT, host: "127.0.0.1", tools: TOOLS.length, endpoint: `http://127.0.0.1:${PORT}/mcp` });
-  console.log(`[Facebook Ads MCP] http://127.0.0.1:${PORT}/mcp`);
-  console.log(`[Facebook Ads MCP] Setup: http://127.0.0.1:${PORT}/`);
-  console.log(`[Facebook Ads MCP] Logs: http://127.0.0.1:${PORT}/logs`);
+server.listen(PORT, "localhost", () => {
+  log("INFO", "SERVER_START", { port: PORT, host: "localhost", tools: TOOLS.length, endpoint: `http://localhost:${PORT}/mcp` });
+  console.log(`[Facebook Ads MCP] http://localhost:${PORT}/mcp`);
+  console.log(`[Facebook Ads MCP] Setup: http://localhost:${PORT}/`);
+  console.log(`[Facebook Ads MCP] Logs: http://localhost:${PORT}/logs`);
   console.log(`[Facebook Ads MCP] Tools: ${TOOLS.length}`);
   if (!process.env.FB_ACCESS_TOKEN) console.warn("[Facebook Ads MCP] WARNING: FB_ACCESS_TOKEN not set");
 });

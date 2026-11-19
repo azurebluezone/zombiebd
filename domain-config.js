@@ -38,7 +38,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const LOOPBACK = new Set(["localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"]);
+const LOOPBACK = new Set(["localhost", "localhost", "0.0.0.0", "::1", "[::1]"]);
 
 function hostOf(value) {
   try {
@@ -123,11 +123,11 @@ function deriveCorsOrigins(env) {
 
   for (const localPort of localPorts) {
     add("http://localhost:" + localPort);
-    add("http://127.0.0.1:" + localPort);
+    add("http://localhost:" + localPort);
     add("http://[::1]:" + localPort);
   }
   add("http://localhost");
-  add("http://127.0.0.1");
+  add("http://localhost");
   if (mainHost && LOOPBACK.has(mainHost)) add("http://" + mainHost + ":" + port);
 
   return Array.from(origins);

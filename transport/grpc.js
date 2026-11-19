@@ -115,7 +115,7 @@ function postJson(upstream, payload, onSseLine) {
 }
 
 function parseUpstream(value) {
-  const url = new URL(value || "http://127.0.0.1:5050");
+  const url = new URL(value || "http://localhost:5050");
   return {
     hostname: url.hostname,
     port: url.port || (url.protocol === "https:" ? 443 : 80),
@@ -226,7 +226,7 @@ function createGrpcServer(options) {
     listen() {
       return new Promise((resolve, reject) => {
         server.once("error", reject);
-        server.listen(opts.port || 0, opts.host || "127.0.0.1", () => {
+        server.listen(opts.port || 0, opts.host || "localhost", () => {
           server.removeListener("error", reject);
           resolve(server.address().port);
         });

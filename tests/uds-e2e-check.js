@@ -65,7 +65,7 @@ function contentOf(json) {
   return message && typeof message.content === "string" ? message.content : "";
 }
 
-// One client for both surfaces: a Unix socket path or 127.0.0.1 + port.
+// One client for both surfaces: a Unix socket path or localhost + port.
 function send(options) {
   const opts = options || {};
   const payload = opts.body === undefined
@@ -74,7 +74,7 @@ function send(options) {
   return new Promise((resolve) => {
     const target = opts.socketPath
       ? { socketPath: opts.socketPath }
-      : { host: "127.0.0.1", port: opts.port };
+      : { host: "localhost", port: opts.port };
     const req = http.request(
       Object.assign({}, target, {
         path: opts.pathname || "/",
@@ -164,7 +164,7 @@ function canConnect(socketPath) {
 function freePort() {
   return new Promise((resolve) => {
     const server = net.createServer();
-    server.listen(0, "127.0.0.1", () => {
+    server.listen(0, "localhost", () => {
       const port = server.address().port;
       server.close(() => resolve(port));
     });
@@ -534,7 +534,7 @@ async function main() {
     env: Object.assign({}, process.env, {
       BRIDGE_PORT: String(bridgePort),
       BRIDGE_BACKEND: "auto",
-      BRIDGE_UPSTREAMS: "http://127.0.0.1:" + deadPort,
+      BRIDGE_UPSTREAMS: "http://localhost:" + deadPort,
       BRIDGE_PROBE_DEFAULTS: "0",
       BRIDGE_PROBE_TIMEOUT_MS: "300",
       BRIDGE_REFRESH_MS: "3000",
@@ -606,7 +606,7 @@ async function main() {
     env: Object.assign({}, process.env, {
       BRIDGE_PORT: String(discoveredPort),
       BRIDGE_BACKEND: "auto",
-      BRIDGE_UPSTREAMS: "gateway=http://127.0.0.1:" + (ENV.ports.api || 5050),
+      BRIDGE_UPSTREAMS: "gateway=http://localhost:" + (ENV.ports.api || 5050),
       BRIDGE_PROBE_DEFAULTS: "0",
       BRIDGE_PROBE_TIMEOUT_MS: "800",
       BRIDGE_REFRESH_MS: "3000",

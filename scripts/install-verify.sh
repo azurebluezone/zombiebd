@@ -92,7 +92,7 @@ fi
 
 # 7. Local Caddy chain, no -k. This proves the edge certificate itself; the
 # public check above remains the only evidence for APP_URL reachability.
-if echo | openssl s_client -connect "127.0.0.1:$CADDY_HTTPS" -servername "$MAIN_HOST" -verify_return_error >/dev/null 2>&1; then
+if echo | openssl s_client -connect "localhost:$CADDY_HTTPS" -servername "$MAIN_HOST" -verify_return_error >/dev/null 2>&1; then
   pass "tls-chain=ok"
 else
   fail "tls-chain"

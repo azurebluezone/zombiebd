@@ -34,12 +34,12 @@ const BACKENDS = {
     // the first. Hardcoding 3001/3002 made this gateway always point at
     // whatever instance owned those defaults.
     "facebook-ads": {
-      host: process.env.FB_ADS_MCP_HOST || "127.0.0.1",
+      host: process.env.FB_ADS_MCP_HOST || "localhost",
       port: parseInt(process.env.FB_ADS_MCP_PORT || "3001", 10),
       prefix: "ads_",
     },
     "public-api": {
-      host: process.env.PUBLIC_API_MCP_HOST || "127.0.0.1",
+      host: process.env.PUBLIC_API_MCP_HOST || "localhost",
       port: parseInt(process.env.PUBLIC_API_MCP_PORT || "3002", 10),
       prefix: "public",
     },
@@ -272,8 +272,8 @@ ${Object.entries(health)
 
 // Loopback-only bind: this gateway is an unauthenticated local tool backend
 // reached by the main server on the same machine — never expose it on LAN.
-server.listen(GATEWAY_PORT, "127.0.0.1", () => {
-    console.log(`[Combined MCP Gateway] http://127.0.0.1:${GATEWAY_PORT}/mcp`);
+server.listen(GATEWAY_PORT, "localhost", () => {
+    console.log(`[Combined MCP Gateway] http://localhost:${GATEWAY_PORT}/mcp`);
     console.log(`[Backends] facebook-ads:${process.env.FB_ADS_MCP_PORT || "3001"} + public-api:${process.env.PUBLIC_API_MCP_PORT || "3002"} → merged`);
     console.log(`[Usage] node combined.js [PORT]`);
 });

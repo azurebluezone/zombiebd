@@ -193,7 +193,7 @@ function httpJson(opts) {
 function admin(method, urlPath, body) {
   const payload = body ? JSON.stringify(body) : "";
   return httpJson({
-    host: "127.0.0.1",
+    host: "localhost",
     port: PORT,
     path: urlPath,
     method,
@@ -249,7 +249,7 @@ async function waitForHealth(timeoutMs) {
   while (Date.now() < deadline) {
     try {
       const r = await httpJson({
-        host: "127.0.0.1",
+        host: "localhost",
         port: PORT,
         path: "/health",
         method: "GET",
@@ -362,7 +362,7 @@ async function callHttp(agentId, prompt, opts) {
   const body = openAIBody(agentId, prompt, o);
   const t0 = Date.now();
   const r = await httpJson({
-    host: "127.0.0.1",
+    host: "localhost",
     port: PORT,
     path: "/v1/chat/completions",
     method: "POST",
@@ -422,7 +422,7 @@ function callStdio(agentId, prompt, opts) {
       env: Object.assign({}, process.env, {
         OPENAI_UDS_PATH: "",
         UDS: "",
-        OPENAI_BASE_URL: "http://127.0.0.1:" + PORT,
+        OPENAI_BASE_URL: "http://localhost:" + PORT,
       }),
     });
     let buf = "";
@@ -490,7 +490,7 @@ function callGrpc(agentId, prompt, opts) {
   const o = opts || {};
   return new Promise((resolve) => {
     const t0 = Date.now();
-    const client = http2.connect("http://127.0.0.1:" + GRPC_PORT);
+    const client = http2.connect("http://localhost:" + GRPC_PORT);
     let settled = false;
     const finish = (r) => {
       if (settled) return;

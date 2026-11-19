@@ -125,6 +125,7 @@ function fromOpenAI(raw) {
   if (toolCalls && (!finish || finish === "stop")) finish = "tool_calls";
 
   return {
+    object: "chat.completion",
     choices: [{
       index: 0,
       message: Object.assign(
@@ -181,6 +182,7 @@ function fromOllama(raw) {
     : (raw.done_reason === "length" ? "length" : "stop");
 
   return {
+    object: "chat.completion",
     choices: [{
       index: 0,
       message: Object.assign(
@@ -253,6 +255,7 @@ function fromGemini(raw) {
   const completionTokens =
     (u.candidatesTokenCount || 0) + (u.thoughtsTokenCount || 0);
   return {
+    object: "chat.completion",
     choices: [{
       index: 0,
       message: Object.assign(

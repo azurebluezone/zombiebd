@@ -37,7 +37,7 @@ fi
 
 PORT="${PORT:-5050}"
 BRIDGE_PORT="${BRIDGE_PORT:-11435}"
-OLLAMA_URL="${BRIDGE_OLLAMA_URL:-http://127.0.0.1:11434}"
+OLLAMA_URL="${BRIDGE_OLLAMA_URL:-http://localhost:11434}"
 NODE_BIN="${NODE_BIN:-node}"
 
 say() { printf '%s\n' "$*"; }
@@ -80,7 +80,7 @@ ensure_ollama() {
 }
 
 ensure_bridge() {
-  if http_ok "http://127.0.0.1:$BRIDGE_PORT/health"; then
+  if http_ok "http://localhost:$BRIDGE_PORT/health"; then
     ok "bridge :$BRIDGE_PORT"
     return 0
   fi
@@ -91,7 +91,7 @@ ensure_bridge() {
   say "starting local-llm-bridge.js on :$BRIDGE_PORT ..."
   nohup "$NODE_BIN" local-llm-bridge.js >> logs/bridge.log 2>&1 &
   echo $! > logs/bridge.pid
-  if wait_http "http://127.0.0.1:$BRIDGE_PORT/health" 20; then
+  if wait_http "http://localhost:$BRIDGE_PORT/health" 20; then
     ok "bridge started"
     return 0
   fi
@@ -101,7 +101,7 @@ ensure_bridge() {
 }
 
 gateway_capabilities() {
-  curl -fsS -m 3 "http://127.0.0.1:$PORT/api/system" >/dev/null 2>&1
+  curl -fsS -m 3 "http://localhost:$PORT/api/system" >/dev/null 2>&1
 }
 
 wait_gateway_capabilities() {
@@ -115,9 +115,9 @@ wait_gateway_capabilities() {
 }
 
 ensure_gateway() {
-  if http_ok "http://127.0.0.1:$PORT/health"; then
+  if http_ok "http://localhost:$PORT/health"; then
     local health
-    health="$(curl -fsS -m 3 "http://127.0.0.1:$PORT/health" 2>/dev/null || true)"
+    health="$(curl -fsS -m 3 "http://localhost:$PORT/health" 2>/dev/null || true)"
     case "$health" in
       *'"instance_id"'*)
         if wait_gateway_capabilities 5; then
@@ -139,7 +139,7 @@ ensure_gateway() {
   say "starting gateway (api + 7 MCP servers + gRPC + UDS) ..."
   nohup "$NODE_BIN" start.js --start-all >> logs/start-all.log 2>&1 &
   echo $! > logs/gateway.pid
-  if wait_http "http://127.0.0.1:$PORT/health" 45; then
+  if wait_http "http://localhost:$PORT/health" 45; then
     if wait_gateway_capabilities 20; then
       ok "gateway started"
       return 0
@@ -161,7 +161,7 @@ edge_state() {
 
   if command -v caddy >/dev/null 2>&1 && [ -n "$host" ]; then
     for _ in $(seq 1 20); do
-      body="$(curl -k -fsS -m 4 --resolve "$host:443:127.0.0.1" "https://$host/health" 2>/dev/null || true)"
+      body="$(curl -k -fsS -m 4 --resolve "$host:443:localhost" "https://$host/health" 2>/dev/null || true)"
       case "$body" in
         *'"healthy":true'*)
           ok "caddy :80/:443 live (https $host/health)"

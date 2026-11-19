@@ -40,7 +40,7 @@ _ENV = _env_file_values()
 def _env(key, default=""):
     return os.environ.get(key) or _ENV.get(key) or default
 
-BASE   = os.environ.get("BASE_URL") or f"http://127.0.0.1:{_env('PORT', '5050')}"
+BASE   = os.environ.get("BASE_URL") or f"http://localhost:{_env('PORT', '5050')}"
 MCP    = f"{BASE}/mcp"
 CHAT   = f"{BASE}/v1/chat/completions"
 TTS_VENV = _env("TTS_VENV") or shutil.which("edge-tts") or ""
@@ -54,7 +54,7 @@ def record(name, ok, detail=""):
         for line in str(detail).splitlines():
             print(f"       {line}")
 
-def rpc(port, payload, host="127.0.0.1"):
+def rpc(port, payload, host="localhost"):
     url = f"http://{host}:{port}/"
     req = urllib.request.Request(url, data=json.dumps(payload).encode(),
                                  headers={"Content-Type": "application/json"})

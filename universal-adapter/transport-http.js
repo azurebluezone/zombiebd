@@ -181,7 +181,7 @@ async function handle(req, res) {
   return sendJSON(res, 200, out);
 }
 
-function startHTTP({ port = 5400, host = "127.0.0.1" } = {}) {
+function startHTTP({ port = 5400, host = "localhost" } = {}) {
   const server = http.createServer((req, res) => {
     handle(req, res).catch((err) => {
       zclog.fail("transport", "HTTP_HANDLER_ERROR", { error: err.message || String(err) });
@@ -218,7 +218,7 @@ function startHTTP({ port = 5400, host = "127.0.0.1" } = {}) {
  * and nothing else should reach it. Override with ADAPTER_HTTPS_HOST if a
  * remote client really must connect.
  */
-function startHTTPS({ port = 5443, host = "127.0.0.1", hosts = ["localhost", "127.0.0.1"] } = {}) {
+function startHTTPS({ port = 5443, host = "localhost", hosts = ["localhost", "localhost"] } = {}) {
   let creds;
   try {
     creds = tls.ensure(hosts);

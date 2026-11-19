@@ -157,7 +157,29 @@ async function handle(ctx, req, res, url, method) {
         ctx.jsonResponse(res, 404, { error: "Unknown provider: " + (b && b.id) });
         return true;
       }
-      ctx.PROVIDER_CONFIG[b.id].enabled = b.enabled ? true : false;
+      const provider = ctx.PROVIDER_CONFIG[b.id];
+      // Env is the off switch of last resort. A runtime toggle must not reopen
+      // a provider that OPENCODE_ENABLED=false (or an equivalent env flag)
+      // closed; only changing the env flag and restarting can do that.
+      if (b.enabled && provider.envDisabled === true) {
+        ctx.log("WARN", "ADMIN_PROVIDER_TOGGLE_REFUSED", {
+          provider: b.id,
+          reason: "env-disabled",
+        });
+        ctx.jsonResponse(res, 409, {
+          ok: false,
+          id: b.id,
+          enabled: false,
+          envDisabled: true,
+          error:
+            "Provider " +
+            b.id +
+            " is disabled by the environment (envDisabled). " +
+            "Change its env flag and restart instead of toggling it.",
+        });
+        return true;
+      }
+      provider.enabled = b.enabled ? true : false;
       const off = ctx.persistProviderDisabled();
       ctx.normalizeProviderPriorities("providerToggle");
       ctx.refreshFreeModels();

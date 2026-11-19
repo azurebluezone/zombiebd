@@ -17,6 +17,7 @@ const net = require("net");
 const { execSync, spawn } = require("child_process");
 const systemInfo = require("./lib/system-info.js");
 const { readEnvFile } = require("./lib/env");
+const { classifyDbError, isBusyError } = require("./lib/db-guard");
 
 const VERSION = "3.2.1"; // keep in sync with api.js /health version
 const CONFIG_DIR = path.join(os.homedir(), ".zombiecoder");
@@ -129,43 +130,72 @@ function ensureDatabase() {
     return { exists: false, dbPath };
   }
 
-  try {
-    const { DatabaseSync } = require("node:sqlite");
-    const db = new DatabaseSync(dbPath, { readOnly: true });
-    const check = db.prepare("PRAGMA quick_check").get();
-    const integrity = check ? String(Object.values(check)[0] || "") : "";
-    if (integrity.toLowerCase() !== "ok") {
-      throw new Error("integrity_check=" + (integrity || "empty"));
-    }
-    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(r => r.name);
-    const count = (table) =>
-      tables.includes(table) ? db.prepare(`SELECT COUNT(*) as c FROM ${table}`).get().c : 0;
-    const modelCount = count("models");
-    const agentCount = count("agents");
-    db.close();
+  const { DatabaseSync } = require("node:sqlite");
+  const deadline = Date.now() + 5000;
+  // Blocking sleep without a child process; only used during boot.
+  const sleepSync = (ms) => {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  };
 
-    console.log("[DB] " + dbPath + " tables: " + (tables.join(", ") || "(none)"));
-    console.log(`[DB] Models: ${modelCount}, Agents: ${agentCount}`);
-    if (!tables.includes("models") || !tables.includes("agents")) {
-      console.warn("[DB] schema incomplete — api.js will create the missing tables");
-    } else if (agentCount === 0) {
-      console.warn("[DB] agents table is empty — api.js will repair it from agent/*.js");
-    }
-    // Fresh clones and deleted rows: api.js owns the repair (INSERT OR IGNORE
-    // for agents, upsert for models) so the start script does not duplicate
-    // schema knowledge.
-    return { exists: true, tables, modelCount, agentCount, dbPath };
-  } catch (err) {
-    // A corrupt file can never be repaired by seeding. Move it aside once so
-    // api.js can create a clean database instead of failing on every boot.
-    const quarantine = dbPath + ".corrupt-" + Date.now();
+  for (;;) {
+    let db = null;
     try {
-      fs.renameSync(dbPath, quarantine);
-      console.warn("[DB] unreadable database moved to " + quarantine + " (" + err.message + ")");
-    } catch (moveErr) {
-      console.warn("[DB] unreadable database and could not move it:", moveErr.message);
+      db = new DatabaseSync(dbPath, { readOnly: true });
+      const check = db.prepare("PRAGMA quick_check").get();
+      const integrity = check ? String(Object.values(check)[0] || "") : "";
+      if (integrity.toLowerCase() !== "ok") {
+        const corrupt = new Error("integrity_check=" + (integrity || "empty"));
+        corrupt.code = "SQLITE_CORRUPT";
+        throw corrupt;
+      }
+      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(r => r.name);
+      const count = (table) =>
+        tables.includes(table) ? db.prepare(`SELECT COUNT(*) as c FROM ${table}`).get().c : 0;
+      const modelCount = count("models");
+      const agentCount = count("agents");
+      db.close();
+      db = null;
+
+      console.log("[DB] " + dbPath + " tables: " + (tables.join(", ") || "(none)"));
+      console.log(`[DB] Models: ${modelCount}, Agents: ${agentCount}`);
+      if (!tables.includes("models") || !tables.includes("agents")) {
+        console.warn("[DB] schema incomplete — api.js will create the missing tables");
+      } else if (agentCount === 0) {
+        console.warn("[DB] agents table is empty — api.js will repair it from agent/*.js");
+      }
+      // Fresh clones and deleted rows: api.js owns the repair (INSERT OR IGNORE
+      // for agents, upsert for models) so the start script does not duplicate
+      // schema knowledge.
+      return { exists: true, tables, modelCount, agentCount, dbPath };
+    } catch (err) {
+      if (db) {
+        try { db.close(); } catch (_) {}
+        db = null;
+      }
+      // SQLITE_BUSY / "database is locked" means another process is holding
+      // the file. It is transient concurrency, not corruption: wait for it and
+      // never rename the DB on this path (the old code destroyed live data).
+      if (isBusyError(err) && Date.now() < deadline) {
+        console.warn("[DB] database is locked — retrying without quarantining ...");
+        sleepSync(250);
+        continue;
+      }
+      const kind = classifyDbError(err);
+      if (kind !== "corrupt") {
+        console.warn("[DB] integrity check failed without a corruption signal — keeping the file: " + err.message);
+        return { exists: true, checkFailed: true, dbPath };
+      }
+      // A corrupt file can never be repaired by seeding. Move it aside once so
+      // api.js can create a clean database instead of failing on every boot.
+      const quarantine = dbPath + ".corrupt-" + Date.now();
+      try {
+        fs.renameSync(dbPath, quarantine);
+        console.warn("[DB] corrupt database moved to " + quarantine + " (" + err.message + ")");
+      } catch (moveErr) {
+        console.warn("[DB] corrupt database and could not move it:", moveErr.message);
+      }
+      return { exists: false, corrupt: true, dbPath };
     }
-    return { exists: false, corrupt: true, dbPath };
   }
 }
 
@@ -554,8 +584,19 @@ function cleanupOldProcesses() {
     }
   }
 
-  // 1) Kill whatever listens on the target port
-  for (const pid of findPidsOnPort()) killPid(pid, false);
+  // 1) Stop only THIS project's server. A foreign process (another checkout,
+  //    another product) is not ours to kill; report it and exit instead of
+  //    starting a cross-project kill loop.
+  for (const pid of findPidsOnPort()) {
+    if (!isThisProjectServer(pid)) {
+      console.error(
+        "[CLEANUP] refusing to kill foreign port owner pid=" + pid +
+        " on port " + targetPort + " — stop it yourself or set PORT to a free port.",
+      );
+      process.exit(1);
+    }
+    killPid(pid, false);
+  }
 
   // 2) Kill sibling server scripts in this project directory
   if (process.platform !== "win32") {
@@ -588,7 +629,16 @@ function cleanupOldProcesses() {
     if (findPidsOnPort().length === 0) break;
     sleepMs(30);
   }
-  for (const pid of findPidsOnPort()) killPid(pid, true);
+  for (const pid of findPidsOnPort()) {
+    if (!isThisProjectServer(pid)) {
+      console.error(
+        "[CLEANUP] refusing to kill foreign port owner pid=" + pid +
+        " on port " + targetPort + " — stop it yourself or set PORT to a free port.",
+      );
+      process.exit(1);
+    }
+    killPid(pid, true);
+  }
 
   console.log("[CLEANUP] Port " + targetPort + " is free. Starting fresh ...");
 }
@@ -606,7 +656,7 @@ function bridgePort() {
 
 function tcpOpen(port, host, timeoutMs) {
   return new Promise((resolve) => {
-    const socket = net.connect({ port, host: host || "127.0.0.1" });
+    const socket = net.connect({ port, host: host || "localhost" });
     let settled = false;
     const done = (value) => {
       if (settled) return;
@@ -624,7 +674,7 @@ function tcpOpen(port, host, timeoutMs) {
 function httpGetJson(port, pathName, timeoutMs) {
   return new Promise((resolve) => {
     const req = http.get(
-      { host: "127.0.0.1", port, path: pathName, timeout: timeoutMs || 1500 },
+      { host: "localhost", port, path: pathName, timeout: timeoutMs || 1500 },
       (res) => {
         let buf = "";
         res.on("data", (d) => (buf += d));
@@ -695,7 +745,7 @@ async function startBridge() {
     );
     return { started: false, port, model, healthy: true, upstreamReady };
   }
-  if (await tcpOpen(port, "127.0.0.1", 500)) {
+  if (await tcpOpen(port, "localhost", 500)) {
     console.warn(
       "[BRIDGE] port " + port + " is occupied by a process that is not the bridge — skip spawn",
     );
@@ -708,7 +758,7 @@ async function startBridge() {
     return { started: false, port, healthy: false, error: "script_missing" };
   }
 
-  console.log("[BRIDGE] starting " + script + " on 127.0.0.1:" + port + " ...");
+  console.log("[BRIDGE] starting " + script + " on localhost:" + port + " ...");
   bridgeChild = spawn(process.execPath, [script], {
     cwd: __dirname,
     env: process.env,
@@ -812,6 +862,21 @@ async function startAll() {
   // 1. Load .env first
   loadEnv();
   
+  // 1b. Prune bounded runtime artifacts (health reports, quarantined DBs).
+  // The policy lives in modules/data-prune.js; this call must stay a single
+  // line so boot and the installer share one implementation.
+  try {
+    const { pruneRuntimeArtifacts } = require("./modules/data-prune");
+    const pruned = pruneRuntimeArtifacts(projectDataDir());
+    console.log(
+      "[CLEANUP] runtime artifacts: removed=" + pruned.deleted.length +
+      " kept_health=" + pruned.kept.health.length +
+      " kept_corrupt=" + pruned.kept.corrupt.length,
+    );
+  } catch (err) {
+    console.warn("[CLEANUP] warning:", err.message);
+  }
+  
   // 2. Detect environment
   const envInfo = detectEnvironment();
 
@@ -850,7 +915,7 @@ async function startAll() {
   if (!process.env.APP_URL) {
     const domain = process.env.DEPLOY_DOMAIN || "localhost";
     const port = process.env.PORT;
-    const isLocal = domain === "localhost" || domain === "127.0.0.1";
+    const isLocal = domain === "localhost" || domain === "localhost";
     process.env.APP_URL = (isLocal ? "http" : "https") + "://" + domain + (isLocal ? ":" + port : "");
   }
   console.log("[ENV] Final conditions -> PORT=" + process.env.PORT + " APP_URL=" + process.env.APP_URL);
@@ -902,7 +967,7 @@ async function startAll() {
   
   // 8. Start server and run health checks
   const port = Number(process.env.PORT);
-  const host = "127.0.0.1";
+  const host = "localhost";
   
   // We need to start the server and then run health checks
   // The api.js will start the HTTP server
@@ -980,7 +1045,7 @@ if (args.includes("--config-all") || args.includes("-c")) {
 } else if (args.includes("--health-only")) {
   loadEnv();
   const port = Number(process.env.PORT) || 5050;
-  runHealthChecks("127.0.0.1", port).catch(err => {
+  runHealthChecks("localhost", port).catch(err => {
     console.error("[HEALTH] Failed:", err.message);
     process.exit(1);
   });

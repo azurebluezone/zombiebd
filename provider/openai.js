@@ -157,7 +157,9 @@ async function chatStream(cfg, params, onDelta) {
       const c = (frame.choices && frame.choices[0]) || {};
       if (c.delta) {
         if (c.delta.content) content += c.delta.content;
+        // Providers disagree on the reasoning field name; keep one channel.
         if (c.delta.reasoning_content) reasoning += c.delta.reasoning_content;
+        else if (c.delta.reasoning) reasoning += c.delta.reasoning;
         if (Array.isArray(c.delta.tool_calls)) {
           for (const tc of c.delta.tool_calls) {
             const i = typeof tc.index === "number" ? tc.index : calls.length;
@@ -205,7 +207,8 @@ async function chatStream(cfg, params, onDelta) {
   }
 
   return {
-    ok: !!(content || calls.length),
+    // Reasoning-only providers are a valid, non-empty answer.
+    ok: !!(content || reasoning || calls.length),
     content,
     reasoning_content: reasoning || null,
     tool_calls: calls.length ? calls : null,

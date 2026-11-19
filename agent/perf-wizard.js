@@ -11,7 +11,7 @@ module.exports = {
   expertise: "performance optimization, caching, database tuning, profiling, memory management, latency reduction, resource utilization",
   priority: 4,
   // Ollama local (OpenAI dialect): qwen3:0.6b emits native tool_calls there.
-  model: "qwen3:0.6b",
+  model: "nvidia/nemotron-3.5-bolt-e4b",
   enabled: 1,
   mission: "Optimize application performance, reduce latency, improve resource utilization, and ensure efficient code execution",
   decisionRule: "Verify performance claims with benchmarks and web search before suggesting optimizations",

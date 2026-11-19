@@ -25,7 +25,7 @@ node index.js --verify       # সব transport যাচাই + রিপো�
 
 | ট্রান্সপোর্ট | ঠিকানা | কে ব্যবহার করে |
 |-------------|--------|---------------|
-| **HTTP** | `http://127.0.0.1:5400/mcp` | লোকাল ক্লায়েন্ট, curl, স্ক্রিপ্ট |
+| **HTTP** | `http://localhost:5400/mcp` | লোকাল ক্লায়েন্ট, curl, স্ক্রিপ্ট |
 | **HTTPS** | `https://localhost:5443/mcp` | দূর থেকে, টানেল, TLS প্রয়োজনে |
 | **stdio** | `node index.js --stdio` | Claude Desktop, Cursor (সাবপ্রোসেস) |
 
@@ -100,7 +100,7 @@ openssl CLI ব্যবহার করে তৈরি — কোনো npm �
 
 | বিষয় | মান |
 |-------|-----|
-| সোর্স | `http://127.0.0.1:5050/mcp` (env: `MAIN_SERVER_MCP`) |
+| সোর্স | `http://localhost:5050/mcp` (env: `MAIN_SERVER_MCP`) |
 | TTL | ৩০ সেকেন্ড (env: `MAIN_SYNC_TTL_MS`) |
 | টাইমআউট | ২০ সেকেন্ড (env: `MAIN_SYNC_TIMEOUT_MS`) |
 | কলিডিং | ৭টা নাম মিলে — **অ্যাডাপ্টারের স্যান্ডবক্সড ভার্সন জেতে** |

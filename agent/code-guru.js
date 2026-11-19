@@ -12,7 +12,7 @@ module.exports = {
   priority: 1,
   // Ollama Cloud: gpt-oss:120b keeps architecture review off Groq's
   // 8000 TPM free-tier pool, which cannot carry two 120b agents per gate run.
-  model: "gpt-oss:120b",
+  model: "nvidia/nemotron-3.5-bolt-e4b",
   enabled: 1,
   mission: "Review code architecture, enforce clean code principles, suggest refactoring strategies, and maintain design pattern consistency",
   decisionRule: "Review all code suggestions for architectural consistency before recommending changes",

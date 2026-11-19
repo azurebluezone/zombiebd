@@ -4,7 +4,7 @@
  * ═══════════════════════════════════════════════════════════════════════
  * One process, three transports, one MCP tool registry.
  *
- *   HTTP    → http://127.0.0.1:5400/mcp      (no TLS, loopback)
+ *   HTTP    → http://localhost:5400/mcp      (no TLS, loopback)
  *   HTTPS   → https://localhost:5443/mcp     (self-signed TLS)
  *   stdio   → spawned as a subprocess, JSON on stdin/stdout
  *
@@ -34,13 +34,9 @@ const zclog = require("../lib/zc-log");
 
 const HTTP_PORT = parseInt(process.env.ADAPTER_HTTP_PORT || "5400", 10);
 const HTTPS_PORT = parseInt(process.env.ADAPTER_HTTPS_PORT || "5443", 10);
-const HOST = process.env.ADAPTER_HOST || "127.0.0.1";
+const HOST = process.env.ADAPTER_HOST || "localhost";
 
 const arg = (name) => process.argv.includes(name);
-const valueOf = (name, fallback) => {
-  const i = process.argv.indexOf(name);
-  return i !== -1 && process.argv[i + 1] ? process.argv[i + 1] : fallback;
-};
 
 const log = (...a) => console.log("[adapter]", ...a);
 const bar = () => console.log("─".repeat(68));
@@ -111,7 +107,7 @@ async function verify(modes) {
   const CALL = { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "system_info", arguments: {} } };
 
   if (modes.includes("http")) {
-    const base = `http://127.0.0.1:${HTTP_PORT}`;
+    const base = `http://localhost:${HTTP_PORT}`;
     let r;
     try {
       r = await request(http, `${base}/mcp`, INIT);
@@ -135,7 +131,7 @@ async function verify(modes) {
   }
 
   if (modes.includes("https")) {
-    const base = `https://127.0.0.1:${HTTPS_PORT}`;
+    const base = `https://localhost:${HTTPS_PORT}`;
     try {
       const r = await request(https, `${base}/mcp`, INIT);
       const j = JSON.parse(r.body);
@@ -146,7 +142,7 @@ async function verify(modes) {
       ok("HTTPS reachable", false, e.message);
     }
     // Prove the certificate is really there and really ours.
-    const c = tls.ensure(["localhost", "127.0.0.1"]);
+    const c = tls.ensure(["localhost", "localhost"]);
     ok("TLS  certificate present", !!c.cert && !!c.key);
     log("     fingerprint:", tls.fingerprint());
     log("     cert file   :", tls.CRT_FILE);
@@ -215,8 +211,8 @@ async function main() {
     port: HTTPS_PORT,
     // Loopback only — see transport-http.js. Set ADAPTER_HTTPS_HOST=0.0.0.0
     // deliberately if a LAN client has to reach the adapter.
-    host: process.env.ADAPTER_HTTPS_HOST || "127.0.0.1",
-    hosts: ["localhost", "127.0.0.1"],
+    host: process.env.ADAPTER_HTTPS_HOST || "localhost",
+    hosts: ["localhost", "localhost"],
   });
   if (httpsT) {
     modes.push("https");
@@ -234,7 +230,7 @@ async function main() {
   else log("MCP endpoint  :", "NONE — HTTP bind failed (see logs/zc.jsonl, HTTP_BIND_FAIL)");
   if (httpsT) log("MCP over TLS  :", httpsT.url);
   log("stdio command :", `node "${path.join(__dirname, "index.js")}" --stdio`);
-  log("status page   :", `http://127.0.0.1:${HTTP_PORT}/health`);
+  log("status page   :", `http://localhost:${HTTP_PORT}/health`);
   bar();
 
   zclog.info("adapter", "START", {

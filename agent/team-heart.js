@@ -11,7 +11,7 @@ module.exports = {
   expertise: "team coordination, user empathy, communication, morale, conflict resolution, stakeholder management",
   priority: 7,
   // Ollama Cloud: general chat without spending the Gemini free-tier quota.
-  model: "gpt-oss:20b",
+  model: "minimaxai/minimax-m3.1-flash",
   enabled: 1,
   mission: "Maintain team morale, facilitate communication, empathize with users, and ensure collaborative workflow",
   decisionRule: "Gather perspectives from all relevant stakeholders before making team-related recommendations",

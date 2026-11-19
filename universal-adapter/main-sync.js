@@ -27,7 +27,7 @@ const { createCircuit } = require("./circuit");
 const path = require("path");
 const fs = require("fs");
 
-const MAIN_URL = process.env.MAIN_SERVER_MCP || "http://127.0.0.1:5050/mcp";
+const MAIN_URL = process.env.MAIN_SERVER_MCP || "http://localhost:5050/mcp";
 
 // ── Upstream credential ─────────────────────────────────────────────────────
 // api.js guards `exec`, `env_get`, `db_*`, `write_file`, `set_working_dir`,
@@ -36,7 +36,7 @@ const MAIN_URL = process.env.MAIN_SERVER_MCP || "http://127.0.0.1:5050/mcp";
 // The adapter used to send no credentials at all, so EVERY privileged tool
 // proxied through it failed with -32001 Unauthorized even though the token
 // existed in .env. Evidence:
-//   curl -X POST http://127.0.0.1:5050/mcp -d '{... "exec" ...}'
+//   curl -X POST http://localhost:5050/mcp -d '{... "exec" ...}'
 //     -> Unauthorized: privileged tool 'exec' requires ...
 // Priority mirrors api.js's own mcpAdminTokenOk(): MCP_ADMIN_TOKEN first,
 // then ADMIN_API_KEY. NOTE: an EMPTY MCP_ADMIN_TOKEN= in .env is falsy, so

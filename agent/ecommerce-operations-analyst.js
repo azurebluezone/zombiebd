@@ -11,7 +11,7 @@ module.exports = {
   expertise: "ecommerce ops, order management, inventory, logistics, analytics, ad copywriting, product catalog optimization, visitor behavior analysis",
   priority: 9,
   // Ollama Cloud: the larger gpt-oss model for catalog/ops analysis.
-  model: "gpt-oss:120b",
+  model: "stepfun-ai/step-5-preview",
   enabled: 1,
   mission: "Drive data-driven decision making and high-converting strategy implementation for e-commerce in Bangladesh market",
   decisionRule: "Evidence and Real-time Metrics First. All marketing directives and sales forecasts must be supported by analytical data and web search of current Bangladesh market conditions",

@@ -5,8 +5,8 @@
  * Three-provider acceptance matrix.
  *
  * Real inputs, no provider mocks:
- *   llama-cpu     http://127.0.0.1:9932/v1   qwen3-1.7b-abliterated
- *   ollama-local  http://127.0.0.1:11434     qwen3:0.6b
+ *   llama-cpu     http://localhost:9932/v1   deepseek-v4-pro
+ *   ollama-local  http://localhost:11434     lfm3:1.7b
  *   ollama-cloud  https://ollama.com         gpt-oss:20b (OLLAMA_CLOUD_API_KEY)
  *
  * Proves:
@@ -36,9 +36,9 @@ const LOG_DIR = path.join(TMP, "logs");
 const DB_PATH = path.join(DATA_DIR, "models.db");
 const UDS_PATH = path.join(TMP, "mcp.sock");
 
-const LLAMA_BASE = ENV.LLAMA_CPP_TEST_BASE || "http://127.0.0.1:9932/v1";
-const LLAMA_MODEL = ENV.LLAMA_CPP_TEST_MODEL || "qwen3-1.7b-abliterated";
-const LOCAL_MODEL = ENV.OLLAMA_TEST_MODEL || "qwen3:0.6b";
+const LLAMA_BASE = ENV.LLAMA_CPP_TEST_BASE || ENV.LLAMA_CPP_URL || "http://localhost:9932/v1";
+const LLAMA_MODEL = ENV.LLAMA_CPP_TEST_MODEL || ENV.LLAMA_CPP_MODEL || "deepseek-v4-pro";
+const LOCAL_MODEL = ENV.OLLAMA_TEST_MODEL || "lfm3:1.7b";
 const CLOUD_MODEL = ENV.OLLAMA_CLOUD_TEST_MODEL || "gpt-oss:20b";
 
 const TOOLS = [{
@@ -82,7 +82,7 @@ function freePort() {
   return new Promise((resolve, reject) => {
     const server = net.createServer();
     server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
+    server.listen(0, "localhost", () => {
       const port = server.address().port;
       server.close(() => resolve(port));
     });
@@ -101,7 +101,7 @@ function httpJson(port, pathname, method, body, timeoutMs) {
       headers["X-Admin-Token"] = ENV.ADMIN_TOKEN || ENV.ADMIN_API_KEY;
     }
     const req = http.request({
-      hostname: "127.0.0.1",
+      hostname: "localhost",
       port,
       path: pathname,
       method: method || "GET",
@@ -128,7 +128,7 @@ function httpSse(port, body, timeoutMs) {
   return new Promise((resolve) => {
     const payload = JSON.stringify(body);
     const req = http.request({
-      hostname: "127.0.0.1",
+      hostname: "localhost",
       port,
       path: "/v1/chat/completions",
       method: "POST",

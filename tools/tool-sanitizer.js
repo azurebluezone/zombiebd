@@ -38,10 +38,8 @@
 "use strict";
 
 const CLOSE_INVOKE = "<" + "/invoke>";
-const CLOSE_FUNCTION = "<" + "/function_call>";
 
 const FENCE_RE = /```(tool_call|toolcalls|tool_calls|function_call)\s*\n([\s\S]*?)```/g;
-const INVOKE_RE = /<invoke\s+name="([^"]+)"\s*>([\s\S]*?)<\/invoke>/g;
 const INVOKE_RE2 = new RegExp(
   '<invoke\\s+name="([^"]+)"\\s*>([\\s\\S]*?)' + CLOSE_INVOKE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
   "g",

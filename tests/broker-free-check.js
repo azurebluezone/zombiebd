@@ -56,9 +56,24 @@ function walk(target, out) {
     out.push(target);
     return;
   }
+  // Runtime dirs contain Unix sockets; readdir on a socket is ENOTDIR.
+  if (!stat.isDirectory()) return;
   for (const entry of fs.readdirSync(full, { withFileTypes: true })) {
-    // Test sources quote the forbidden tokens; they are not runtime code.
-    if (entry.name === "node_modules" || entry.name === ".git" || entry.name === "tests") continue;
+    // Test sources quote the forbidden tokens; runtime state dirs store
+    // project memory that may legitimately mention old architecture names.
+    if (
+      entry.name === "node_modules" ||
+      entry.name === ".git" ||
+      entry.name === "tests" ||
+      entry.name === ".zombiecoder" ||
+      entry.name === ".missionbarisal" ||
+      entry.name === "data" ||
+      entry.name === "logs" ||
+      entry.name === "cache" ||
+      entry.name === ".verify"
+    ) {
+      continue;
+    }
     walk(path.join(target, entry.name), out);
   }
 }
@@ -131,7 +146,7 @@ function close(server) {
 
 async function freePort() {
   const s = net.createServer();
-  const port = await listen(s, 0, "127.0.0.1");
+  const port = await listen(s, 0, "localhost");
   await close(s);
   return port;
 }
@@ -141,7 +156,7 @@ function request(port, method, urlPath, body, headers) {
     const payload = body == null ? null : JSON.stringify(body);
     const req = http.request(
       {
-        hostname: "127.0.0.1",
+        hostname: "localhost",
         port,
         method,
         path: urlPath,
@@ -223,14 +238,14 @@ async function main() {
     sentinelHits++;
     socket.destroy();
   });
-  await listen(sentinel, sentinelPort, "127.0.0.1");
+  await listen(sentinel, sentinelPort, "localhost");
 
   let output = "";
   const child = spawn(process.execPath, [path.join(ROOT, "api.js")], {
     cwd: TMP,
     env: Object.assign({}, process.env, {
       PORT: String(apiPort),
-      BIND_HOST: "127.0.0.1",
+      BIND_HOST: "localhost",
       UDS_PORT: String(udsPort),
       UDS: path.join(TMP, "mcp.sock"),
       UDS_OPENAI: "1",
@@ -246,9 +261,9 @@ async function main() {
       // absence of a connection a real proof, not a disabled-by-accident one.
       BROKER_AUTORUN: "1",
       BROKER_PORT: String(sentinelPort),
-      BROKER_HOST: "127.0.0.1",
+      BROKER_HOST: "localhost",
       BROKER_TIMEOUT_MS: "1000",
-      brokerUrl: "http://127.0.0.1:" + sentinelPort,
+      brokerUrl: "http://localhost:" + sentinelPort,
       WATCHDOG_INTERVAL: "600000",
     }),
     stdio: ["ignore", "pipe", "pipe"],

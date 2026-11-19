@@ -1551,11 +1551,14 @@
     //  DASHBOARD
     // ═══════════════════════════════════════════════
     async function loadDashboard() {
-      const [health, identity, norm, cfg] = await Promise.all([
-        apiFetch('/health'), apiFetch('/identity'), apiFetch('/api/normalize-list'), apiFetch('/api/config')
+      const [health, identity, norm, cfg, publicAgents] = await Promise.all([
+        apiFetch('/health'), apiFetch('/identity'), apiFetch('/api/normalize-list'), apiFetch('/api/config'), apiFetch('/api/agents')
       ]);
 
-      const agents = health.agents || (identity.system_identity ? 6 : '—');
+      // Live count only: /health already reports it, /api/agents is the
+      // fallback. Never show a hardcoded number when the API is silent.
+      const liveAgentCount = Array.isArray(publicAgents.agents) ? publicAgents.agents.length : '—';
+      const agents = health.agents || liveAgentCount;
       const models = health.models || (norm.models ? norm.models.length : '—');
       const sessions = health.session_count || 0;
       const uptime = health.uptime || 0;
@@ -1738,9 +1741,8 @@
         select.addEventListener('change', async (e) => {
           const agentId = e.target.dataset.agentId;
           const model = e.target.value;
-          const persona = e.target.dataset.persona;
           if (model) {
-            await saveAgentModel(agentId, model, persona);
+            await saveAgentModel(agentId, model);
           }
         });
       });
@@ -1749,12 +1751,13 @@
     }
 
 // Save agent model association
-    async function saveAgentModel(agentId, model, persona) {
+    async function saveAgentModel(agentId, model) {
       const agent = agentManagerData.find(a => a.id === agentId) || {};
+      // Model mapping only — the backend inherits the stored persona. A
+      // synthesized persona here silently overwrote the agent's identity.
       const body = {
         id: agentId,
         model: model,
-        persona: persona || agent.expertise || agent.role || 'Agent',
         name: agent.name || agentId,
         role: agent.role || 'general',
         expertise: agent.expertise || '',
@@ -2014,6 +2017,9 @@
           ? '<code title="' + String(p.socketPath).replace(/"/g, '&quot;') + '">UDS ' + String(p.socketPath).slice(0, 34) + '</code>'
           : (p.baseUrl ? String(p.baseUrl).slice(0, 40) + (String(p.baseUrl).length > 40 ? '…' : '') : '—');
         const canDelete = p.source === 'db' && !['opencode', 'groq', 'gemini', 'ollama'].includes(p.id);
+        const toggle = p.envDisabled
+          ? '<span class="tag tag-orange" title="Disabled by .env; change the env flag and restart">env locked</span>'
+          : `<button class="refresh-btn" onclick="toggleProvider('${String(p.id).replace(/'/g, "\\'")}', ${on ? 0 : 1})" style="padding:2px 6px;font-size:10px;margin-left:4px;">${on ? 'Disable' : 'Enable'}</button>`;
         return `
         <tr style="${on ? '' : 'opacity:.55'}">
           <td><strong>${p.id}</strong></td>
@@ -2030,7 +2036,7 @@
           <td>
             ${on ? (p.healthy === false ? '<span class="tag tag-red">Failing</span>' : '<span class="tag tag-green">Online</span>') : '<span class="tag tag-red">Off</span>'}
             ${p.last_error ? '<div style="font-size:10px;color:var(--red);max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + String(p.last_error).replace(/"/g, "'") + '">' + String(p.last_error).slice(0, 40) + '</div>' : ''}
-            <button class="refresh-btn" onclick="toggleProvider('${String(p.id).replace(/'/g, "\\'")}', ${on ? 0 : 1})" style="padding:2px 6px;font-size:10px;margin-left:4px;">${on ? 'Disable' : 'Enable'}</button>
+            ${toggle}
           </td>
           <td style="white-space:nowrap">
             <button class="refresh-btn" onclick="openProviderModal('${String(p.id).replace(/'/g, "\\'")}')" style="padding:2px 6px;font-size:10px;">Edit</button>
@@ -2167,7 +2173,7 @@
               </label>
             </div>
             <label style="font-size:11px;color:var(--text2)">Base URL <span style="color:var(--text2)">(http/https — ignored when a socket is set for requests)</span>
-              <input id="pmBaseUrl" type="text" value="${editing ? (existing.baseUrl || '') : ''}" placeholder="e.g. https://api.example.com/v1"
+              <input id="pmBaseUrl" type="text" value="${editing ? (existing.baseUrl || '') : ''}" placeholder="e.g. https://api.localhost/v1"
                 style="display:block;width:100%;margin-top:4px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:7px 10px;border-radius:6px;font-size:12px;font-family:monospace">
             </label>
             <label style="font-size:11px;color:var(--text2)">UDS Socket Path <span style="color:var(--text2)">(optional)</span>

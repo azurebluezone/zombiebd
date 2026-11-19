@@ -111,7 +111,7 @@ function slimSyllabus(fullText, userInput, opts) {
     parts.push("--- input-matched entries ---\n" + body + "\n--- END SYLLABUS EXCERPTS ---");
   }
   parts.push(
-    "Full syllabus stays on disk at .zombiecoder/agents/syllabus.md — read it with read_file when a deeper answer needs it.",
+    "Full syllabus stays on disk at .zombiecoder/syllabus.md — read it with read_file when a deeper answer needs it.",
   );
   return parts.join("\n");
 }
@@ -170,4 +170,13 @@ function compactToolsText(toolMap) {
   }
 }
 
-module.exports = { slimSyllabus, slimSSOT, compactToolsText, splitByHeadings };
+module.exports = {
+  slimSyllabus,
+  slimSSOT,
+  compactToolsText,
+  splitByHeadings,
+  // Exported for modules/context.js, which needs a hard-bounded selector:
+  // slimSyllabus keeps an unbounded title index, which is wrong for a
+  // multi-megabyte plugin syllabus. Same tokenizer, different budget rule.
+  tokenize,
+};

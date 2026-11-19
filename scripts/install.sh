@@ -161,7 +161,7 @@ ensure_servers_config() {
 ollama_alias() {
   have curl || return 0
   local tags model
-  tags="$(curl -fsS --max-time 3 http://127.0.0.1:11434/api/tags 2>/dev/null || true)"
+  tags="$(curl -fsS --max-time 3 http://localhost:11434/api/tags 2>/dev/null || true)"
   [ -n "$tags" ] || { warn "Ollama not reachable on 11434 (optional)"; return 0; }
   model="$(printf '%s' "$tags" | "$NODE_BIN" -e '
     let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
@@ -231,7 +231,7 @@ trust_local_ca() {
     local https_port host
     https_port="$("$NODE_BIN" -e 'const {loadEnv}=require("./lib/env");console.log(loadEnv({root:process.cwd()}).ports.caddy_https)' 2>/dev/null || echo 443)"
     host="$("$NODE_BIN" -e 'const {loadEnv}=require("./lib/env");console.log(loadEnv({root:process.cwd()}).derived.mainHost)' 2>/dev/null || echo localhost)"
-    if echo | openssl s_client -connect "127.0.0.1:$https_port" -servername "$host" -verify_return_error >/dev/null 2>&1; then
+    if echo | openssl s_client -connect "localhost:$https_port" -servername "$host" -verify_return_error >/dev/null 2>&1; then
       ok "Caddy local root CA already trusted"
       return 0
     fi
@@ -274,6 +274,13 @@ build() {
   ok "build complete"
 }
 
+prune_runtime() {
+  step "Pruning runtime data artifacts"
+  "$NODE_BIN" scripts/prune-data.js --data-dir "${DATA_DIR:-$ROOT/data}" \
+    || fail "runtime data prune failed"
+  ok "runtime data pruned"
+}
+
 start_stack() {
   if [ "$SKIP_START" = 1 ]; then warn "--no-start: stack not started"; return 0; fi
   step "Starting the gateway"
@@ -287,7 +294,7 @@ start_stack() {
   fi
   local health=""
   for _ in $(seq 1 60); do
-    health="$(curl -fsS --max-time 1 http://127.0.0.1:"$("$NODE_BIN" -e 'const{loadEnv}=require("./lib/env");console.log(loadEnv({root:process.cwd()}).ports.api)' 2>/dev/null || echo 5050)"/health 2>/dev/null || true)"
+    health="$(curl -fsS --max-time 1 http://localhost:"$("$NODE_BIN" -e 'const{loadEnv}=require("./lib/env");console.log(loadEnv({root:process.cwd()}).ports.api)' 2>/dev/null || echo 5050)"/health 2>/dev/null || true)"
     [ -n "$health" ] && break
     sleep 1
   done
@@ -302,7 +309,9 @@ preflight() {
   [ -f "external mcp/servers.example.json" ] || fail "external mcp/servers.example.json missing"
   [ -f scripts/env-ensure.js ] || fail "scripts/env-ensure.js missing"
   [ -f scripts/build.js ] || fail "scripts/build.js missing"
+  [ -f scripts/prune-data.js ] || fail "scripts/prune-data.js missing"
   [ -f scripts/install-verify.sh ] || fail "scripts/install-verify.sh missing"
+  "$NODE_BIN" --check scripts/prune-data.js || fail "prune-data.js syntax"
   [ -x scripts/install-verify.sh ] || warn "install-verify.sh has no exec bit; 'bash scripts/install-verify.sh' still works"
   bash -n scripts/install.sh || fail "install.sh syntax"
   bash -n scripts/install-service.sh || fail "install-service.sh syntax"
@@ -346,6 +355,7 @@ configure_caddy
 trust_local_ca
 render_tools_manifest
 build
+prune_runtime
 start_stack
 
 step "Live verification"

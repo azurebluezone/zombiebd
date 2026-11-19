@@ -36,7 +36,7 @@ function request(pathname, method, body) {
   return new Promise((resolve) => {
     const payload = body === undefined ? null : Buffer.from(JSON.stringify(body), "utf8");
     const req = http.request({
-      host: "127.0.0.1",
+      host: "localhost",
       port: PORT,
       path: pathname,
       method: method || "GET",
