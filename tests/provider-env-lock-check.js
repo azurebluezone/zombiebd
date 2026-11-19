@@ -343,6 +343,7 @@ async function liveCheck() {
     DATA_DIR: dataDir,
     LOG_DIR: logDir,
     DB_SQLITE_PATH: path.join(dataDir, "models.db"),
+    DB_BOOTSTRAP: "1",
     UDS: path.join(TMP, "mcp.sock"),
     UDS_OPENAI: "0",
     INSTANCE_ID: "provider-env-lock-" + Date.now(),

@@ -486,6 +486,7 @@ function spawnServer(ports) {
     CACHE_DIR: path.join(TMP, "cache"),
     LOCK_DIR: path.join(TMP, "locks"),
     DB_SQLITE_PATH: path.join(TMP, "data", "models.db"),
+    DB_BOOTSTRAP: "1",
     WATCHDOG_INTERVAL: "600000",
   });
   let output = "";

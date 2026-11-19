@@ -94,7 +94,9 @@ OPENCODE_ENABLED=false
 
 **Fix:** Phase 5 — `lib/tool-budget.js` একটাই resolver; সব caller সেখান থেকে limit নেবে।
 
-#### P0-02 — DB missing হলে server বেঁচে থাকে
+#### P0-02 — DB missing হলে server বেঁচে থাকে — ✅ SOLVED (2026-11-20)
+
+**Before:**
 
 - `api.js:1303-1308` — comment: “so a forgotten env var can never brick the gateway.”
 - `api.js:1325` — DB না থাকলে `DB_REMOTE_URL` থেকে download
@@ -103,6 +105,16 @@ OPENCODE_ENABLED=false
 - `provider/tools.js:106-113` — DB error হলে tools allow
 
 **Impact:** ভুল DB path-এ gateway “healthy”, কিন্তু capability প্রমাণহীন। `provider_stats`-এ `unknown` row।
+
+**Fix (2026-11-20):** `api.js` `initModelsDb()` now gates boot on the models DB:
+
+- missing DB + `DB_BOOTSTRAP=1` → create schema → `DB_OK`; without it → `DB_FATAL missing path=...` (exit 78).
+- `SQLITE_BUSY/LOCKED` → retry `DB_BUSY_RETRY_MS` ×3 → `DB_FATAL busy`.
+- `SQLITE_CORRUPT/NOTADB` or a failed `PRAGMA quick_check` → `DB_FATAL corrupt`; the file is never renamed.
+- `MODELS_DB` is never null after boot; the `DB_REMOTE_URL` download path is removed.
+- `provider/index.js` `supports()` and `provider/tools.js` `allowsTools()` deny with `CAPABILITY_UNKNOWN` when the DB handle is missing or the query fails (P1-06).
+
+**Proof:** `bash scripts/verify-db-failfast.sh` → `DB_FAILFAST_OK` (missing/corrupt/busy exit 78, bootstrap + re-boot `/health` 200, capability deny). `node scripts/verify-capability-failclosed.js` → `CAPABILITY_FAILCLOSED_OK`.
 
 #### P0-03 — `.env` loader চারটি, error গেলা হয়
 
@@ -189,7 +201,7 @@ exit=0
 | P1-03 | Tool selection insertion order | `api.js:4946-4951`, `9413`, `10113` | Phase 5 |
 | P1-04 | `prepare()` cap enforce করে না | `provider/tools.js:122-125` | Phase 5 |
 | P1-05 | Bridge default port দুই জায়গায় | `api.js:1159` (`11435`) vs `local-llm-bridge.js:136` (`11437`) | Phase 3 |
-| P1-06 | Capability query fail-open | `provider/index.js:79/88/95`, `provider/tools.js:106-113` | Phase 6 |
+| P1-06 | Capability query fail-open | `provider/index.js:79/88/95`, `provider/tools.js:106-113` | Phase 6 — ✅ SOLVED (2026-11-20): deny + `CAPABILITY_UNKNOWN` |
 | P1-07 | R2T module না পেলে silent builtin fallback | `api.js:19574-19581` (`builtin-fallback`) | Phase 7 |
 | P1-08 | Edge installer শুধু apt ধরে | `deploy/install-edge.sh:44` | Phase 4 |
 | P1-09 | `package.json` নেই | `ls package.json` → No such file | Phase 4 |

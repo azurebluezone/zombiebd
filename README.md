@@ -56,7 +56,9 @@ bash scripts/install.sh
    `~/.local/node-v24/bin/node`. The build links `data/`, `logs/`, `cache/`,
    `.zombiecoder/`, `.missionbarisal/` and `.env` from the checkout into
    `dist/`, so a rebuild never erases runtime state. The gateway creates and
-   seeds the SQLite database on first boot.
+   seeds the SQLite database on first boot when `DB_BOOTSTRAP=1` is set. A
+   missing DB without that flag stops with `DB_FATAL missing` (exit 78) instead
+   of serving without proven capabilities.
 8. Loads providers from `.env`; `lib/env.js` is the only place that knows
    hostnames, ports and provider URLs.
 9. Runs the live verifier against `APP_URL` and prints the final sentinel.
@@ -77,7 +79,8 @@ Manual path, if you already manage the services yourself:
 cp .env.example .env                            # then edit the values you need
 NODE="$HOME/.local/node-v24/bin/node"
 "$NODE" start.js --build-only                   # build dist/ without booting
-"$NODE" start.js --start-all -s                 # rebuild + boot from dist/
+DB_BOOTSTRAP=1 "$NODE" start.js --start-all -s  # first boot: create the DB
+"$NODE" start.js --start-all -s                 # later boots: DB must exist
 systemctl --user restart zombiecoder-gateway.service   # same root launcher via systemd
 bash scripts/install-verify.sh
 ```

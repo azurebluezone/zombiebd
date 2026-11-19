@@ -257,6 +257,7 @@ async function main() {
       CACHE_DIR: path.join(TMP, "cache"),
       LOCK_DIR: path.join(TMP, "locks"),
       DB_SQLITE_PATH: path.join(TMP, "data", "models.db"),
+      DB_BOOTSTRAP: "1",
       // Old code spawned on any value other than "0"; a live value makes the
       // absence of a connection a real proof, not a disabled-by-accident one.
       BROKER_AUTORUN: "1",

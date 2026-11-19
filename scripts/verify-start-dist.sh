@@ -65,6 +65,7 @@ env \
   LOCK_DIR="$TMP/locks" \
   MCP_CLIENTS_FILE="$TMP/data/mcp-clients.json" \
   DB_SQLITE_PATH="$TMP/data/models.db" \
+  DB_BOOTSTRAP=1 \
   "$NODE_BIN" "$ROOT/start.js" --start-all -s >"$TMP/start.log" 2>&1 &
 PID=$!
 

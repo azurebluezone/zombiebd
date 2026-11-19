@@ -96,13 +96,26 @@ function specFor(cfg) {
 
 // ─── DB capability gate ───────────────────────────────────────────────
 // Returns the tools array to send, or undefined when the DB says this
-// model cannot take tools. Unknown ⇒ allow (an over-eager "no" would
-// silently disable working models).
+// model cannot take tools. A missing DB handle or failed query denies:
+// an unproven capability must not be granted. An absent/NULL row stays
+// "unknown ⇒ allow" because the DB did not veto it.
 let MODELS_DB = null;
+let capabilityWarned = false;
+function capabilityUnknown(reason, err) {
+  if (capabilityWarned) return;
+  capabilityWarned = true;
+  console.warn(
+    "[PROVIDER] CAPABILITY_UNKNOWN reason=" + reason +
+    (err && err.message ? " error=" + err.message : ""),
+  );
+}
 function setDatabase(db) { MODELS_DB = db; }
 
 function allowsTools(providerId, modelName) {
-  if (!MODELS_DB) return true;
+  if (!MODELS_DB) {
+    capabilityUnknown("db_missing");
+    return false;
+  }
   try {
     const row = MODELS_DB.prepare(
       "SELECT supports_tools FROM models WHERE provider = ? AND (name = ? OR api_model = ?) LIMIT 1",
@@ -110,7 +123,8 @@ function allowsTools(providerId, modelName) {
     if (!row || row.supports_tools === null || row.supports_tools === undefined) return true;
     return row.supports_tools === 1 || row.supports_tools === true || row.supports_tools === "1";
   } catch (e) {
-    return true;   // table/column missing ⇒ allow
+    capabilityUnknown("query_failed", e);
+    return false;   // unproven capability ⇒ deny
   }
 }
 

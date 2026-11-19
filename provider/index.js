@@ -67,16 +67,29 @@ function adapterFor(cfg) {
 
 // ─── Capability lookup (DB-direct, no hardcoding) ─────────────────────
 // mode: "tools" | "media" | "stream"
-// Returns true unless the DB explicitly says 0 — unknown ⇒ allow, because
-// an over-eager "no" would silently disable working models.
+// A missing DB handle or a failed query denies: an unproven capability must
+// not be granted. A stored NULL/absent row is still "unknown ⇒ allow", since
+// the DB did not veto it.
 let MODELS_DB = null;
+let capabilityWarned = false;
+function capabilityUnknown(reason, err) {
+  if (capabilityWarned) return;
+  capabilityWarned = true;
+  console.warn(
+    "[PROVIDER] CAPABILITY_UNKNOWN reason=" + reason +
+    (err && err.message ? " error=" + err.message : ""),
+  );
+}
 function setDatabase(db) {
   MODELS_DB = db;
   require("./tools").setDatabase(db);   // tool register shares the same DB handle
 }
 
 function supports(providerId, modelName, mode) {
-  if (!MODELS_DB) return true;
+  if (!MODELS_DB) {
+    capabilityUnknown("db_missing");
+    return false;
+  }
   const col = mode === "tools" ? "supports_tools"
     : mode === "media" ? "supports_media"
     : mode === "stream" ? "supports_stream"
@@ -91,7 +104,8 @@ function supports(providerId, modelName, mode) {
     if (v === null || v === undefined) return true;
     return v === 1 || v === true || v === "1";
   } catch (e) {
-    return true;                                 // table/column missing ⇒ allow
+    capabilityUnknown("query_failed", e);
+    return false;                                // unproven capability ⇒ deny
   }
 }
 

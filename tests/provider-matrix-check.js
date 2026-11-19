@@ -227,6 +227,7 @@ function startInstance(port, grpcPort, httpsPort) {
     DATA_DIR,
     LOG_DIR,
     DB_SQLITE_PATH: DB_PATH,
+    DB_BOOTSTRAP: "1",
     UDS: UDS_PATH,
     UDS_OPENAI: "1",
     INSTANCE_ID: "provider-matrix-" + Date.now(),

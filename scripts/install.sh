@@ -283,6 +283,19 @@ prune_runtime() {
 
 start_stack() {
   if [ "$SKIP_START" = 1 ]; then warn "--no-start: stack not started"; return 0; fi
+
+  step "Ensuring models database"
+  local db_file
+  db_file="$("$NODE_BIN" -e 'const{loadEnv}=require("./lib/env");const e=loadEnv({root:process.cwd()});process.stdout.write(e.derived.dbPath||"")' 2>/dev/null || true)"
+  [ -n "$db_file" ] || db_file="$ROOT/data/models.db"
+  if [ -f "$db_file" ]; then
+    ok "models database present: $db_file"
+  else
+    ( cd "$ROOT" && DB_BOOTSTRAP=1 "$NODE_BIN" api.js --db-bootstrap ) \
+      || fail "models DB bootstrap failed"
+    ok "models database created: $db_file"
+  fi
+
   step "Starting the gateway"
   if have systemctl; then
     bash scripts/install-service.sh --start || fail "systemd user start failed"

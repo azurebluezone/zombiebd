@@ -19,7 +19,7 @@ node scripts/check-env.js >/dev/null
 
 cp -a dist "$SCRATCH/dist"
 rm -rf "$SCRATCH/data"
-APP_ROOT="$SCRATCH/dist" DATA_DIR="$SCRATCH/data" LOG_DIR="$SCRATCH/dist/logs" LOCK_DIR="$SCRATCH/dist/locks" CACHE_DIR="$SCRATCH/dist/cache" DB_SQLITE_PATH="$SCRATCH/data/models.db" UDS_PATH="$SCRATCH/mcp.sock" OPENAI_UDS_PATH="$SCRATCH/openai.sock" PORT="$VERIFY_PORT" GRPC_PORT="$((VERIFY_PORT + 1))" HTTPS_PORT="$((VERIFY_PORT + 2))" BIND_HOST=localhost node "$SCRATCH/dist/api.js" >"$SCRATCH/boot.log" 2>&1 &
+APP_ROOT="$SCRATCH/dist" DATA_DIR="$SCRATCH/data" LOG_DIR="$SCRATCH/dist/logs" LOCK_DIR="$SCRATCH/dist/locks" CACHE_DIR="$SCRATCH/dist/cache" DB_SQLITE_PATH="$SCRATCH/data/models.db" DB_BOOTSTRAP=1 UDS_PATH="$SCRATCH/mcp.sock" OPENAI_UDS_PATH="$SCRATCH/openai.sock" PORT="$VERIFY_PORT" GRPC_PORT="$((VERIFY_PORT + 1))" HTTPS_PORT="$((VERIFY_PORT + 2))" BIND_HOST=localhost node "$SCRATCH/dist/api.js" >"$SCRATCH/boot.log" 2>&1 &
 PID=$!
 for i in $(seq 1 80); do
   code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 1 http://localhost:"$VERIFY_PORT"/status 2>/dev/null || true)

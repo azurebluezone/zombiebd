@@ -206,7 +206,10 @@ function ensureDatabase() {
 
   const dbPath = projectDbPath();
   if (!fs.existsSync(dbPath)) {
-    console.log("[DB] " + dbPath + " not found — api.js will create and seed it");
+    console.log(
+      "[DB] " + dbPath + " not found — api.js will create it only when " +
+      "DB_BOOTSTRAP=1; otherwise boot stops with DB_FATAL missing (exit 78).",
+    );
     return { exists: false, dbPath };
   }
 
@@ -265,16 +268,13 @@ function ensureDatabase() {
         console.warn("[DB] integrity check failed without a corruption signal — keeping the file: " + err.message);
         return { exists: true, checkFailed: true, dbPath };
       }
-      // A corrupt file can never be repaired by seeding. Move it aside once so
-      // api.js can create a clean database instead of failing on every boot.
-      const quarantine = dbPath + ".corrupt-" + Date.now();
-      try {
-        fs.renameSync(dbPath, quarantine);
-        console.warn("[DB] corrupt database moved to " + quarantine + " (" + err.message + ")");
-      } catch (moveErr) {
-        console.warn("[DB] corrupt database and could not move it:", moveErr.message);
-      }
-      return { exists: false, corrupt: true, dbPath };
+      // Corruption is not repaired by renaming the live database. Keep the
+      // file for inspection and let api.js stop with DB_FATAL corrupt.
+      console.error(
+        "[DB] corrupt database detected at " + dbPath + " (" + err.message + ") — " +
+        "keeping the file; api.js will stop with DB_FATAL corrupt.",
+      );
+      return { exists: true, corrupt: true, dbPath };
     }
   }
 }

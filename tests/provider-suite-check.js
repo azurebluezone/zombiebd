@@ -172,6 +172,7 @@ function startSourceInstance(port, grpcPort, httpsPort) {
     DATA_DIR: dataDir,
     LOG_DIR: logDir,
     DB_SQLITE_PATH: path.join(dataDir, "models.db"),
+    DB_BOOTSTRAP: "1",
     UDS: path.join(TMP, "mcp.sock"),
     UDS_OPENAI: "1",
     INSTANCE_ID: "provider-suite-" + Date.now(),

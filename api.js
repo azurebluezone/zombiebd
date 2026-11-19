@@ -114,6 +114,7 @@ const { normalizeText, stripInvisible, scanInvisible } = require("./lib/text-int
 const { chooseUsableModel } = require("./lib/model-choice.js");
 const { loadAgentFiles, getAgentById, listAgentIds, resolveAgentModel } = require("./agent");
 const systemInfo = require("./lib/system-info.js");
+const { classifyDbError } = require("./lib/db-guard.js");
 const { SERVICE_PORTS, DEFAULTS } = require("./lib/env.js");
 const configModule = require("./modules/config.js");
 const goalsModule = require("./modules/goals.js");
@@ -1138,10 +1139,10 @@ loadCustomProviders();
 // ══════════════════════════════════════════════════════════════
 // The API Normalizer syncs provider models into a `models` table.
 // Lookup order: DB first → env (PROVIDER_CONFIG) → fallback reply.
-// If node:sqlite is unavailable (old Node), server falls back to env-only.
+// The DB is mandatory: missing, busy or corrupt stops boot with DB_FATAL.
 let MODELS_DB = null;
-// DB path priority: env DB_SQLITE_PATH → DATA_DIR/models.db (fallback),
-// so a forgotten env var can never brick the gateway.
+// DB path priority: env DB_SQLITE_PATH → DATA_DIR/models.db (fallback).
+// A missing file is fatal unless DB_BOOTSTRAP=1 explicitly asks for creation.
 const MODELS_DB_PATH = path.resolve(
   PROJECT_ROOT,
   process.env.DB_SQLITE_PATH || path.join(DATA_DIR, "models.db"),
@@ -1153,57 +1154,63 @@ providerSecretStore.configure(
   path.join(path.dirname(MODELS_DB_PATH), ".provider-keys.key"),
 );
 
+// A DB problem is a boot failure, not a warning. Exit 78 (EX_CONFIG) so a
+// service manager sees a configuration failure instead of serving env-only
+// "healthy" answers whose capabilities were never proven.
+function dbFatal(reason, detail) {
+  const extra = detail && detail.error
+    ? " error=" + String(detail.error).replace(/\s+/g, " ")
+    : "";
+  const line = "DB_FATAL " + reason + " path=" + MODELS_DB_PATH + extra + "\n";
+  try { fs.writeSync(2, line); } catch (_) {}
+  try {
+    log("ERROR", "DB_FATAL", Object.assign({ reason, path: MODELS_DB_PATH }, detail || {}));
+  } catch (_) {}
+  process.exit(78); // EX_CONFIG
+}
+
+function sleepSyncMs(ms) {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch (_) {}
+}
+
 // Initialize the models database + table.
-function initModelsDb() {
+function initModelsDb(attempt) {
+  attempt = attempt || 1;
   try {
     const { DatabaseSync } = require("node:sqlite");
     if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-    // The DB is created locally. A fresh install must not depend on a remote
-    // snapshot: the old default pulled registry.db from another repository and
-    // filled the agents table with stale model names before agent/*.js could
-    // seed it. Set DB_REMOTE_URL explicitly if you really want that behavior.
-    if (!fs.existsSync(MODELS_DB_PATH) && process.env.DB_REMOTE_URL) {
-      const remote = process.env.DB_REMOTE_URL;
-      if (remote.startsWith("http")) {
-        const tmp = MODELS_DB_PATH + ".dl";
-        try {
-          log("INFO", "REGISTRY_DB_FETCH", { url: remote, to: MODELS_DB_PATH });
-          require("child_process").execFileSync(
-            "curl",
-            ["-sSL", "--max-time", "30", "-o", tmp, remote],
-            { stdio: "pipe" },
-          );
-          const head = Buffer.alloc(16);
-          const fd = fs.openSync(tmp, "r");
-          fs.readSync(fd, head, 0, 16, 0);
-          fs.closeSync(fd);
-          if (head.toString("latin1", 0, 15) === "SQLite format 3") {
-            fs.renameSync(tmp, MODELS_DB_PATH);
-            log("INFO", "REGISTRY_DB_DOWNLOADED", {
-              url: remote,
-              to: MODELS_DB_PATH,
-              bytes: fs.statSync(MODELS_DB_PATH).size,
-            });
-          } else {
-            fs.unlinkSync(tmp);
-            log("WARN", "REGISTRY_DB_INVALID", { reason: "not a sqlite file" });
-          }
-        } catch (e) {
-          try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch (_) {}
-          log("WARN", "REGISTRY_DB_FETCH_FAIL", { error: e.message });
-        }
+    // No implicit remote snapshot: a fresh DB is created only when the
+    // operator explicitly sets DB_BOOTSTRAP=1.
+    if (!fs.existsSync(MODELS_DB_PATH)) {
+      if (String(process.env.DB_BOOTSTRAP || "0") !== "1") {
+        dbFatal("missing", {
+          error: "set DB_BOOTSTRAP=1 to create a new models database",
+        });
       }
+      log("INFO", "DB_BOOTSTRAP_CREATE", { path: MODELS_DB_PATH });
     }
     MODELS_DB = new DatabaseSync(MODELS_DB_PATH);
     // WAL: one writer (this gateway) with concurrent readers (admin pages,
     // checks). NORMAL is the safe WAL pairing and avoids an fsync per txn.
-    try {
-      MODELS_DB.exec("PRAGMA journal_mode = WAL;");
-      MODELS_DB.exec("PRAGMA synchronous = NORMAL;");
-      MODELS_DB.exec("PRAGMA busy_timeout = 5000;");
-    } catch (e) {
-      log("WARN", "SQLITE_WAL_FAIL", { error: e.message });
+    // busy_timeout bounds each attempt; the outer catch retries a lock.
+    const busyTimeout = Math.max(
+      0,
+      parseInt(process.env.DB_BUSY_TIMEOUT_MS || "5000", 10) || 0,
+    );
+    MODELS_DB.exec("PRAGMA busy_timeout = " + busyTimeout + ";");
+    // A file that opens but fails integrity is still unusable. Check before
+    // writing schema so corruption is reported, never silently repaired.
+    const check = MODELS_DB.prepare("PRAGMA quick_check").get();
+    const integrity = check ? String(Object.values(check)[0] || "") : "";
+    if (integrity.toLowerCase() !== "ok") {
+      const err = new Error("integrity_check=" + (integrity || "empty"));
+      err.code = "SQLITE_CORRUPT";
+      throw err;
     }
+    MODELS_DB.exec("PRAGMA journal_mode = WAL;");
+    MODELS_DB.exec("PRAGMA synchronous = NORMAL;");
     MODELS_DB.exec(`
       CREATE TABLE IF NOT EXISTS models (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1388,11 +1395,36 @@ function initModelsDb() {
       );
     `);
     log("INFO", "SQLITE_READY", { path: MODELS_DB_PATH });
+    log("INFO", "DB_OK", {
+      path: MODELS_DB_PATH,
+      quick_check: "ok",
+      busy_timeout_ms: busyTimeout,
+    });
     return true;
   } catch (e) {
-    MODELS_DB = null;
-    log("WARN", "SQLITE_UNAVAILABLE", { error: e.message });
-    return false;
+    if (MODELS_DB) {
+      try { MODELS_DB.close(); } catch (_) {}
+      MODELS_DB = null;
+    }
+    const kind = classifyDbError(e);
+    const retryMs = Math.max(
+      0,
+      parseInt(process.env.DB_BUSY_RETRY_MS || "500", 10) || 0,
+    );
+    if (kind === "busy" && attempt <= 3) {
+      log("WARN", "DB_BUSY_RETRY", {
+        attempt,
+        path: MODELS_DB_PATH,
+        wait_ms: retryMs,
+        error: e.message,
+      });
+      sleepSyncMs(retryMs);
+      return initModelsDb(attempt + 1);
+    }
+    dbFatal(
+      kind === "corrupt" ? "corrupt" : kind === "busy" ? "busy" : "open",
+      { error: e.message },
+    );
   }
 }
 
@@ -18743,6 +18775,13 @@ async function handleMessage(transport, rawMessage) {
       elapsed_ms: elapsed,
     });
   }
+}
+
+// Installer one-shot: create/validate the models DB without starting HTTP.
+// DB_BOOTSTRAP=1 is still required when the file is missing.
+if (process.argv.includes("--db-bootstrap")) {
+  initModelsDb();
+  process.exit(0);
 }
 
 init();

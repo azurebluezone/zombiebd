@@ -105,6 +105,7 @@ function startInstance(ports) {
     DATA_DIR,
     LOG_DIR,
     DB_SQLITE_PATH: DB_PATH,
+    DB_BOOTSTRAP: "1",
     UDS: MCP_SOCK,
     UDS_OPENAI: "1",
     INSTANCE_ID: "cwd-db-check-" + Date.now(),
