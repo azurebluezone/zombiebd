@@ -59,6 +59,26 @@ function projectDbPath() {
   return resolveRuntimePaths(process.env).dbPath;
 }
 
+// Bounded runtime retention lives in modules/data-prune.js. Boot prunes the
+// previous run's reports, and every new health report prunes again right
+// after it lands, so data/ never keeps more than the retention window even
+// when the gateway restarts repeatedly without a full boot cycle.
+function pruneRuntimeData(reason) {
+  try {
+    const { pruneRuntimeArtifacts } = require("./modules/data-prune");
+    const pruned = pruneRuntimeArtifacts(projectDataDir());
+    console.log(
+      "[CLEANUP] runtime artifacts (" + reason + "): removed=" + pruned.deleted.length +
+      " kept_health=" + pruned.kept.health.length +
+      " kept_corrupt=" + pruned.kept.corrupt.length,
+    );
+    return pruned;
+  } catch (err) {
+    console.warn("[CLEANUP] warning (" + reason + "):", err.message);
+    return null;
+  }
+}
+
 // ─── Build (every start) ─────────────────────────────────────
 // The build is not a separate manual step. scripts/build.js owns the copy
 // rules; this function owns the "always rebuild before boot" contract and
@@ -476,6 +496,10 @@ async function runHealthChecks(host, port) {
     results,
   }, null, 2), "utf8");
   console.log("[HEALTH] Results saved to:", resultPath);
+
+  // The report just became the newest artifact; prune now so repeated
+  // restarts cannot leave keepHealth + 1 files behind.
+  pruneRuntimeData("health-report");
   
   return { passed, failed, results };
 }
@@ -948,19 +972,9 @@ async function startAll() {
   loadEnv();
   
   // 1b. Prune bounded runtime artifacts (health reports, quarantined DBs).
-  // The policy lives in modules/data-prune.js; this call must stay a single
-  // line so boot and the installer share one implementation.
-  try {
-    const { pruneRuntimeArtifacts } = require("./modules/data-prune");
-    const pruned = pruneRuntimeArtifacts(projectDataDir());
-    console.log(
-      "[CLEANUP] runtime artifacts: removed=" + pruned.deleted.length +
-      " kept_health=" + pruned.kept.health.length +
-      " kept_corrupt=" + pruned.kept.corrupt.length,
-    );
-  } catch (err) {
-    console.warn("[CLEANUP] warning:", err.message);
-  }
+  // The policy lives in modules/data-prune.js; boot and report writes share
+  // this one helper so no caller keeps its own copy of the rules.
+  pruneRuntimeData("boot");
   
   // 2. Detect environment
   const envInfo = detectEnvironment();

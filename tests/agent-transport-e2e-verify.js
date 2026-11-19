@@ -6,11 +6,15 @@
  */
 
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 
 const ROOT = path.resolve(__dirname, "..");
 const RESULT_FILE = path.join(ROOT, "logs", "e2e", "e2e-results.json");
-const WORK_DIR = "/home/sahon/Videos/test";
+const DEFAULT_WORK_DIR =
+  process.env.E2E_WORK_DIR ||
+  process.env.TEST_DIR ||
+  path.join(os.tmpdir(), "zombiebd-e2e-workspace");
 const EXPECTED_AGENTS = 9;
 const EXPECTED_TRANSPORTS = 6;
 const TRANSPORTS = ["http", "https", "uds", "stdio", "grpc", "websocket"];
@@ -32,6 +36,12 @@ function check(cond, reason) {
 }
 
 const r = readJson(RESULT_FILE);
+// Verify the workspace the run actually recorded; env overrides still win.
+const WORK_DIR =
+  process.env.E2E_WORK_DIR ||
+  process.env.TEST_DIR ||
+  r.workDir ||
+  DEFAULT_WORK_DIR;
 check(!r.error, "harness recorded an error: " + String(r.error).slice(0, 300));
 check(r.reset, "missing reset evidence");
 check(r.reset.performed === true, "server reset was not performed");

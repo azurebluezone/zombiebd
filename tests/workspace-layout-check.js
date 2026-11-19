@@ -17,21 +17,28 @@
  *   6. api.js holds no second syllabus implementation and initialize uses the
  *      stable project root, not the mutable working directory.
  *   7. Live project state has one syllabus, no legacy agents/ tree, the
- *      required JSON session files, and the wrong Desktop/1 workspace is gone.
- *   8. The running gateway was booted from dist/ (the built runtime).
+ *      required JSON session files, and ensureWorkspace never writes outside
+ *      the project root it was given.
+ *   8. The running gateway belongs to this checkout (root or dist entry) and
+ *      serves a dist/api.js built from this api.js.
  *
  * Run: node tests/workspace-layout-check.js
  * Exit 0 prints WORKSPACE_LAYOUT_OK.
  */
 
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const http = require("http");
+const crypto = require("crypto");
 const { spawnSync } = require("child_process");
 const { loadEnv, readEnvFile } = require("../lib/env.js");
 
 const ROOT = path.resolve(__dirname, "..");
-const TMP = path.join("/tmp/opencode", "workspace-layout-check-" + process.pid);
+const TMP = path.join(
+  process.env.TEST_DIR || os.tmpdir(),
+  "workspace-layout-check-" + process.pid,
+);
 const ENV = loadEnv({ root: ROOT });
 const RAW = Object.assign({}, readEnvFile(path.join(ROOT, ".env")), process.env);
 const PORT = ENV.ports.api || 5050;
@@ -41,7 +48,6 @@ const TOKEN =
   RAW.MCP_ADMIN_TOKEN ||
   RAW.ADMIN_API_KEY ||
   "";
-const WRONG_WORKSPACE = "/home/sahon/Desktop/1";
 
 let pass = 0;
 let fail = 0;
@@ -317,8 +323,21 @@ check(
   "live project has no gateway agents/sessions tree",
   !fs.existsSync(path.join(ROOT, ".zombiecoder", "agents", "sessions")),
 );
-const wrongTree = path.join(WRONG_WORKSPACE, ".zombiecoder");
-check("the wrong Desktop/1 workspace tree is gone", !fs.existsSync(wrongTree), wrongTree);
+// A workspace is created only inside the root it was given. A sibling or
+// parent .zombiecoder would mean the project root leaked into cwd/home.
+const isolationParent = fresh("isolation-parent");
+const isolationProject = path.join(isolationParent, "project");
+fs.mkdirSync(isolationProject, { recursive: true });
+workspace.ensureWorkspace(isolationProject);
+const isolationEntries = fs.readdirSync(isolationParent).sort();
+check(
+  "workspace state stays inside the requested project root",
+  isolationEntries.length === 1 &&
+    isolationEntries[0] === "project" &&
+    !fs.existsSync(path.join(isolationParent, ".zombiecoder")) &&
+    fs.existsSync(path.join(isolationProject, ".zombiecoder", "syllabus.md")),
+  isolationEntries.join(", "),
+);
 
 const dataDir = path.join(ROOT, "data");
 const dataEntries = fs.existsSync(dataDir) ? fs.readdirSync(dataDir) : [];
@@ -356,18 +375,30 @@ const pendingCwd = mcp("get_working_dir", {});
     (entry) => entry.cwd === ROOT || entry.cwd === path.join(ROOT, "dist"),
   );
   check("a gateway process is running for this project", gateways.length > 0, "pids=" + gateways.map((g) => g.pid).join(","));
+  // P0-09: the root start.js builds dist and then requires dist/api.js.
+  // Both entries are this checkout; a start.js from another folder is not.
+  const gatewayBelongsToCheckout = gateways.every((entry) => {
+    const match = entry.cmd.match(/(?:^|\s)(\S*start\.js)(?:\s|$)/);
+    if (!match) return false;
+    const entryPath = path.resolve(entry.cwd, match[1]);
+    return (
+      entryPath === path.join(ROOT, "start.js") ||
+      entryPath === path.join(ROOT, "dist", "start.js")
+    );
+  });
   check(
-    "the running gateway was booted from dist/",
-    gateways.length > 0 && gateways.every((entry) => /dist[\/\\]start\.js/.test(entry.cmd)),
+    "the running gateway belongs to this checkout",
+    gateways.length > 0 && gatewayBelongsToCheckout,
     gateways.map((entry) => entry.cmd).join(" | "),
   );
 
-  const sourceApi = fs.statSync(path.join(ROOT, "api.js")).mtimeMs;
-  const builtApi = fs.statSync(path.join(ROOT, "dist", "api.js")).mtimeMs;
+  const distApi = path.join(ROOT, "dist", "api.js");
+  const hashOf = (file) =>
+    crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
   check(
-    "dist/api.js is not older than the source build",
-    builtApi >= sourceApi,
-    "source=" + new Date(sourceApi).toISOString() + " dist=" + new Date(builtApi).toISOString(),
+    "dist/api.js is the build of this api.js",
+    fs.existsSync(distApi) && hashOf(path.join(ROOT, "api.js")) === hashOf(distApi),
+    fs.existsSync(distApi) ? hashOf(distApi).slice(0, 12) : "missing " + distApi,
   );
 
   console.log("\nRESULT: " + pass + " passed, " + fail + " failed");

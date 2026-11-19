@@ -10,6 +10,7 @@
  */
 
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const http = require("http");
 const https = require("https");
@@ -20,7 +21,10 @@ const pb = require("../transport/protobuf.js");
 
 const ROOT = path.resolve(__dirname, "..");
 const OUT_DIR = path.join(ROOT, "logs", "e2e");
-const WORK_DIR = process.env.E2E_WORK_DIR || "/home/sahon/Videos/test";
+const WORK_DIR =
+  process.env.E2E_WORK_DIR ||
+  process.env.TEST_DIR ||
+  path.join(os.tmpdir(), "zombiebd-e2e-workspace");
 const AGENT_IDS = [
   "security-hero",
   "perf-wizard",
