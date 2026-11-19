@@ -6,6 +6,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
+const { resolveBridgeTimeouts } = require("./lib/provider-timeout");
 const { spawn, execSync } = require("child_process");
 
 // ── Config ────────────────────────────────────────────────────
@@ -151,8 +152,9 @@ const CFG = {
   // model think longer than 5s died with "upstream_timeout". Evidence:
   //   200-word prompt → timeout: undefined = 5010ms ERROR
   //                     timeout: 200000    =  546ms OK
-  // BRIDGE_TIMEOUT_MS was already in .env but nothing read it.
-  timeoutMs: parseInt(process.env.BRIDGE_TIMEOUT_MS || "120000", 10),
+  // The value now comes from lib/provider-timeout.js, the same resolver the
+  // gateway uses for the bridge deadline (upstream + grace).
+  timeoutMs: resolveBridgeTimeouts(process.env).upstream,
   threads: parseInt(process.env.BRIDGE_THREADS || String(os.cpus().length), 10),
   // socket permission — default owner rw only (0o600); override via env
   socketMode: parseInt(process.env.BRIDGE_SOCKET_MODE || "600", 8),

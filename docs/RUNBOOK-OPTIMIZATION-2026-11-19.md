@@ -155,7 +155,7 @@ OPENCODE_ENABLED=false
 - `/etc/caddy/Caddyfile` → শুধু `127.0.0.1:5050` vhost; `5000` নেই
 - `llm-heal.sh` help line 20 — `stop` শুধু watchdog থামায়, stack চলে
 
-#### P0-07 — Timeout mismatch
+#### P0-07 — Timeout mismatch — ✅ SOLVED (2026-11-20)
 
 - `provider/transport.js:26` — `DEFAULT_TIMEOUT = 60000`
 - `provider/transport.js:194` — stream default `300000`
@@ -163,6 +163,10 @@ OPENCODE_ENABLED=false
 - `.env:68-69` — `1200000`
 - `api.js:1156-1171` — bridge provider-এ `timeout`/`streamTimeout` নেই
 - `.env:212` — `BRIDGE_TIMEOUT_MS=1200000`
+
+**Fix (2026-11-20):** `lib/provider-timeout.js:41` `resolveBridgeTimeouts()` is the one bridge deadline: `upstream = BRIDGE_TIMEOUT_MS` (default 120s), gateway `timeout = upstream + BRIDGE_TIMEOUT_GRACE_MS` (default 5s), and the stream inherits it — so the gateway can no longer expire while the bridge is still prefilling. `lib/provider-timeout.js:57` `resolveProviderTimeouts()` covers every other provider (`<PROVIDER>_TIMEOUT_MS` → `PROVIDER_TIMEOUT_MS` → 300s unified default; the stream falls back to the resolved request deadline). `provider/transport.js:25/30` requires the resolver and replaces the hardcoded 60s/300s with `fallbackTimeouts()` at call time; `DEFAULT_TIMEOUT` is gone. `api.js:964/991/1013` ollama, ollama_cloud and bridge spread the resolver and log `[PROVIDER_TIMEOUT]` at boot (`api.js:1044`); `local-llm-bridge.js:157` uses the same `.upstream`; `.env.example:288-291` documents `BRIDGE_TIMEOUT_MS` and `BRIDGE_TIMEOUT_GRACE_MS`.
+
+**Proof:** `node tests/bridge-timeout-check.js` → `BRIDGE_TIMEOUT_OK` (27 checks: static wiring, precedence and invalid-env fallback, bridge `upstream < gateway`, real HTTP request/stream timeouts driven by cfg and resolver env). Regression: `node tests/local-tool-cap.test.js` A6 PASS (43 passed; only the two pre-existing A1/D15 failures remain), `node tests/env-loader-check.js` → `ENV_LOADER_OK`, `node tests/tool-budget-check.js` → `TOOL_BUDGET_OK`, `node scripts/check-env.js` → `ENV_OK services=17`.
 
 #### P0-08 — “Online” মিথ্যা; DB-তে পুরোনো error আটকে থাকে
 
@@ -204,7 +208,7 @@ exit=0
 
 | ID | Problem | Evidence | Fix |
 |---|---|---|---|
-| P1-01 | Bridge timeout upstream-এর চেয়ে কম | `provider/transport.js:26`, `.env:212` | Phase 5/7 |
+| P1-01 | Bridge timeout upstream-এর চেয়ে কম | `provider/transport.js:26`, `.env:212` | ✅ SOLVED (2026-11-20): `lib/provider-timeout.js` bridge = `BRIDGE_TIMEOUT_MS` + grace; `provider/transport.js` has no literal default; proof `node tests/bridge-timeout-check.js` |
 | P1-02 | `request_log`-এ routing প্রমাণ নেই | `PRAGMA table_info(request_log)` | Phase 7 |
 | P1-03 | Tool selection insertion order | `api.js:4946-4951`, `9413`, `10113` | Phase 5 — ✅ SOLVED (2026-11-20): intent rank + deterministic tie-break |
 | P1-04 | `prepare()` cap enforce করে না | `provider/tools.js:122-125` | Phase 5 — ✅ SOLVED (2026-11-20): `capTools()` |

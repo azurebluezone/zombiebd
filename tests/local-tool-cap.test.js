@@ -88,16 +88,19 @@ const tocClaim = (lines.find((l) => /Total: .*MCP tools/.test(l)) || "").trim();
 fact("A5  actual MCP_TOOLS count = " + mcpKeys.length, "TOC claim: " + tocClaim);
 assert("A5  MCP_TOOLS >= 10 (matches the TOC claim)", mcpKeys.length >= 10, "actual: " + mcpKeys.length);
 
-// A6. Timeouts live in provider/transport.js (request building moved to the
-//   adapter layer): non-stream 60s default + cfg override, stream 300s so a
-//   local CPU model gets a longer budget on the stream path.
+// A6. Timeouts have one resolver (lib/provider-timeout.js): cfg.timeout /
+//   cfg.streamTimeout still win, and the fallback is the same resolved
+//   deadline for JSON and stream. No 60s/300s literals remain in transport.
 const transportSrc = fs.readFileSync(path.resolve(__dirname, "..", "provider", "transport.js"), "utf8");
-const tNonStream = /timeout: cfg\.timeout \|\| DEFAULT_TIMEOUT/.test(transportSrc);
-const tStream = /cfg\.streamTimeout \|\| 300000/.test(transportSrc);
+const tNonStream = /timeout: cfg\.timeout \|\| fallbackTimeouts\(\)\.timeout/.test(transportSrc);
+const tStream = /cfg\.streamTimeout \|\| fallbackTimeouts\(\)\.streamTimeout/.test(transportSrc);
+const tResolver = /require\(["']\.\.\/lib\/provider-timeout["']\)/.test(transportSrc);
+const tNoLiteral = !/DEFAULT_TIMEOUT\s*=\s*60000/.test(transportSrc) && !/\|\|\s*300000\b/.test(transportSrc);
 assert(
-  "A6  transport: non-stream cfg.timeout||60s, stream cfg.streamTimeout||300s",
-  tNonStream && tStream,
-  "provider/transport.js — non-stream=" + tNonStream + ", stream=" + tStream,
+  "A6  transport: one resolver, cfg overrides, no 60s/300s literals",
+  tNonStream && tStream && tResolver && tNoLiteral,
+  "provider/transport.js — non-stream=" + tNonStream + ", stream=" + tStream +
+    ", resolver=" + tResolver + ", no-literal=" + tNoLiteral,
 );
 
 // A7. api.js no longer holds outbound request code: the http2 client, proxy and

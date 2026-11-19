@@ -22,8 +22,14 @@
 const http = require("http");
 const https = require("https");
 const http2 = require("http2");
+const { resolveProviderTimeouts } = require("../lib/provider-timeout");
 
-const DEFAULT_TIMEOUT = 60000;
+// cfg.timeout / cfg.streamTimeout always win; when a caller omits them the
+// single resolver supplies the same deadline for JSON and stream. No numeric
+// default lives here — a stale 60s/300s pair hid the bridge mismatch.
+function fallbackTimeouts() {
+  return resolveProviderTimeouts("", process.env);
+}
 
 // ─── Frame-size guard ─────────────────────────────────────────────────
 // One knob for every body we buffer: a single response body (non-stream)
@@ -48,7 +54,7 @@ function request(cfg, target, body) {
 
   const options = {
     method: method,
-    timeout: cfg.timeout || DEFAULT_TIMEOUT,
+    timeout: cfg.timeout || fallbackTimeouts().timeout,
     headers: Object.assign(
       { "Content-Type": "application/json; charset=utf-8" },
       cfg.headers || {},
@@ -169,7 +175,7 @@ function http2Request(url, options, payload) {
       });
     });
     req.on("error", function (e) { done(reject, e); });
-    req.setTimeout(options.timeout || DEFAULT_TIMEOUT, function () {
+    req.setTimeout(options.timeout || fallbackTimeouts().timeout, function () {
       req.close();
       done(reject, new Error("request timeout"));
     });
@@ -191,7 +197,7 @@ function stream(cfg, target, body, onLine, opts) {
   opts = opts || {};
   const url = new URL(target);
   const useSocket = !!cfg.socketPath;
-  const timeout = cfg.streamTimeout || 300000;
+  const timeout = cfg.streamTimeout || fallbackTimeouts().streamTimeout;
 
   const options = {
     method: "POST",
@@ -306,7 +312,6 @@ module.exports = {
   request,
   stream,
   errorMessage,
-  DEFAULT_TIMEOUT,
   MAX_FRAME_BYTES,
   FRAME_TOO_LARGE,
 };

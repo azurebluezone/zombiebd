@@ -116,6 +116,10 @@ const { loadAgentFiles, getAgentById, listAgentIds, resolveAgentModel } = requir
 const systemInfo = require("./lib/system-info.js");
 const { classifyDbError } = require("./lib/db-guard.js");
 const { loadProcessEnv, SERVICE_PORTS, DEFAULTS } = require("./lib/env.js");
+const {
+  resolveProviderTimeouts,
+  resolveBridgeTimeouts,
+} = require("./lib/provider-timeout.js");
 const goalsModule = require("./modules/goals.js");
 const verifyModule = require("./modules/verify.js");
 const compilerModule = require("./modules/compiler.js");
@@ -955,8 +959,9 @@ const PROVIDER_CONFIG = {
     // inbound transport; it is never reused as a provider socket.
     // CPU inference on a small box can exceed the 60s transport default while
     // still producing a valid answer. The budget is env-only, per provider.
-    timeout: positiveIntEnv("OLLAMA_TIMEOUT_MS"),
-    streamTimeout: positiveIntEnv("OLLAMA_STREAM_TIMEOUT_MS"),
+    // Both deadlines come from the one resolver (OLLAMA_*_TIMEOUT_MS →
+    // PROVIDER_*_TIMEOUT_MS → default), never from a local literal.
+    ...resolveProviderTimeouts("ollama", process.env),
     // Small local models drown in a 4.5k-char persona and keep generating
     // reasoning. Both knobs are env-only so a CPU box can stay responsive.
     maxPromptChars: positiveIntEnv("OLLAMA_MAX_PROMPT_CHARS"),
@@ -982,8 +987,8 @@ const PROVIDER_CONFIG = {
     priority: parseInt(process.env.OLLAMA_CLOUD_PRIORITY || "999", 10),
     type: process.env.OLLAMA_CLOUD_TYPE || "openai",
     dialect: process.env.OLLAMA_CLOUD_DIALECT || "",
-    timeout: positiveIntEnv("OLLAMA_CLOUD_TIMEOUT_MS"),
-    streamTimeout: positiveIntEnv("OLLAMA_CLOUD_STREAM_TIMEOUT_MS"),
+    // Same resolver as the local Ollama entry, with the cloud env prefix.
+    ...resolveProviderTimeouts("ollama_cloud", process.env),
     models: parseCustomModelsEnv(process.env.OLLAMA_CLOUD_MODELS || ""),
     dynamicModels: true,
   },
@@ -1002,6 +1007,10 @@ const PROVIDER_CONFIG = {
     models: parseCustomModelsEnv(process.env.BRIDGE_MODELS || ""),
     enabled: process.env.BRIDGE_ENABLED !== "0",
     dynamicModels: true,
+    // The upstream may legitimately prefill for BRIDGE_TIMEOUT_MS. The
+    // resolver adds the grace, so this gateway deadline never fires before
+    // the bridge's own upstream timeout (P0-07 / P1-01).
+    ...resolveProviderTimeouts("bridge", process.env),
     // CPU-bound bridge upstreams still choke on a large tool catalog. This is
     // a per-provider capability and can be raised by config, never inferred
     // from a hostname.
@@ -1027,6 +1036,18 @@ for (const p of Object.values(PROVIDER_CONFIG)) {
     p.envModels = p.models.slice();
   }
 }
+
+// Boot evidence: the bridge deadline is computed from the same value the
+// bridge itself uses, so a mismatch is visible before the first request.
+const _bridgeTimeout = resolveBridgeTimeouts(process.env);
+console.log(
+  "[PROVIDER_TIMEOUT] bridge upstream=" +
+    _bridgeTimeout.upstream +
+    " gateway=" +
+    _bridgeTimeout.timeout +
+    " stream=" +
+    _bridgeTimeout.streamTimeout,
+);
 
 // Explicit provider off switch (env). The entry stays in PROVIDER_CONFIG so
 // admin code that reads it never hits undefined; every resolve/sync/catalog
@@ -6492,7 +6513,7 @@ function callModelStream(
         providerId,
         tools,
         providerMax: toolBudget.providerMaxOf(config),
-        timeoutMs: config.streamTimeout || 300000,
+        timeoutMs: config.streamTimeout || resolveProviderTimeouts("", process.env).streamTimeout,
         intent: toolBudgetIntent(messages),
       });
       tools = toolRegister.prepare(providerId, resolvedApiModel, budget.tools, config);
@@ -6808,7 +6829,7 @@ function callModel(
         providerId,
         tools,
         providerMax: toolBudget.providerMaxOf(config),
-        timeoutMs: config.timeout || 60000,
+        timeoutMs: config.timeout || resolveProviderTimeouts("", process.env).timeout,
         intent: toolBudgetIntent(messages),
       });
       tools = toolRegister.prepare(providerId, resolvedApiModel, budget.tools, config);
