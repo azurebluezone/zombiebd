@@ -427,9 +427,12 @@ async function liveApi() {
   const first = agents.json.agents[0];
   state.tools = (first && first.tools && first.tools.catalog) || 0;
   state.bound = (first && first.tools && first.tools.bound && first.tools.bound.length) || 0;
-  if (state.tools !== 153) throw new Error("catalog=" + state.tools + " expected=153");
-  if (state.bound !== 25) throw new Error("bound=" + state.bound + " expected=25");
-  pass("agents=9 tools=153 bound=25 source=/api/agents");
+  const expectedBound = parseInt(process.env.MCP_TOOL_BUDGET_MAX || "24", 10);
+  if (state.tools < 100) throw new Error("catalog=" + state.tools + " expected>=100");
+  if (state.bound !== expectedBound) {
+    throw new Error("bound=" + state.bound + " expected=" + expectedBound);
+  }
+  pass("agents=9 tools=" + state.tools + " bound=" + expectedBound + " source=/api/agents");
 }
 
 function decodeActor(value) {

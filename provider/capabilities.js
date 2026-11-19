@@ -13,7 +13,9 @@ const DEFAULTS = Object.freeze({
   stream: true,
   tools: true,
   media: false,
-  maxTools: 15,
+  // No provider ceiling unless a provider declares one. The global count,
+  // byte and prefill budgets live in lib/tool-budget.js.
+  maxTools: Infinity,
   // The model list follows a server that can start or stop while the
   // gateway runs. Ollama and the bridge declare this; a cloud API does not.
   dynamicModels: false,

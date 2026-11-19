@@ -58,15 +58,12 @@ assert(
   "line " + (exactOnlyNullLine + 1)
 );
 
-// A4. How many times is MAX_TOOLS_LIMIT redefined (drift risk)?
-const maxToolsLines = lines
-  .map((l, i) => (/const MAX_TOOLS_LIMIT\s*=/.test(l) ? i + 1 : 0))
-  .filter(Boolean);
-fact("A4  MAX_TOOLS_LIMIT is redefined " + maxToolsLines.length + " time(s)", "lines: " + maxToolsLines.join(", "));
+// A4. One resolver: api.js must not define a tool limit constant.
+const maxToolsLines = lines.filter((l) => /MAX_TOOLS_LIMIT/.test(l));
 assert(
-  "A4  local cap 5 / cloud cap 15 is correct",
-  /const MAX_TOOLS_LIMIT = isLocalAgent \? 5 : 15;/.test(src),
-  "line " + (maxToolsLines[maxToolsLines.length - 1])
+  "A4  no MAX_TOOLS_LIMIT in api.js (lib/tool-budget.js owns the limit)",
+  maxToolsLines.length === 0,
+  maxToolsLines.length + " line(s)",
 );
 
 // A10. The tool-cap local heuristic no longer uses a hardcoded model-name list,
@@ -129,136 +126,34 @@ assert(
 const customPriority = (lines.find((l) => /CUSTOM_PROVIDER_" \+ num \+ "_PRIORITY/.test(l)) || "").trim();
 fact("A9  custom_N default priority: " + (customPriority.includes('"10"') ? "10 (lowest precedence)" : "?"), "line 852-855");
 
-// ─────────────────────────────────────────────────────────────
-// PART B — DYNAMIC: run against the real block from api.js
-// ─────────────────────────────────────────────────────────────
-const START_MARK = "// LOCAL MODEL TOOL LIMIT:";
-const SLICE_MARK = "toolsForStream = toolsForStream.slice(0, MAX_TOOLS_LIMIT);";
-const sIdx = src.indexOf(START_MARK);
-const slIdx = src.indexOf(SLICE_MARK);
-if (sIdx < 0 || slIdx < 0) { console.error(" markers not found"); process.exit(2); }
-// Block = START_MARK through the end of the slice line; the cap logic is the
-// whole block. (The old rule stopped at the first `}` after the slice, but
-// international code now sits there and broke the eval. The slice line is the
-// real boundary.)
-const sliceLineEnd = slIdx + SLICE_MARK.length;
-const block = src.slice(sIdx, sliceLineEnd);
-assert("B0  real block extracted from api.js", block.length > 200, block.split("\n").length + " lines");
-
-// ─── The real resolveProvider and its helpers are extracted from api.js ───
-// (The old stub was a friendly shadow copy of production logic. Now the test
-//  runs the real code, not a copy.)
-function extractFn(name) {
-  const start = src.indexOf("function " + name + "(");
-  if (start < 0) throw new Error("extractFn: not found in api.js: " + name);
-  const open = src.indexOf("{", start);
-  let depth = 0, end = -1;
-  for (let i = open; i < src.length; i++) {
-    const c = src[i];
-    if (c === "{") depth++;
-    else if (c === "}") { depth--; if (depth === 0) { end = i + 1; break; } }
-  }
-  if (end < 0) throw new Error("extractFn: unbalanced braces for " + name);
-  return src.slice(start, end);
+// ────────────────────────────────────────────────────────────
+// PART B — DYNAMIC: the single tool budget (lib/tool-budget.js)
+//   The old local/cloud heuristic is gone. These assertions run the real
+//   resolver, not a copy of it, against the same 155-tool shape production sees.
+// ────────────────────────────────────────────────────────────
+const toolBudget = require("../lib/tool-budget.js");
+const budgetTools = [];
+for (let i = 0; i < 155; i += 1) {
+  budgetTools.push({
+    type: "function",
+    function: {
+      name: "tool_" + String(i).padStart(3, "0"),
+      description: "synthetic tool " + i,
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  });
 }
-// providerPriority is a helper of resolveProvider; extract it in the same
-// sandbox or the real sorter throws ReferenceError.
-const rpSrc = ["providerPriority", "resolveProvider", "getModelName", "getApiModelName"]
-  .map(extractFn)
-  .join("\n");
-
-function runBlock(resolveProvider, agentModel, toolsArg) {
-  const agent = { id: "probe", model: agentModel };
-  const logs = [];
-  const log = (lvl, ev, data) => logs.push({ lvl, ev, data });
-  const MCP_TOOLS = {};
-  for (const k of mcpKeys) MCP_TOOLS[k] = { description: k, params: {}, required: [] };
-  const tools = toolsArg;
-  const factory = new Function(
-    "resolveProvider", "agent", "log", "tools", "MCP_TOOLS",
-    "const agentProviderInfo = resolveProvider(agent.model, true);\n" +
-    "const agentProviderId = (agentProviderInfo && agentProviderInfo.providerId) || '';\n" +
-    "const isLocalAgent = !!(agentProviderInfo && agentProviderInfo.config && agentProviderInfo.config.local) || /^custom_/.test(agentProviderId);\n" +
-    block + "\nreturn { isLocalAgent, MAX_TOOLS_LIMIT, toolsForStream, agentProviderId };"
-  );
-  return { ...factory(resolveProvider, agent, log, tools, MCP_TOOLS), logs };
-}
-
-const PROVIDERS = {
-  opencode: { name: "OpenCode", priority: 1, models: ["gpt-4o-mini", "deepseek-r1-distill"], config: {} },
-  ollama: { name: "Ollama", priority: 5, local: true, models: ["qwen2:0.5b"] },
-  custom_2: { name: "Custom-2", priority: 10, custom: true, models: ["phi3:mini"] },
-};
-// Run the real resolveProvider with the test PROVIDERS as PROVIDER_CONFIG.
-// applyModelAlias is the production hook (MODEL_ALIASES), so the resolver
-// under test is the real one.
-const realResolveProvider = new Function(
-  "PROVIDER_CONFIG",
-  "DISABLED_MODELS",
-  "applyModelAlias",
-  rpSrc + "\nreturn resolveProvider;",
-)(PROVIDERS, new Set(), makeAliasResolver(process.env.MODEL_ALIASES || ""));
-const rp = (m, e) => realResolveProvider(m, e);
-
-// B1. custom_ provider = local -> 5 tools.
-const r1 = runBlock(rp, "phi3:mini");
-assert("B1  custom_2 provider -> isLocalAgent=true, cap=5", r1.isLocalAgent === true && r1.MAX_TOOLS_LIMIT === 5,
-  "providerId=" + r1.agentProviderId + ", cap=" + r1.MAX_TOOLS_LIMIT);
-
-// B2. ollama (local:true) registered model -> 5 tools.
-const r2 = runBlock(rp, "qwen2:0.5b");
-assert("B2  ollama(local:true) registered model -> cap=5", r2.isLocalAgent === true && r2.MAX_TOOLS_LIMIT === 5,
-  "providerId=" + r2.agentProviderId + ", cap=" + r2.MAX_TOOLS_LIMIT);
-
-// B3. Cloud model -> 15 tools.
-const r3 = runBlock(rp, "gpt-4o-mini");
-assert("B3  cloud model -> isLocalAgent=false, cap=15", r3.isLocalAgent === false && r3.MAX_TOOLS_LIMIT === 15,
-  "providerId=" + r3.agentProviderId + ", cap=" + r3.MAX_TOOLS_LIMIT);
-
-// B4. GAP-1: a local model whose name and provider both miss the regex.
-const r4 = runBlock(rp, "gemma4:31b"); // pulled in ollama but missing from the models list
-assert(
-  "B4  GAP: unregistered local model -> null -> isLocalAgent=FALSE -> 15 tools like cloud",
-  r4.isLocalAgent === false && r4.MAX_TOOLS_LIMIT === 15 && r4.agentProviderId === "",
-  "resolveProvider(exactOnly) null -> /^custom_/.test('') = false"
-);
-
-// B5. FIX: no model-name list, so the cloud deepseek-r1-distill is no longer
-//     mistaken for local (the old /^(qwen|deepseek|llama|mistral)/ matched it
-//     and forced cap=5).
-const r5 = runBlock(rp, "deepseek-r1-distill");
-assert("B5  cloud deepseek-r1-distill -> isLocalAgent=false, cap=15 (no name regex)", r5.isLocalAgent === false && r5.MAX_TOOLS_LIMIT === 15,
-  "providerId=" + r5.agentProviderId + " (opencode cloud)");
-
-// B6. Which five tools does a local model get?
-const r6 = runBlock(rp, "qwen2:0.5b");
-const got5 = (r6.toolsForStream || []).map((t) => t.function.name);
-const expect5 = mcpKeys.slice(0, 5);
-assert("B6  local model gets exactly the first 5 tools: " + got5.join(", "),
-  JSON.stringify(got5) === JSON.stringify(expect5), "selection = slice(0,5), no priority");
-const lost = mcpKeys.slice(5);
-fact("B6  dropped from the local model (" + lost.length + "): " + lost.join(", "), "");
-
-// B7. No "power" tool on the local path — grep/glob/exec/terminal/db_query.
-const powerTools = ["grep", "glob", "exec", "terminal", "db_query", "agent_mission"];
-const lostPower = powerTools.filter((t) => !got5.includes(t));
-assert("B7  none of the " + powerTools.length + " power tools appear in the local 5", lostPower.length === powerTools.length,
-  "dropped: " + lostPower.join(", "));
-
-// B8. What does the cloud 15 get (first 15)?
-const r8 = runBlock(rp, "gpt-4o-mini");
-const got15 = (r8.toolsForStream || []).map((t) => t.function.name);
-const pos = (k) => mcpKeys.indexOf(k) + 1;
-fact("B8  position by tool order: terminal #" + pos("terminal") + ", grep #" + pos("grep") + ", glob #" + pos("glob") + ", exec #" + pos("exec"), "outside the cap of 15 = never sent");
-assert("B8  cloud=15 gets terminal, but grep/glob/exec (beyond 15) never reach the model",
-  got15.length === 15 && got15.includes("terminal") && !got15.includes("grep") && !got15.includes("exec"),
-  "count=" + got15.length + ", grep@" + pos("grep") + " exec@" + pos("exec"));
-
-// B9. The real question about a custom_ test provider: is it "test-only"?
-const isTestOnly = /if \(!url\) \{[^}]*Skipped: no URL set/.test(src);
-assert("B9  custom_ provider is not test-only — any URL loads it as a production provider",
-  isTestOnly === true && loaderCallLine > 0, "line " + (customLoaderLine + 1) + " + startup call");
-fact("B9  that is: it is not a mutex/fixture, it is the main key to local-model routing", "");
+budgetTools[37].function.name = "tts__tts_speak";
+budgetTools[80].function.name = "ocr__ocr_image";
+const budgetCloud = toolBudget.resolveToolBudget({ tools: budgetTools, timeoutMs: 300000 });
+const budgetBridge = toolBudget.resolveToolBudget({ tools: budgetTools, providerMax: 5, timeoutMs: 300000 });
+assert("B1  155 tools -> limit 24", budgetCloud.limit === 24, "limit=" + budgetCloud.limit);
+assert("B2  pinned tts__tts_speak survives", budgetCloud.tools.some((t) => t.function.name === "tts__tts_speak"));
+assert("B3  bridge -> limit 5", budgetBridge.limit === 5, "limit=" + budgetBridge.limit);
+assert("B4  bridge keeps tts__tts_speak", budgetBridge.tools.some((t) => t.function.name === "tts__tts_speak"));
+assert("B5  bytes <= 12000", budgetCloud.bytes <= 12000, "bytes=" + budgetCloud.bytes);
+assert("B6  estPrefillMs <= min(timeout/2, 45000)", budgetCloud.estPrefillMs <= Math.min(150000, 45000), "ms=" + budgetCloud.estPrefillMs);
+fact("B7  limits live only in lib/tool-budget.js", "no MAX_TOOLS_LIMIT in api.js");
 
 // ─────────────────────────────────────────────────────────────
 // PART C — Universal Tool-Call Adapter ("external tools/tool.js")

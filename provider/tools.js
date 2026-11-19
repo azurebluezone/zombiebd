@@ -29,6 +29,7 @@
 const openaiAdapter = require("./openai");
 const ollamaAdapter = require("./ollama");
 const geminiAdapter = require("./gemini");
+const toolBudget = require("../lib/tool-budget.js");
 
 // ─── Register ─────────────────────────────────────────────────────────
 // Each spec is documentation + converters in one place. `args` records the
@@ -128,15 +129,18 @@ function allowsTools(providerId, modelName) {
   }
 }
 
-// prepare() — the function api.js calls right before every model call.
-//   providerId : resolved provider id (opencode, gemini, custom_3, …)
+// prepare() - the function api.js calls right before every model call.
+//   providerId : resolved provider id (opencode, gemini, custom_3, ...)
 //   model      : the API model name actually sent on the wire
 //   tools      : canonical OpenAI tools[] from the server
-// Returns tools (possibly unchanged) or undefined when unsupported.
+//   cfg        : resolved provider config (top-level or capabilities.maxTools)
+// Returns the capped tools array, or undefined when unsupported.
 function prepare(providerId, model, tools, cfg) {
   if (!tools || !tools.length) return undefined;
   if (!allowsTools(providerId, model)) return undefined;
-  return tools;
+  // lib/tool-budget.js is the only limit resolver; a provider may lower the
+  // global ceiling through cfg.maxTools / cfg.capabilities.maxTools.
+  return toolBudget.capTools(tools, toolBudget.providerMaxOf(cfg));
 }
 
 function register(dialect, spec) {

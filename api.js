@@ -177,6 +177,7 @@ const providerCapabilities = require("./provider/capabilities");
 const providerSecretStore = require("./lib/secret-store");
 const adminApi = require("./admin-api");
 const toolRegister = require("./provider/tools");
+const toolBudget = require("./lib/tool-budget.js");
 
 // The admin routing module gets the live helpers through one context object.
 // Getters keep the DB handle and agent list current without this module
@@ -998,7 +999,7 @@ const PROVIDER_CONFIG = {
     // CPU-bound bridge upstreams still choke on a large tool catalog. This is
     // a per-provider capability and can be raised by config, never inferred
     // from a hostname.
-    capabilities: { maxTools: positiveIntEnv("BRIDGE_MAX_TOOLS") || 5 },
+    capabilities: { maxTools: toolBudget.bridgeMaxTools() },
   },
 };
 
@@ -4652,13 +4653,12 @@ function mcpGate(req, toolName, trusted) {
   return null;
 }
 
-// ─── Phase C: shared tools sanitizer (ALL input endpoints) ──
-// TOOLS_CAP_FIX hoisted from /v1/chat/completions: caps tools arrays at
-// MAX_TOOLS_LIMIT so small models don't receive ~70 tools (empty response
-// bug: "Tools provided: 71, Estimated input tokens: 50471"). Also validates
-// that tools is an array. Used by: /v1/chat/completions, /api/mission,
-// /api/v1/anti-dote, /api/input, WS chat, MCP agent_mission/agent_single.
-const MAX_TOOLS_LIMIT = 25; // hard ceiling; provider capabilities set the real cap
+// ─── Shared tools sanitizer (ALL input endpoints) ──
+// Validates that a client-supplied tools value is a real array. Budgeting is
+// NOT done here: lib/tool-budget.js owns the count/byte/prefill limits and
+// callModel/callModelStream apply them once the provider is resolved.
+// Used by: /v1/chat/completions, /api/mission, /api/v1/anti-dote,
+// /api/input, WS chat, MCP agent_mission/agent_single.
 // Budget guards. Tool results and history are the two places a prompt grows
 // without bound; both are capped before every model call.
 const MAX_TOOL_RESULT_CHARS = parseInt(process.env.MAX_TOOL_RESULT_CHARS || "3000", 10);
@@ -4718,17 +4718,35 @@ function mcpToolsToOpenAI() {
 
 function sanitizeTools(tools, model) {
   if (!Array.isArray(tools) || tools.length === 0) return undefined;
-  // Capability gating is DB-driven and happens AFTER provider resolution —
-  // toolRegister.prepare() inside callModel/callModelStream. The hardcoded
-  // NO_TOOL_MODELS set has been removed from this file entirely.
-  if (tools.length > MAX_TOOLS_LIMIT) {
-    log("WARN", "TOOLS_CAPPED", {
-      original: tools.length,
-      capped: MAX_TOOLS_LIMIT,
-    });
-    return tools.slice(0, MAX_TOOLS_LIMIT);
-  }
+  // Shape validation only. callModel/callModelStream pass the array through
+  // lib/tool-budget.js, which trims by provider limit, bytes and prefill.
   return tools;
+}
+
+// Intent text for tool ranking: the last user message, bounded. The resolver
+// only uses ASCII words it can match against English tool names/descriptions.
+function toolBudgetIntent(messages) {
+  const lastUser = Array.isArray(messages)
+    ? messages.filter((m) => m && m.role === "user").pop()
+    : null;
+  return lastUser ? String(lastUser.content || "").slice(0, 400) : "";
+}
+
+function logToolBudget(providerId, model, budget, extra) {
+  log("INFO", "TOOL_BUDGET", {
+    provider: providerId,
+    model,
+    limit: budget.limit,
+    sent: budget.tools.length,
+    dropped: budget.dropped,
+    pinned: budget.pinned,
+    bytes: budget.bytes,
+    est_tokens: budget.estTokens,
+    est_prefill_ms: budget.estPrefillMs,
+    timeout_ms: budget.timeoutMs,
+    strategy: budget.strategy,
+    ...(extra || {}),
+  });
 }
 
 async function refreshAgents() {
@@ -6464,7 +6482,17 @@ function callModelStream(
     // ─── Capability gate — DB-driven (NO hardcoded model names) ──
     const resolvedApiModel = resolveApiModel(model, providerId);
     if (tools) {
-      tools = toolRegister.prepare(providerId, resolvedApiModel, tools, config);
+      const budget = toolBudget.resolveToolBudget({
+        providerId,
+        tools,
+        providerMax: toolBudget.providerMaxOf(config),
+        timeoutMs: config.streamTimeout || 300000,
+        intent: toolBudgetIntent(messages),
+      });
+      tools = toolRegister.prepare(providerId, resolvedApiModel, budget.tools, config);
+      if (!providerOverride && !_retryCount) {
+        logToolBudget(providerId, resolvedApiModel, budget, { stream: true });
+      }
     }
 
     // ─── Provider call via the adapter layer ────────────────────
@@ -6770,7 +6798,17 @@ function callModel(
     // ─── Capability gate — DB-driven (NO hardcoded model names) ──
     const resolvedApiModel = resolveApiModel(model, providerId);
     if (tools) {
-      tools = toolRegister.prepare(providerId, resolvedApiModel, tools, config);
+      const budget = toolBudget.resolveToolBudget({
+        providerId,
+        tools,
+        providerMax: toolBudget.providerMaxOf(config),
+        timeoutMs: config.timeout || 60000,
+        intent: toolBudgetIntent(messages),
+      });
+      tools = toolRegister.prepare(providerId, resolvedApiModel, budget.tools, config);
+      if (!providerOverride && !_retryCount) {
+        logToolBudget(providerId, resolvedApiModel, budget);
+      }
     }
 
     // ─── Provider call via the adapter layer ────────────────────
@@ -8856,9 +8894,8 @@ async function executeMission(
     };
   }
 
-  // Auto-inject MCP tools when no tools provided.
-  // MAX_TOOLS_LIMIT is the global catalog cap; a provider can declare a
-  // stricter maxTools through capability metadata, applied in the stream path.
+  // Auto-inject MCP tools when no tools provided. callModel applies the
+  // single tool budget (count + bytes + prefill) once the provider is known.
   if (!tools || tools.length === 0) {
     const mcpToolList = Object.entries(MCP_TOOLS).map(([name, def]) => ({
       type: "function",
@@ -8873,14 +8910,6 @@ async function executeMission(
       },
     }));
     if (mcpToolList.length > 0) tools = mcpToolList;
-  }
-  // Cap tools to MAX_TOOLS_LIMIT — too many tools = empty model response
-  if (tools && tools.length > MAX_TOOLS_LIMIT) {
-    log("WARN", "TOOLS_CAPPED", {
-      original: tools.length,
-      capped: MAX_TOOLS_LIMIT,
-    });
-    tools = tools.slice(0, MAX_TOOLS_LIMIT);
   }
 
   // ─── Step 0: Classify input → select relevant agents ──────
@@ -9451,11 +9480,6 @@ async function executeSingleAgent(
 
   // A provider may cap the prompt (local CPU models). 0 means "no cap".
   const routing = resolveProvider(agentModel);
-  const agentCaps = providerRegistry.capabilitiesFor(
-    routing && routing.config,
-    routing && routing.providerId,
-    agentModel,
-  );
   const promptBudget =
     (routing && routing.config && Number(routing.config.maxPromptChars)) || 0;
 
@@ -9564,9 +9588,8 @@ async function executeSingleAgent(
   }
 
   // Auto-inject MCP tools when no tools provided.
-  //  MAX_TOOLS_LIMIT: module-level const (Phase C) — single source of truth
-  // A budgeted provider opts out: 25 schemas cost ~11k chars and a small
-  // local model answers with a tool call instead of the requested text.
+  // lib/tool-budget.js applies the single count/byte/prefill budget in
+  // callModel; a budgeted provider simply sends fewer schemas, never zero.
   if ((!tools || tools.length === 0) && !promptBudget) {
     const mcpToolList = Object.entries(MCP_TOOLS).map(([name, def]) => ({
       type: "function",
@@ -9581,16 +9604,6 @@ async function executeSingleAgent(
       },
     }));
     if (mcpToolList.length > 0) tools = mcpToolList;
-  }
-  // Cap tools by the provider's declared capability, never above the ceiling.
-  const toolCap = Math.min(MAX_TOOLS_LIMIT, agentCaps.maxTools);
-  if (tools && tools.length > toolCap) {
-    log("WARN", "TOOLS_CAPPED", {
-      original: tools.length,
-      capped: toolCap,
-      provider_max: agentCaps.maxTools,
-    });
-    tools = tools.slice(0, toolCap);
   }
 
   if (stream) {
@@ -13848,6 +13861,7 @@ const handleHttpRequest = async (req, res) => {
     // ─── GET /api/agents ─────────────────────────────────────
     if (url === "/api/agents" && method === "GET") {
       const toolNames = Object.keys(MCP_TOOLS);
+      const globalLimit = toolBudget.limitFor();
       log("INFO", "REQUEST", {
         method,
         url,
@@ -13859,8 +13873,8 @@ const handleHttpRequest = async (req, res) => {
         source: "agent/*.js",
         tools: {
           catalog: toolNames.length,
-          execution_limit: MAX_TOOLS_LIMIT,
-          default_stream_limit: MAX_TOOLS_LIMIT,
+          execution_limit: globalLimit,
+          default_stream_limit: globalLimit,
         },
         agents: AGENTS.map((a) => {
           const providerInfo = resolveProvider(a.model, true);
@@ -13870,7 +13884,7 @@ const handleHttpRequest = async (req, res) => {
             providerId,
             a.model,
           );
-          const streamLimit = Math.min(MAX_TOOLS_LIMIT, caps.maxTools);
+          const streamLimit = toolBudget.limitFor(caps.maxTools);
           return {
             id: a.id,
             name: a.name,
@@ -13879,10 +13893,10 @@ const handleHttpRequest = async (req, res) => {
             provider: "ZombieCoder",
             tools: {
               catalog: toolNames.length,
-              execution_limit: MAX_TOOLS_LIMIT,
+              execution_limit: globalLimit,
               stream_limit: streamLimit,
-              bound: toolNames.slice(0, MAX_TOOLS_LIMIT),
-              stream_bound: toolNames.slice(0, streamLimit),
+              bound: toolBudget.rankNames(toolNames, globalLimit),
+              stream_bound: toolBudget.rankNames(toolNames, streamLimit),
             },
           };
         }),
@@ -14837,10 +14851,9 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
       const stream = parsed.stream || false;
       const temperature = parsed.temperature || 0.7;
       const toolChoice = parsed.tool_choice;
-      // Phase C: shared sanitizer — validates array + caps at MAX_TOOLS_LIMIT
-      // (was inline TOOLS_CAP_FIX: small models return EMPTY response when
-      // handed ~70 tools, e.g. "Tools provided: 71, Estimated input tokens:
-      // 50471"). EVERY /v1/chat/completions branch is protected.
+      // Shared sanitizer validates the array; lib/tool-budget.js caps it
+      // later in callModel/callModelStream. Every /v1/chat/completions
+      // branch is protected.
       // tools:"mcp" → server builds the tool list from MCP_TOOLS, so the
       // admin Agent Chat (and any simple client) gets REAL tool access
       // (web_search, read_file, ...) instead of plain chat-only.
@@ -15710,11 +15723,6 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
         const agentModel = usableAgentModel(agent);
         const agentProviderInfo = resolveProvider(agentModel, true);
         const agentProviderId = agentProviderInfo?.providerId || "";
-        const agentCaps = providerRegistry.capabilitiesFor(
-          agentProviderInfo?.config,
-          agentProviderId,
-          agentModel,
-        );
         const promptBudget =
           Number(agentProviderInfo?.config?.maxPromptChars) || 0;
 
@@ -15752,9 +15760,8 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
           }
         }
 
-        // Tool catalog size is a provider capability: bridge/Ollama declare
-        // 5, cloud adapters default to 15. No hostname or provider-id check.
-        const streamToolLimit = Math.min(25, agentCaps.maxTools);
+        // Build the catalog; callModelStream applies the single tool budget
+        // once the provider is resolved (count + bytes + prefill).
         let toolsForStream =
           tools ||
           Object.entries(MCP_TOOLS).map(([name, def]) => ({
@@ -15769,9 +15776,6 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
               },
             },
           }));
-        // Cap AFTER build. The cap came from capability metadata, so a
-        // provider never gets a tool catalog it did not declare.
-        toolsForStream = toolsForStream.slice(0, streamToolLimit);
 
         // EMPTY RESPONSE RETRY: If model returns empty, retry once without tools
         let retryWithoutTools = false;
@@ -17531,6 +17535,25 @@ h2cServer.on("error", (err) => {
 //  START
 // ══════════════════════════════════════════════════════════════
 async function init() {
+  // Tool budget is configuration, not a suggestion: invalid limits or more
+  // pinned tools than the ceiling stop the gateway before it serves.
+  const budgetConfig = toolBudget.validateConfig();
+  if (!budgetConfig.ok) {
+    log("FATAL", "CONFIG_FATAL", {
+      component: "tool_budget",
+      errors: budgetConfig.errors,
+    });
+    process.exit(78);
+  }
+  log("INFO", "TOOL_BUDGET_CONFIG", {
+    max: budgetConfig.config.max,
+    pinned: budgetConfig.config.pinned,
+    strategy: budgetConfig.config.strategy,
+    max_bytes: budgetConfig.config.maxBytes,
+    max_prefill_ms: budgetConfig.config.maxPrefillMs,
+    tokens_per_sec: budgetConfig.config.tokensPerSec,
+  });
+
   const proxyState = proxyListState();
   if (proxyState.invalid.length) {
     log("WARN", "PROXY_LIST_INVALID", { invalid: proxyState.invalid });

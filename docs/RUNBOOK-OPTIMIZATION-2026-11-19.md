@@ -78,7 +78,7 @@ OPENCODE_ENABLED=false
 
 ### 2.1 P0 — এখনই ভাঙছে
 
-#### P0-01 — Tool budget পাঁচ জায়গায়, একটাও authoritative নয়
+#### P0-01 — Tool budget পাঁচ জায়গায়, একটাও authoritative নয় — ✅ SOLVED (2026-11-20)
 
 **Evidence**
 
@@ -93,6 +93,10 @@ OPENCODE_ENABLED=false
 **Impact:** 155টি MCP tool → 25-এ কাটা; `tts__tts_speak` index 37; 25 schema ≈ 11,428 bytes ≈ 2,857 tokens; ~30 tok/s-এ ~95s, bridge-এর effective timeout 60s → `TOOL_LOOP_NO_TOOL_CALLS` (`logs/2026-11-19.log:4455`)।
 
 **Fix:** Phase 5 — `lib/tool-budget.js` একটাই resolver; সব caller সেখান থেকে limit নেবে।
+
+**Fix (2026-11-20):** `lib/tool-budget.js` owns the global count (`MCP_TOOL_BUDGET_MAX=24`), pin (`MCP_TOOL_BUDGET_PIN=tts__tts_speak,ocr__ocr_image`), bytes (`MCP_TOOL_BUDGET_MAX_BYTES=12000`) and prefill budget (`estPrefillMs ≤ min(timeout/2, 45000)`, 30 tok/s). `api.js` applies it once in `callModel`/`callModelStream` (two call sites), the bridge declares `PROVIDER_BRIDGE_MAX_TOOLS=5` through `bridgeMaxTools()`, `provider/capabilities.js` has `maxTools: Infinity`, and `provider/tools.js prepare()` enforces the effective max with `capTools()`. `MAX_TOOLS_LIMIT` and every inline slice are gone; `/api/agents` reports `limitFor()`/`rankNames()`. Boot validates the config and exits `CONFIG_FATAL` (78) on invalid values.
+
+**Proof:** `node tests/tool-budget-check.js` → `TOOL_BUDGET_OK` (36 checks: single resolver, 155→24, bridge 5, pinned tts survives, bytes/prefill bounds, prepare cap, grep gate).
 
 #### P0-02 — DB missing হলে server বেঁচে থাকে — ✅ SOLVED (2026-11-20)
 
@@ -198,8 +202,8 @@ exit=0
 |---|---|---|---|
 | P1-01 | Bridge timeout upstream-এর চেয়ে কম | `provider/transport.js:26`, `.env:212` | Phase 5/7 |
 | P1-02 | `request_log`-এ routing প্রমাণ নেই | `PRAGMA table_info(request_log)` | Phase 7 |
-| P1-03 | Tool selection insertion order | `api.js:4946-4951`, `9413`, `10113` | Phase 5 |
-| P1-04 | `prepare()` cap enforce করে না | `provider/tools.js:122-125` | Phase 5 |
+| P1-03 | Tool selection insertion order | `api.js:4946-4951`, `9413`, `10113` | Phase 5 — ✅ SOLVED (2026-11-20): intent rank + deterministic tie-break |
+| P1-04 | `prepare()` cap enforce করে না | `provider/tools.js:122-125` | Phase 5 — ✅ SOLVED (2026-11-20): `capTools()` |
 | P1-05 | Bridge default port দুই জায়গায় | `api.js:1159` (`11435`) vs `local-llm-bridge.js:136` (`11437`) | Phase 3 |
 | P1-06 | Capability query fail-open | `provider/index.js:79/88/95`, `provider/tools.js:106-113` | Phase 6 — ✅ SOLVED (2026-11-20): deny + `CAPABILITY_UNKNOWN` |
 | P1-07 | R2T module না পেলে silent builtin fallback | `api.js:19574-19581` (`builtin-fallback`) | Phase 7 |
