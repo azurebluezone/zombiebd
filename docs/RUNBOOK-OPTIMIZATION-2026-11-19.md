@@ -151,19 +151,34 @@ OPENCODE_ENABLED=false
 - `api.js:12996-13005` — 60s পর probe ছাড়াই `healthy=true`
 - `api.js:13227-13234` — `last_error = COALESCE(excluded.last_error, last_error)`
 
-#### P0-09 — চলমান gateway `dist/start.js`, root `api.js` নয়
+#### P0-09 — চলমান gateway `dist/start.js`, root `api.js` নয় — ✅ SOLVED (2026-11-20)
 
-**Evidence (live, 2026-11-19 23:52–00:05)**
+**Evidence (live, 2026-11-19 23:52–00:05 — আগের অবস্থা)**
 
 - `ps -p 827 -o cmd` → `/home/sahon/zombiebd/dist/start.js --start-all -s`
 - `readlink /proc/827/cwd` → `/home/sahon/zombiebd/dist`
 - `systemctl --user cat zombiecoder-gateway.service` → `WorkingDirectory=/home/sahon/zombiebd/dist`, `ExecStart=/home/sahon/zombiebd/scripts/zombiecoder-gateway.sh`
 - `git check-ignore -v dist/start.js` → `.gitignore:46:dist/`
-- `sha256sum api.js dist/api.js` → দুইটাই `4608054f…`; `start.js`/`dist/start.js` → দুইটাই `764b7222…` — এখন কোনো drift নেই, dist বিল্ড হয়েছে root থেকে (root mtime 10:05, dist 10:38)
+- `sha256sum api.js dist/api.js` → দুইটাই `4608054f…`; `start.js`/`dist/start.js` → দুইটাই `764b7222…` — তখন কোনো drift নেই, dist বিল্ড হয়েছে root থেকে (root mtime 10:05, dist 10:38)
 
 **Impact:** root-এ ভবিষ্যতে করা fix `dist/` rebuild + service restart ছাড়া চলমান pid 827-এ পৌঁছাবে না। `dist/` gitignored, তাই release artifact-এর provenance আলাদা রাখতে হবে; “কোড বদলেছি” মানেই “লাইভে গেছে” নয়।
 
-**Fix:** Phase 0 build contract: `DIST_RUN=0` default; service `ExecStart=<node> $APP_ROOT/start.js`; `dist/` শুধু release artifact; restart-এ `git rev-parse` + `dist` sha256 লগ। সব acceptance check live process-এর বিরুদ্ধে, শুধু ফাইল পড়ে নয়।
+**Fix (implemented 2026-11-20):** root `start.js` এখন একমাত্র entry — `--start-all` প্রতি রানে `scripts/build.js` চালায়, তারপর `$ZC_DIST_DIR/api.js` require করে। `dist/start.js` আর কপি হয় না; কেউ চালালে exit `78`। Build operator state (`data`, `logs`, `cache`, `locks`, `.zombiecoder`, `.missionbarisal`, `.env`) কপি না করে symlink করে, আর live-runtime guard `dist/.runtime.json`-ও পড়ে। Service unit-এ `WorkingDirectory=/home/sahon/zombiebd`; wrapper root `start.js` চালায়।
+
+**Proof (2026-11-20, live):**
+
+```text
+$ bash scripts/verify-start-dist.sh ; echo exit=$?
+LIVE_SERVICE_OK pid=88009 working_directory=/home/sahon/zombiebd
+START_DIST_OK dist=/tmp/zbd-start-dist.xOLA0w/dist api_sha256=640b31ea44537d07cafcfe406e3ca28f8a46a806598493015a490a7ed19d97fd builtAt=2026-11-19T22:08:31.945Z health=200
+exit=0
+```
+
+- `MainPID=88009` → `/home/sahon/.local/node-v24/bin/node /home/sahon/zombiebd/start.js --start-all -s`, cwd `/home/sahon/zombiebd`
+- `ls dist/start.js` → `No such file or directory`
+- `sha256sum api.js dist/api.js` → দুইটাই `640b31ea…`; `manifest.json`-এ api.js sha256 একই
+- `curl -s 127.0.0.1:5050/health` → HTTP 200
+- contract `gc-mwo3iygr` PASS (marker `START_DIST_OK`)
 
 ### 2.2 P1 — correctness/observability
 

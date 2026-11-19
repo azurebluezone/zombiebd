@@ -64,11 +64,13 @@ StartLimitIntervalSec=300
 
 [Service]
 Type=simple
-WorkingDirectory=$ROOT/dist
-# The wrapper pre-flights (node version, .env, ports), loads .env, clears
-# stale UDS sockets, then exec's node outside the capability sandbox. Running
-# node directly under this unit aborted with status=218/CAPABILITIES because
-# the server's own sandboxing and systemd's collided.
+WorkingDirectory=$ROOT
+# The wrapper pre-flights (node version, .env, ports), loads .env, links
+# operator state, then execs the ROOT start.js outside the capability
+# sandbox. start.js rebuilds dist/ on every run and serves api.js from it, so
+# there is exactly one entry point and a stale dist cannot survive a restart.
+# Running node directly under this unit aborted with status=218/CAPABILITIES
+# because the server's own sandboxing and systemd's collided.
 ExecStart=$ROOT/scripts/zombiecoder-gateway.sh
 
 # Restart policy: 2s grace, then retry; give up after 10 failures in 5 minutes.

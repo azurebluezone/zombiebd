@@ -3,8 +3,12 @@
 
 /**
  * scripts/build.js - build a self-contained dist/ from the source tree.
- * Uses only Node 24 built-ins. Copies files, renders env-derived Caddyfile,
- * writes manifest.json + VERSION, never symlinks source files.
+ * Uses only Node 24 built-ins. Copies code, links runtime state, renders the
+ * env-derived Caddyfile, writes manifest.json + VERSION.
+ *
+ * Code is copied (a build is reproducible); operator state is linked
+ * (data/, logs/, cache/, locks/, .zombiecoder/, .missionbarisal/ and .env)
+ * so rebuilding dist never erases the live database or logs.
  */
 
 const fs = require("fs");
@@ -54,7 +58,33 @@ function liveRuntimePids() {
   }
 }
 
-const live = liveRuntimePids();
+// A runtime launched by the repo-root start.js has argv `start.js`, not
+// `dist/start.js`, so the ps scan above cannot see it. start.js writes this
+// marker before it requires dist/api.js; the marker is removed on exit.
+function liveRuntimeFromMarker() {
+  if (process.platform === "win32") return [];
+  try {
+    const markerPath = path.join(DIST, ".runtime.json");
+    const marker = JSON.parse(fs.readFileSync(markerPath, "utf8"));
+    if (path.resolve(String(marker.dist || "")) !== DIST) return [];
+    const pid = Number(marker.pid);
+    if (!Number.isFinite(pid) || pid <= 0) return [];
+    try { process.kill(pid, 0); } catch (_) { return []; }
+    try {
+      const stat = fs.readFileSync("/proc/" + pid + "/stat", "utf8");
+      if (stat.split(" ")[2] === "Z") return [];
+      const cmd = fs.readFileSync("/proc/" + pid + "/cmdline", "utf8").replace(/\0/g, " ");
+      if (!/start\.js|api\.js/.test(cmd)) return [];
+    } catch (_) {
+      return [];
+    }
+    return [pid];
+  } catch (_) {
+    return [];
+  }
+}
+
+const live = Array.from(new Set([...liveRuntimePids(), ...liveRuntimeFromMarker()]));
 if (live.length) {
   console.error(
     "BUILD_REFUSED dist is the live runtime (pid=" + live.join(",") +
@@ -87,10 +117,12 @@ const COPY_DIRS = [
   "tests",
 ];
 
+// start.js is the launcher and stays at the repo root. It is deliberately not
+// copied: a built tree must be started by that launcher, which rebuilds dist
+// every run, so a stale dist can never become a second entry point.
 const COPY_FILES = [
   "api.js",
   "admin-api.js",
-  "start.js",
   "start-local-mcp.js",
   "cdp-pipe.js",
   "domain-config.js",
@@ -100,8 +132,53 @@ const COPY_FILES = [
   "mcp-stdio-client.js",
   "note-store.js",
   "local-llm-bridge.js",
+  "identity.json",
+  "PERSONAS.md",
   "README.md",
 ];
+
+// Operator state, not build output. One copy lives in the checkout and dist
+// links to it, so a rebuild is disposable while models.db and logs survive.
+const RUNTIME_LINKS = [
+  "data",
+  "logs",
+  "cache",
+  "locks",
+  ".zombiecoder",
+  ".missionbarisal",
+];
+
+function linkRuntimeState() {
+  for (const name of RUNTIME_LINKS) {
+    const src = path.join(ROOT, name);
+    const dest = path.join(DIST, name);
+    try { fs.mkdirSync(src, { recursive: true }); } catch (_) { }
+    try {
+      fs.symlinkSync(src, dest, process.platform === "win32" ? "junction" : "dir");
+    } catch (e) {
+      console.warn("BUILD_WARN runtime link failed name=" + name + " error=" + e.message);
+      try {
+        fs.cpSync(src, dest, { recursive: true });
+      } catch (e2) {
+        console.warn("BUILD_WARN runtime copy failed name=" + name + " error=" + e2.message);
+      }
+    }
+  }
+}
+
+function linkEnvFile() {
+  const src = path.join(ROOT, ".env");
+  const dest = path.join(DIST, ".env");
+  if (!fs.existsSync(src)) return;
+  try {
+    fs.symlinkSync(src, dest, "file");
+  } catch (e) {
+    console.warn("BUILD_WARN .env link failed error=" + e.message);
+    try { fs.copyFileSync(src, dest); } catch (e2) {
+      console.warn("BUILD_WARN .env copy failed error=" + e2.message);
+    }
+  }
+}
 
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
@@ -150,11 +227,13 @@ function main() {
     if (fs.existsSync(src)) copyFile(src, path.join(DIST, file));
   }
 
-  // The dist carries both the real keys (.env) and the template
-  // (.env.example). Missing one must not drop the other.
-  for (const file of [".env", ".env.example"]) {
-    const src = path.join(ROOT, file);
-    if (fs.existsSync(src)) copyFile(src, path.join(DIST, file));
+  // Operator state stays in the checkout and is linked into dist/. The env
+  // file is linked too, so editing .env never needs a rebuild.
+  linkRuntimeState();
+  linkEnvFile();
+  const envExample = path.join(ROOT, ".env.example");
+  if (fs.existsSync(envExample)) {
+    copyFile(envExample, path.join(DIST, ".env.example"));
   }
 
   // Render env-driven Caddyfile

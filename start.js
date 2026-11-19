@@ -14,7 +14,7 @@ const path = require("path");
 const readline = require("readline");
 const http = require("http");
 const net = require("net");
-const { execSync, spawn } = require("child_process");
+const { execSync, spawn, spawnSync } = require("child_process");
 const systemInfo = require("./lib/system-info.js");
 const { readEnvFile } = require("./lib/env");
 const { classifyDbError, isBusyError } = require("./lib/db-guard");
@@ -22,6 +22,22 @@ const { classifyDbError, isBusyError } = require("./lib/db-guard");
 const VERSION = "3.2.1"; // keep in sync with api.js /health version
 const CONFIG_DIR = path.join(os.homedir(), ".zombiecoder");
 const CONFIG_PATH = path.join(CONFIG_DIR, "config.json");
+
+// The root start.js is the ONLY entry point: it rebuilds this directory and
+// then requires api.js from it. ZC_DIST_DIR exists so verification can build
+// and boot an isolated tree without touching the live dist/.
+const DIST_DIR = path.resolve(__dirname, process.env.ZC_DIST_DIR || "dist");
+const DIST_ENTRY = path.join(DIST_DIR, "api.js");
+
+// A copied dist/start.js is an obsolete second entry: it cannot rebuild the
+// tree it is currently executing from. Refuse instead of running stale code.
+if (path.basename(__dirname) === "dist") {
+  console.error(
+    "DIST_ENTRY_REFUSED — start.js is the builder+launcher and lives at the repo root.\n" +
+    "Run: node " + path.join(__dirname, "..", "start.js") + " --start-all -s",
+  );
+  process.exit(78);
+}
 
 // Project-owned state follows the code, never the shell's cwd. DATA_DIR and
 // DB_SQLITE_PATH may be absolute (tests, dist) and then win as usual.
@@ -33,6 +49,70 @@ function projectDbPath() {
     __dirname,
     process.env.DB_SQLITE_PATH || path.join(projectDataDir(), "models.db"),
   );
+}
+
+// ─── Build (every start) ─────────────────────────────────────
+// The build is not a separate manual step. scripts/build.js owns the copy
+// rules; this function owns the "always rebuild before boot" contract and
+// fails the boot if the build did not produce a manifest.
+function buildDist() {
+  const script = path.join(__dirname, "scripts", "build.js");
+  if (!fs.existsSync(script)) {
+    console.error("[BUILD] FATAL missing " + script);
+    process.exit(1);
+  }
+  console.log("[BUILD] rebuilding dist from source ...");
+  console.log("[BUILD] source=" + __dirname + " out=" + DIST_DIR);
+  const res = spawnSync(process.execPath, [script], {
+    cwd: __dirname,
+    env: Object.assign({}, process.env, { BUILD_OUT: DIST_DIR }),
+    stdio: "inherit",
+  });
+  if (res.error) {
+    console.error("[BUILD] FATAL " + res.error.message);
+    process.exit(1);
+  }
+  if (res.status !== 0) {
+    console.error("[BUILD] FATAL status=" + res.status);
+    process.exit(res.status || 1);
+  }
+  const manifestPath = path.join(DIST_DIR, "manifest.json");
+  if (!fs.existsSync(manifestPath)) {
+    console.error("[BUILD] FATAL manifest missing: " + manifestPath);
+    process.exit(1);
+  }
+  let manifest = {};
+  try { manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")); } catch (_) { }
+  console.log(
+    "[BUILD] BUILD_OK dist=" + DIST_DIR +
+    " builtAt=" + (manifest.builtAt || "unknown") +
+    " files=" + (Array.isArray(manifest.files) ? manifest.files.length : "?"),
+  );
+  return manifest;
+}
+
+// The build guard cannot see a runtime whose argv is the root start.js, so
+// the launcher records its PID inside dist. Removed on exit; a dead PID is
+// ignored by scripts/build.js.
+function writeRuntimeMarker() {
+  const marker = path.join(DIST_DIR, ".runtime.json");
+  try {
+    fs.writeFileSync(
+      marker,
+      JSON.stringify({
+        pid: process.pid,
+        dist: DIST_DIR,
+        entry: __filename,
+        startedAt: new Date().toISOString(),
+      }) + "\n",
+      "utf8",
+    );
+    process.on("exit", () => {
+      try { fs.unlinkSync(marker); } catch (_) { }
+    });
+  } catch (e) {
+    console.warn("[RUNTIME] marker warning: " + e.message);
+  }
 }
 
 // ─── Health-check / integration test endpoints ───
@@ -752,7 +832,7 @@ async function startBridge() {
     return { started: false, port, healthy: false, error: "port_occupied" };
   }
 
-  const script = path.join(__dirname, "local-llm-bridge.js");
+  const script = path.join(DIST_DIR, "local-llm-bridge.js");
   if (!fs.existsSync(script)) {
     console.warn("[BRIDGE] script missing: " + script);
     return { started: false, port, healthy: false, error: "script_missing" };
@@ -760,7 +840,7 @@ async function startBridge() {
 
   console.log("[BRIDGE] starting " + script + " on localhost:" + port + " ...");
   bridgeChild = spawn(process.execPath, [script], {
-    cwd: __dirname,
+    cwd: DIST_DIR,
     env: process.env,
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -942,12 +1022,20 @@ async function startAll() {
   console.log("[START ALL] Cleaning up old server processes ...");
   cleanupOldProcesses();
 
+  // 6a. Rebuild dist from source on EVERY start. scripts/build.js refuses to
+  // replace a live dist, so the cleanup above must stop the old gateway first.
+  buildDist();
+
   // 6b. Local LLM bridge — idempotent. A bridge already on the port is
   // reused, never killed; a foreign listener is reported and left alone.
-  try {
-    await startBridge();
-  } catch (err) {
-    console.warn("[BRIDGE] startup warning:", err.message);
+  if (process.env.BRIDGE_AUTORUN === "0") {
+    console.log("[BRIDGE] disabled by BRIDGE_AUTORUN=0");
+  } else {
+    try {
+      await startBridge();
+    } catch (err) {
+      console.warn("[BRIDGE] startup warning:", err.message);
+    }
   }
   
   // 7. Boot the server
@@ -955,7 +1043,7 @@ async function startAll() {
   
   // 8. Start local MCP servers (OCR, Screen Recorder, TTS)
   try {
-    const { startLocalServers } = require("./start-local-mcp.js");
+    const { startLocalServers } = require(path.join(DIST_DIR, "start-local-mcp.js"));
     const mcpResults = await startLocalServers();
     const readyCount = mcpResults.filter(r => r.status === "ready").length;
     if (mcpResults.length > 0) {
@@ -991,8 +1079,10 @@ async function startAll() {
     }
   }, 4000); // Wait for server to fully boot
   
-  // Start the actual server (this blocks)
-  require("./api.js");
+  // Start the actual server from the freshly built tree (this blocks).
+  writeRuntimeMarker();
+  console.log("[RUNTIME] serving from dist: " + DIST_ENTRY);
+  require(DIST_ENTRY);
 }
 
 // ---------------------------------------------------------------------------
@@ -1007,7 +1097,7 @@ function showMenu() {
   console.log("  1) CONFIG ALL — write config to the OS default directory");
   console.log("                  Windows: %USERPROFILE%\\.zombiecoder\\");
   console.log("                  Linux  : $HOME/.zombiecoder/");
-  console.log("  2) START ALL  — load .env + config, then boot the server");
+  console.log("  2) START ALL  — rebuild dist/ from source, then boot from dist/");
   console.log("                  (includes env detection, DB verify, health checks)");
   console.log("  0) Exit");
   console.log("");
@@ -1033,13 +1123,18 @@ if (args.includes("--help") || args.includes("-h")) {
   console.log("Usage:");
   console.log("  node start.js                  interactive menu (CONFIG ALL / START ALL)");
   console.log("  node start.js --config-all -c  run CONFIG ALL (write config.json)");
-  console.log("  node start.js --start-all -s   run START ALL (full bootstrap + health checks)");
+  console.log("  node start.js --build-only     rebuild dist/ from source, then exit");
+  console.log("  node start.js --start-all -s   rebuild dist/ + boot the server from dist/");
   console.log("  node start.js --health-only    run health checks against existing server");
   process.exit(0);
 }
 
 if (args.includes("--config-all") || args.includes("-c")) {
   process.exitCode = configAll();
+} else if (args.includes("--build-only")) {
+  loadEnv();
+  buildDist();
+  process.exit(0);
 } else if (args.includes("--start-all") || args.includes("-s")) {
   startAll();
 } else if (args.includes("--health-only")) {

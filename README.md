@@ -51,11 +51,12 @@ bash scripts/install.sh
 5. Installs Caddy when missing, renders `/etc/caddy/Caddyfile` from the env
    contract, validates it, and reloads the service.
 6. Trusts the Caddy local root CA when `TLS_MODE=internal`.
-7. Builds `dist/` and starts the gateway **from `dist/`**, using
-   `~/.local/node-v24/bin/node`. The launcher links `data/`, `logs/`,
-   `cache/`, `.zombiecoder/`, `.missionbarisal/` and `.env` from the checkout
-   into `dist/`, so a rebuild never erases runtime state. The gateway creates
-   and seeds the SQLite database on first boot.
+7. Starts the repo-root `start.js`, which rebuilds `dist/` from source on
+   every run and then boots the gateway **from that `dist/`**, using
+   `~/.local/node-v24/bin/node`. The build links `data/`, `logs/`, `cache/`,
+   `.zombiecoder/`, `.missionbarisal/` and `.env` from the checkout into
+   `dist/`, so a rebuild never erases runtime state. The gateway creates and
+   seeds the SQLite database on first boot.
 8. Loads providers from `.env`; `lib/env.js` is the only place that knows
    hostnames, ports and provider URLs.
 9. Runs the live verifier against `APP_URL` and prints the final sentinel.
@@ -75,14 +76,16 @@ Manual path, if you already manage the services yourself:
 ```bash
 cp .env.example .env                            # then edit the values you need
 NODE="$HOME/.local/node-v24/bin/node"
-"$NODE" scripts/build.js                        # produce the dist/ runtime
-systemctl --user restart zombiecoder-gateway.service   # boot dist/start.js
+"$NODE" start.js --build-only                   # build dist/ without booting
+"$NODE" start.js --start-all -s                 # rebuild + boot from dist/
+systemctl --user restart zombiecoder-gateway.service   # same root launcher via systemd
 bash scripts/install-verify.sh
 ```
 
-The service unit does not run the source tree. `scripts/zombiecoder-gateway.sh`
-refuses to boot without `dist/start.js`, so a stale or missing build is a
-start-up error instead of a silently different runtime.
+The service unit runs the repo-root `start.js`, never the source tree and never
+a copied `dist/start.js`. Every `--start-all` rebuilds `dist/` before booting,
+so a restart cannot serve stale code. `dist/start.js` is not produced; a
+leftover copy exits with code 78.
 
 ---
 

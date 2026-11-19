@@ -59,7 +59,8 @@ log "--- gateway starting ---"
 [ -d "$APP_DIR" ]   || { log "FATAL: $APP_DIR missing"; exit 1; }
 [ -f "$ENV_FILE" ]  || { log "FATAL: $ENV_FILE missing — copy .env.example"; exit 1; }
 [ -x "${NODE_BIN:-}" ] || { log "FATAL: no project Node 24 runtime (expected \$HOME/.local/node-v24 or runtime/node)"; exit 1; }
-[ -f "$RUNTIME_DIR/start.js" ] || { log "FATAL: $RUNTIME_DIR/start.js missing — build it first: $NODE_BIN $APP_DIR/scripts/build.js"; exit 1; }
+[ -f "$APP_DIR/start.js" ] || { log "FATAL: $APP_DIR/start.js missing"; exit 1; }
+[ -f "$APP_DIR/scripts/build.js" ] || { log "FATAL: $APP_DIR/scripts/build.js missing"; exit 1; }
 
 NODE_MAJOR="$("$NODE_BIN" -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
 if [ "$NODE_MAJOR" -lt 24 ]; then
@@ -101,6 +102,7 @@ done < "$ENV_FILE"
 # opens an empty database. Move any such runtime state into the checkout once,
 # then replace the directory with a link so the next boot cannot re-split it.
 # skills/ is build output, not operator state; it stays inside dist/.
+mkdir -p "$RUNTIME_DIR" 2>/dev/null || true
 for d in data logs cache locks .zombiecoder .missionbarisal; do
   src="$APP_DIR/$d"
   dst="$RUNTIME_DIR/$d"
@@ -144,11 +146,7 @@ done
 # an edit-and-restart.
 ln -sfn "$ENV_FILE" "$RUNTIME_DIR/.env"
 
-cd "$RUNTIME_DIR" || { log "FATAL: cd $RUNTIME_DIR failed"; exit 1; }
-
-if [ "$APP_DIR/api.js" -nt "$RUNTIME_DIR/api.js" ]; then
-  log "WARN dist/ is older than api.js — rebuild before trusting this boot"
-fi
+cd "$APP_DIR" || { log "FATAL: cd $APP_DIR failed"; exit 1; }
 
 # ── Stale sockets ───────────────────────────────────────────────────────────
 # transport/uds-gateway.js owns socket cleanup: it probes each `UDS` candidate,
@@ -158,6 +156,6 @@ fi
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 # exec so systemd tracks this PID directly and restarts it on exit.
-log "node $("$NODE_BIN" -v) · runtime $RUNTIME_DIR"
-log "starting: node dist/start.js --start-all -s"
-exec "$NODE_BIN" "$RUNTIME_DIR/start.js" --start-all -s
+log "node $("$NODE_BIN" -v) · launcher $APP_DIR/start.js"
+log "starting: node start.js --start-all -s (rebuilds $RUNTIME_DIR first)"
+exec "$NODE_BIN" "$APP_DIR/start.js" --start-all -s
