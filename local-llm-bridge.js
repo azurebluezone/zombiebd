@@ -102,30 +102,11 @@ function findLlamaServer() {
   }
 }
 
-// Local servers the user may already be running. Probing is cheap and
-// bounded; a missing server is a non-event, not a boot failure.
-// The project's own gateway (PORT, default 5050) and edge proxy (80/443) are
-// deliberately absent: the bridge is an upstream OF the gateway, so probing
-// 5050 feeds the gateway's agent ids back into its own provider catalog (a
-// routing loop). Self-references are dropped below as well.
-const DEFAULT_PROBE_PORTS = [11434, 9932, 8080, 9999, 3000, 1234, 5252, 8000];
-
-// "name=url,url" — one entry per upstream. The name is only for logs and
-// owned_by; routing is by the model ids each upstream reports.
-function parseUpstreamList(value) {
-  return String(value || "")
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean)
-    .map((item) => {
-      const eq = item.indexOf("=");
-      if (eq > 0) {
-        return { name: item.slice(0, eq).trim(), baseUrl: item.slice(eq + 1).trim() };
-      }
-      return { name: "", baseUrl: item };
-    })
-    .filter((u) => /^https?:\/\//i.test(u.baseUrl));
-}
+// Upstreams are explicit only. There is no hidden port scan: the bridge
+// probes BRIDGE_UPSTREAMS, the legacy BRIDGE_OLLAMA_URL and (for
+// BRIDGE_BACKEND=llama) the llama-server it spawns itself. Anything else on
+// the machine is the operator's business, not a background discovery target.
+const { buildCandidates, parseUpstreamList } = require("./lib/bridge-upstreams");
 
 const CFG = {
   // "auto" is the default: every reachable OpenAI-compatible local server is
@@ -151,7 +132,6 @@ const CFG = {
   // upstream. Ollama, llama.cpp, LM Studio and vLLM can answer together.
   configuredUrl: String(process.env.BRIDGE_OLLAMA_URL || "").trim(),
   probeTimeoutMs: parseInt(process.env.BRIDGE_PROBE_TIMEOUT_MS || "1200", 10),
-  probeDefaults: process.env.BRIDGE_PROBE_DEFAULTS !== "0",
   refreshMs: Math.max(3000, parseInt(process.env.BRIDGE_REFRESH_MS || "15000", 10)),
   ctx: parseInt(process.env.BRIDGE_CTX || "512", 10),
   // TIMEOUT_FIX: this key was missing while upstreamChat()/chatStream()
@@ -199,46 +179,34 @@ const DISCOVERY = {
   at: 0,
   error: "",
   signature: "",
+  selfReferences: [],
+  selfSignature: "",
   inflight: null,
 };
 
-function baseOf(url) {
-  return String(url || "").replace(/\/+$/, "");
-}
-
-// Candidate list = explicit env entries, the legacy single URL, an optional
-// spawned llama-server, then the conventional local ports. Self-references
-// are dropped so the bridge can never proxy itself into a loop.
+// Candidate list = explicit env entries, the legacy single URL, and an
+// optional spawned llama-server. Self-references are rejected and reported;
+// they are never probed.
 function candidateUpstreams() {
-  const out = [];
-  const seen = new Set();
-  const add = (name, rawUrl) => {
-    const base = baseOf(rawUrl);
-    if (!/^https?:\/\//i.test(base)) return;
-    try {
-      const u = new URL(base);
-      const loopback = u.hostname === "localhost" || u.hostname === "localhost";
-      if (loopback && SELF_PORTS.has(Number(u.port || 80))) return;
-    } catch (_) {
-      return;
-    }
-    if (seen.has(base)) return;
-    seen.add(base);
-    out.push({ name: name || base, baseUrl: base });
-  };
-
-  for (const u of CFG.explicitUpstreams) add(u.name || "explicit", u.baseUrl);
-  if (CFG.configuredUrl) add("configured", CFG.configuredUrl);
-  if (CFG.backend === "llama") add("llama-server", "http://localhost:" + CFG.internalPort);
-  // BRIDGE_PROBE_DEFAULTS=0 pins discovery to explicit upstreams only; tests
-  // use it to prove the absent-server path on a machine that happens to have
-  // a local model server running.
-  if (CFG.probeDefaults) {
-    for (const port of DEFAULT_PROBE_PORTS) {
-      add("local-" + port, "http://localhost:" + port);
+  const built = buildCandidates({
+    explicitUpstreams: CFG.explicitUpstreams,
+    configuredUrl: CFG.configuredUrl,
+    backend: CFG.backend,
+    internalPort: CFG.internalPort,
+    selfPorts: SELF_PORTS,
+  });
+  const selfSignature = JSON.stringify(built.selfReferences);
+  if (selfSignature !== DISCOVERY.selfSignature) {
+    DISCOVERY.selfSignature = selfSignature;
+    if (built.selfReferences.length) {
+      log("WARN", "BRIDGE_SELF_REFERENCE", {
+        upstreams: built.selfReferences,
+        self_ports: [...SELF_PORTS],
+      });
     }
   }
-  return out;
+  DISCOVERY.selfReferences = built.selfReferences;
+  return built.candidates;
 }
 
 async function discoverUpstreams() {
@@ -1079,6 +1047,9 @@ async function handler(req, res) {
           base: u.baseUrl,
           models: u.models,
         })),
+        // Visible, not silent: an operator who points the bridge at its own
+        // gateway sees exactly which upstream was rejected and why.
+        self_references: DISCOVERY.selfReferences,
         discovered_at: DISCOVERY.at || null,
         transports: { unix_socket: CFG.socket, tcp: "localhost:" + CFG.port },
       })

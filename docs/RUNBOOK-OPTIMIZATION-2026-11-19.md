@@ -141,13 +141,17 @@ OPENCODE_ENABLED=false
 
 **Proof:** `node tests/path-resolver-check.js` → `PATH_RESOLVER_OK` (49 checks: exports and callers, no production `os.homedir()`, default and override maps, `~` expansion, `PATH_ESCAPE`, `loadEnv().paths`, MCP defaults). Regression: `node tests/env-loader-check.js` → `ENV_LOADER_OK`, `node tests/bridge-timeout-check.js` → `BRIDGE_TIMEOUT_OK`, `node tests/tool-budget-check.js` → `TOOL_BUDGET_OK`, `node scripts/check-env.js` → `ENV_OK services=17`; `local-tool-cap.test.js` A6 PASS with only the pre-existing A1/D15 failures.
 
-#### P0-05 — Hidden loopback scan + ভাঙা self-reference check
+#### P0-05 — Hidden loopback scan + ভাঙা self-reference check — ✅ SOLVED (2026-11-20)
 
 - `local-llm-bridge.js:107` — `DEFAULT_PROBE_PORTS = [11434, 9932, 8080, 9999, 3000, 1234, 5252, 8000]`
 - `local-llm-bridge.js:226` — `BRIDGE_PROBE_DEFAULTS` truthy হলে scan
 - `.env:148` — `BRIDGE_PROBE_DEFAULTS=1`
 - `local-llm-bridge.js:209` — `u.hostname === "localhost" || u.hostname === "localhost"` — `127.0.0.1` miss
 - `lib/env.js:80` — `["localhost","::1","localhost"]`
+
+**Fix (2026-11-20):** `lib/net.js` is the one loopback definition (`localhost`, `127.0.0.1`, `::1`, `[::1]`, expanded IPv6) with `isLoopbackHost()`, `isSelfReference()` and `upstreamKey()`; `lib/env.js` consumes it instead of keeping a second set. `lib/bridge-upstreams.js` builds candidates only from `BRIDGE_UPSTREAMS`, the configured `BRIDGE_OLLAMA_URL` and an explicit `BRIDGE_BACKEND=llama` server; `DEFAULT_PROBE_PORTS` and the `BRIDGE_PROBE_DEFAULTS` scan are deleted. A loopback URL on the bridge/gateway port is rejected before any request and reported as `BRIDGE_SELF_REFERENCE` in the log and `/health.self_references`; loopback aliases on the same port/path dedupe to one upstream. `.env.example` no longer advertises the probe flag and shows the explicit Ollama upstream.
+
+**Proof:** `node tests/bridge-discovery-check.js` → `BRIDGE_DISCOVERY_OK` (7 checks: loopback spellings, env single source, self-reference for 127.0.0.1/localhost/[::1], alias dedupe, explicit-only candidates, source/config grep, and a real bridge with `BRIDGE_PROBE_DEFAULTS=1` + no config reporting `upstreams=[]`). Regression: `node tests/env-loader-check.js` → `ENV_LOADER_OK`, `node tests/bridge-timeout-check.js` → `BRIDGE_TIMEOUT_OK`, `node tests/path-resolver-check.js` → `PATH_RESOLVER_OK`, `node tests/agent-provider-ssot-check.js` → `AGENT_PROVIDER_SSOT_OK`, `node tests/tool-budget-check.js` → `TOOL_BUDGET_OK`, `node scripts/check-env.js` → `ENV_OK services=17`. UDS e2e bridge checks pass; its 3 remaining failures are pre-existing environment checks (dist-vs-root UDS path, Gemini 400, OpenCode disabled).
 
 #### P0-06 — Monu Builder দ্বিতীয় stack, watchdog দিয়ে জীবিত
 
