@@ -909,7 +909,7 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 | 4 | **N4** | `local-tool-cap`-এর পুরোনো A1/D15 assertion update | `LOCAL_TOOL_CAP_OK` | ✅ DONE (`gc-mwokuxf5`) |
 | 5 | **P1-10 + P1-02** | বাকি size budget (`SESSION_MAX_BYTES`, `WEB_UI_MAX_BYTES`, `TOOL_RESULT_MAX_BYTES`) + `request_log` trace column | `CONFIG_TRACE_OK` | ✅ DONE (`gc-mwolit04`) |
 | 6 | **P1-07** | R2T silent builtin fallback → log + response header | `R2T_TRACE_OK` | ✅ DONE (`gc-mwoslpev`) |
-| 7 | **N5** | safe rebuild+restart এক কমান্ডে (stale dist risk বন্ধ) | `REBUILD_RESTART_OK` | TODO |
+| 7 | **N5** | safe rebuild+restart এক কমান্ডে (stale dist risk বন্ধ) | `REBUILD_RESTART_OK` | ✅ DONE (`gc-mwot2is2`) |
 | 8 | **P1-09 + P1-08** | `package.json` + installer-এ apt/dnf/pacman/brew | `PACKAGE_INSTALL_OK` | TODO |
 | 9 | **P2-02 + P2-03** | log/backup retention + 30-case eval harness | `QUALITY_EVAL_OK` | TODO |
 | 10 | **N3** | PLAN/status snapshot drift ঠিক করা | `DOCS_CURRENT_OK` | TODO |
@@ -954,8 +954,9 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 
 - **প্রমাণ:** `scripts/build.js:90` — live runtime থাকলে `BUILD_REFUSED dist is the live runtime (pid=...)`; তাই operator-কে `systemctl --user stop` → build → start করতে হয়। Build না করলে `provider-env-lock-check` fail করে: `dist is a fresh build of the current source — api.js is newer than dist`।
 - **Impact:** P0-09-এর মতো “কোড বদলেছি = লাইভে গেছে” ভুল ধারণা ফিরে আসতে পারে; প্রতিটি batch-এ manual stop/start।
-- **Fix:** `start.js --rebuild-restart` (active unit হলে stop → build → start → health 200, fail হলে rollback) অথবা runbook-এ একমাত্র অনুমোদিত command sequence।
+- **Fix:** `scripts/rebuild-restart.sh` (pre-flight → stop → build → manifest sha verify → start → health + live R2T proof; fail হলে `dist.prev` rollback)।
 - **Gate:** `REBUILD_RESTART_OK` — active gateway-এ এক কমান্ডে build+restart+health, dist manifest sha = source sha।
+- **Done (2026-11-20, `gc-mwot2is2`):** `scripts/rebuild-restart.sh` — pre-flight `node --check` → unit stop → `dist.prev` snapshot → `start.js --build-only` → manifest source/dist sha → `reset-failed` + start with `ZC_SKIP_BUILD=1` → `/health` 200 → live `x-zc-r2t-engine` proof → `REBUILD_RESTART_OK`; post-stop failure `dist.prev` restore করে পুরোনো build boot করে। `start.js` এখন `ZC_SKIP_BUILD=1` মানে; `tests/rebuild-restart-check.js` `--check`, deliberate syntax abort ও real restart তিনটেই প্রমাণ করে (23/0)। Live: MainPID `901 → 38920`, `api.js` sha `d9c6d23e…`, `/health` 200, header `disabled` (`.env`-এ `R2T_ENABLED=false`)।
 
 #### N6 — skill MCP gap (removal-এর পর নতুন surface নেই)
 

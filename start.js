@@ -1047,7 +1047,13 @@ async function startAll() {
 
   // 6a. Rebuild dist from source on EVERY start. scripts/build.js refuses to
   // replace a live dist, so the cleanup above must stop the old gateway first.
-  buildDist();
+  // scripts/rebuild-restart.sh builds and verifies the exact tree first, then
+  // sets ZC_SKIP_BUILD=1 so the boot serves that tree without rebuilding it.
+  if (process.env.ZC_SKIP_BUILD === "1") {
+    console.log("[BUILD] skipped (ZC_SKIP_BUILD=1) — serving the verified dist");
+  } else {
+    buildDist();
+  }
 
   // 6b. Local LLM bridge — idempotent. A bridge already on the port is
   // reused, never killed; a foreign listener is reported and left alone.
