@@ -7483,12 +7483,20 @@ async function callModelWithTools(
     providerOverride,
   );
   if (forceResponse.success && forceResponse.content) {
-    return { success: true, content: forceResponse.content, tool_calls: null };
+    return {
+      success: true,
+      content: forceResponse.content,
+      tool_calls: null,
+      model,
+      provider: forceResponse.provider || null,
+    };
   }
   return {
     success: false,
     error: "Max tool call rounds (" + MAX_ROUNDS + ") exceeded",
     content: "",
+    model,
+    provider: (forceResponse && forceResponse.provider) || null,
   };
 }
 
@@ -9969,6 +9977,9 @@ async function executeSingleAgent(
       content: masked,
       maskedModel: agent.id,
       agent: { id: agent.id, name: agent.name, role: agent.role },
+      // Attribution comes from the call that answered, not a fresh resolve.
+      provider: safeResult.provider || null,
+      model: agentModel,
     };
   }
 
@@ -9999,7 +10010,8 @@ async function executeSingleAgent(
         "] " +
         (response?.error || "unknown"),
       error: response?.error || "unknown",
-      provider: provInfo,
+      provider: (response && response.provider) || null,
+      model: agentModel,
       maskedModel: agent.id,
       agent: { id: agent.id, name: agent.name, role: agent.role },
     };
@@ -10098,6 +10110,10 @@ async function executeSingleAgent(
     tool_calls: response.tool_calls || null,
     maskedModel: agent.id, // Mask: show agent id, not real model
     agent: { id: agent.id, name: agent.name, role: agent.role },
+    // The provider that actually answered (callModel/callModelWithTools
+    // returns it). Telemetry records this, never a fresh resolve.
+    provider: response.provider || null,
+    model: agentModel,
     goalVerified: singleGoalCheck.passed,
     goalReason: singleGoalCheck.reason,
     // #5 swap_notice: trail recorded on THIS request's augmentedMessages
@@ -16404,20 +16420,20 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
           } catch (_) { }
         }
 
-        // telemetry: agent/model counters + request log + session touch
+        // telemetry: agent/model counters + request log + session touch.
+        // Attribution is the transport that actually served the stream
+        // (callModelStreamWithTools reports it after any fallback).
         const _finMs = Date.now() - startTime;
-        let _finProv = null;
-        try {
-          _finProv = resolveProvider(agent.model).providerId;
-        } catch (_) {}
-        trackAgentUsage(agent.id, !fullContent, agent.model, _finProv);
-        recordModelStat(agent.model, _finProv, !!fullContent);
+        const _finProv = (streamResult && streamResult.provider) || null;
+        const _finModel = (streamResult && streamResult.model) || agentModel;
+        trackAgentUsage(agent.id, !fullContent, _finModel, _finProv);
+        recordModelStat(_finModel, _finProv, !!fullContent);
         recordRequestLog({
           path: "/v1/chat/completions",
           session_id: sessionId,
           editor: parsed.editor || "hermes",
           agent: agent.id,
-          model: agent.model,
+          model: _finModel,
           provider: _finProv,
           status: 200,
           ok: !!fullContent,
@@ -16425,7 +16441,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
         });
         recordSessionTouch(sessionId, {
           agent: agent.id,
-          model: agent.model,
+          model: _finModel,
           provider: _finProv,
           editor: parsed.editor || "hermes",
         });
@@ -16458,19 +16474,18 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
       );
 
       if (!singleResult.success) {
-        // telemetry: failed agent call
-        let _prov = null;
-        try {
-          _prov = resolveProvider(agent.model).providerId;
-        } catch (_) {}
-        trackAgentUsage(agentId, true, agent.model || null, _prov);
-        recordModelStat(agent.model, _prov, false);
+        // telemetry: failed agent call — provider comes from the failed call,
+        // never from a fresh resolution that could name a different one.
+        const _prov = singleResult.provider || null;
+        const _model = singleResult.model || usableAgentModel(agent);
+        trackAgentUsage(agentId, true, _model, _prov);
+        recordModelStat(_model, _prov, false);
         recordRequestLog({
           path: "/v1/chat/completions",
           session_id: sessionId,
           editor: parsed.editor || "hermes",
           agent: agentId,
-          model: agent.model || null,
+          model: _model,
           provider: _prov,
           status: 502,
           ok: false,
@@ -16495,20 +16510,19 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
         responseMessage.content = maskedContent;
       }
 
-      // telemetry: successful agent call (non-stream)
+      // telemetry: successful agent call (non-stream). Attribution comes
+      // from the result that answered, not a fresh resolveProvider().
       {
-        let _prov = null;
-        try {
-          _prov = resolveProvider(agent.model).providerId;
-        } catch (_) {}
-        trackAgentUsage(agentId, false, agent.model, _prov);
-        recordModelStat(agent.model, _prov, true);
+        const _prov = singleResult.provider || null;
+        const _model = singleResult.model || usableAgentModel(agent);
+        trackAgentUsage(agentId, false, _model, _prov);
+        recordModelStat(_model, _prov, true);
         recordRequestLog({
           path: "/v1/chat/completions",
           session_id: sessionId,
           editor: parsed.editor || "hermes",
           agent: agentId,
-          model: agent.model,
+          model: _model,
           provider: _prov,
           status: 200,
           ok: true,
@@ -16516,7 +16530,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
         });
         recordSessionTouch(sessionId, {
           agent: agentId,
-          model: agent.model,
+          model: _model,
           provider: _prov,
           editor: parsed.editor || "hermes",
         });

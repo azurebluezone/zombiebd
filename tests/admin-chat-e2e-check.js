@@ -10,17 +10,19 @@
  * Ollama provider and the actual files on disk are inspected.
  *
  * Steps:
- *   1. /admin serves the admin panel (not the chat UI)
+ *   1. /admin serves the self-contained admin panel (not the chat UI)
  *   2. every route the panel fetches answers live JSON with the admin token
  *   3. every admin route refuses an unauthenticated caller
  *   4. with public/admin.html + dist/public/admin.html hidden the panel is
- *      gone (404) but /health, /api/agents and /api/admin/agents still work
- *   5. the panel carries no hardcoded agent-count fallback and its model
- *      saver sends no synthesized persona; index.html declares web-chat
+ *      still served from lib/admin-panel.js, and /health, /api/agents and
+ *      /api/admin/agents still work
+ *   5. the panel source carries no hardcoded agent-count fallback and no
+ *      synthesized persona; index.html declares web-chat
  *   6. POST /api/admin/agents maps doc-king to deepseek-r1:1.5b: persona is
  *      preserved, a real chat request returns content with x-zc-chat-*
  *      headers and no swap_notice, and request_log/model_stats record the
- *      new model on provider ollama
+ *      new model on the provider that actually served it (derived from
+ *      GET /api/admin/providers, not hardcoded)
  *   7. the original mapping and persona are restored
  */
 
@@ -135,8 +137,11 @@ async function main() {
   // ── 1. /admin is the panel, not the chat UI ────────────────
   const adminPage = await request("GET", "/admin");
   if (adminPage.status !== 200) die("/admin returned " + adminPage.status);
-  if (!adminPage.text.includes('id="adminTokenInput"')) {
-    die("/admin does not serve the admin panel (adminTokenInput missing)");
+  if (
+    !adminPage.text.includes('id="zc-admin-panel"') ||
+    !adminPage.text.includes('data-panel="self-contained"')
+  ) {
+    die("/admin does not serve the self-contained admin panel");
   }
   if (adminPage.text.includes("<title>Mission Barisal — Copilot Interface</title>")) {
     die("/admin is serving the chat UI, not the admin panel");
@@ -211,8 +216,13 @@ async function main() {
       fs.renameSync(file, target);
       hidden.push([file, target]);
     }
-    const gone = await request("GET", "/admin");
-    if (gone.status === 200) die("/admin still answers 200 with admin.html hidden");
+    const served = await request("GET", "/admin");
+    if (served.status !== 200) {
+      die("/admin stopped serving the self-contained panel with admin.html hidden: " + served.status);
+    }
+    if (!served.text.includes('id="zc-admin-panel"')) {
+      die("/admin lost the self-contained panel marker with admin.html hidden");
+    }
     const liveHealth = await request("GET", "/health");
     const liveAgents = await request("GET", "/api/agents");
     const liveAdmin = await request("GET", "/api/admin/agents", undefined, adminHeaders());
@@ -225,7 +235,7 @@ async function main() {
     if (liveAdmin.status !== 200 || !Array.isArray(liveAdmin.body.agents)) {
       die("/api/admin/agents broke without admin.html: " + liveAdmin.status);
     }
-    ok("admin.html hidden: /admin=" + gone.status + " while health/agents/admin-api stay 200");
+    ok("admin.html hidden: /admin still serves the self-contained panel while health/agents/admin-api stay 200");
   } finally {
     for (const [file, target] of hidden) {
       if (fs.existsSync(target)) fs.renameSync(target, file);
@@ -236,17 +246,21 @@ async function main() {
   }
 
   // ── 5. Source audit: no static fallback, no persona overwrite ──
-  const adminHtml = fs.readFileSync(ADMIN_SRC, "utf8");
-  if (/\?\s*6\s*:/.test(adminHtml)) die("admin.html still has a hardcoded ? 6 : fallback");
-  if (/persona\s*:\s*persona\s*\|\|/.test(adminHtml)) {
-    die("admin.html still synthesizes a persona when saving a model");
+  // /admin is rendered from lib/admin-panel.js now, so audit that source.
+  const panelSrc = fs.readFileSync(path.join(ROOT, "lib", "admin-panel.js"), "utf8");
+  if (!panelSrc.includes("renderAdminPanel") || !panelSrc.includes("PANEL_MARKER")) {
+    die("lib/admin-panel.js is not the self-contained panel source");
+  }
+  if (/\?\s*6\s*:/.test(panelSrc)) die("admin panel still has a hardcoded ? 6 : fallback");
+  if (/persona\s*:\s*persona\s*\|\|/.test(panelSrc)) {
+    die("admin panel still synthesizes a persona when saving a model");
   }
   const indexHtml = fs.readFileSync(INDEX_SRC, "utf8");
   const channelCount = (indexHtml.match(/channel:\s*'web-chat'/g) || []).length;
   if (channelCount !== 2) {
     die("index.html should declare channel: 'web-chat' in both request bodies, found " + channelCount);
   }
-  ok("source audit: no static agent fallback, no persona overwrite, index sends web-chat");
+  ok("source audit: self-contained panel, no static agent fallback, no persona overwrite, index sends web-chat");
 
   // ── 6. Admin-driven mapping -> real provider call ──────────
   const db = new DatabaseSync(DB_PATH, { timeout: 5000 });
@@ -279,6 +293,36 @@ async function main() {
   }
   ok("admin mapping applied: " + AGENT_ID + " -> " + NEW_MODEL + " (persona preserved)");
 
+  // The serving provider is decided by routing, so derive the expectation
+  // from the live provider list instead of hardcoding one: enabled, not
+  // confirmed down, advertises NEW_MODEL, lowest priority wins.
+  const providerPayload = await adminJson("/api/admin/providers", "providers");
+  const advertises = (p) =>
+    (p.modelList || []).some(
+      (entry) => String(entry).split("=>")[0] === NEW_MODEL,
+    );
+  const expectedProvider = (providerPayload.providers || [])
+    .filter((p) => p && p.enabled !== false && p.envDisabled !== true)
+    .filter((p) => p.status !== "down")
+    .filter(advertises)
+    .sort(
+      (a, b) =>
+        Number(a.priority) - Number(b.priority) ||
+        String(a.id).localeCompare(String(b.id)),
+    )[0];
+  if (!expectedProvider) {
+    die("no enabled provider advertises " + NEW_MODEL);
+  }
+  ok(
+    "expected serving provider from live list: " +
+      expectedProvider.id +
+      " (priority " +
+      expectedProvider.priority +
+      ", status " +
+      expectedProvider.status +
+      ")",
+  );
+
   try {
     // Header form on a cheap 404 proves x-zc-channel is honored.
     const headerProbe = await request(
@@ -299,7 +343,8 @@ async function main() {
     }
     ok("x-zc-channel header reaches the chat interpreter");
 
-    // The real call: doc-king now routes to deepseek-r1:1.5b on Ollama.
+    // The real call: doc-king now routes to deepseek-r1:1.5b; whichever
+    // enabled provider advertises it with the lowest priority must answer.
     const chat = await request("POST", "/v1/chat/completions", {
       channel: "web-chat",
       model: AGENT_ID,
@@ -337,17 +382,25 @@ async function main() {
       .get(AGENT_ID);
     if (!logged) die("no request_log row for " + AGENT_ID);
     if (logged.model !== NEW_MODEL) die("request_log model=" + logged.model + " want " + NEW_MODEL);
-    if (logged.provider !== "ollama") die("request_log provider=" + logged.provider + " want ollama");
+    if (logged.provider !== expectedProvider.id) {
+      die(
+        "request_log provider=" + logged.provider + " want " + expectedProvider.id +
+          " (live list says " + JSON.stringify(expectedProvider.modelList) + ")",
+      );
+    }
     if (Number(logged.status) !== 200 || Number(logged.ok) !== 1) {
       die("request_log status/ok not successful: " + JSON.stringify(logged));
     }
     const stat = db
-      .prepare("SELECT requests FROM model_stats WHERE model = ? AND provider = 'ollama'")
-      .get(NEW_MODEL);
+      .prepare("SELECT requests FROM model_stats WHERE model = ? AND provider = ?")
+      .get(NEW_MODEL, expectedProvider.id);
     if (!stat || Number(stat.requests) < 1) {
-      die("model_stats has no successful request for " + NEW_MODEL);
+      die("model_stats has no successful request for " + NEW_MODEL + " on " + expectedProvider.id);
     }
-    ok("provider evidence: request_log + model_stats record " + NEW_MODEL + " on ollama");
+    ok(
+      "provider evidence: request_log + model_stats record " + NEW_MODEL +
+        " on " + expectedProvider.id + " (the provider that actually served)",
+    );
   } finally {
     await restoreAgent(db, before);
   }

@@ -905,8 +905,8 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 |---:|---|---|---|---|
 | 1 | **P0-08** | provider health honesty + stale `last_error` | `PROVIDER_HEALTH_OK` | ✅ DONE (`gc-mwoi9t5a`) |
 | 2 | **N2** | test-spawned gateway `.missionbarisal` pollution বন্ধ | `TEST_APP_ROOT_OK` | ✅ DONE (`gc-mwoipfpp`) |
-| 3 | **N1** | provider attribution: `bridge` vs `ollama` সত্য ঠিক করা | `ADMIN_CHAT_E2E_OK` | ▶ NEXT |
-| 4 | **N4** | `local-tool-cap`-এর পুরোনো A1/D15 assertion update | `LOCAL_TOOL_CAP_OK` | TODO |
+| 3 | **N1** | provider attribution: `bridge` vs `ollama` সত্য ঠিক করা | `ADMIN_CHAT_E2E_OK` | ✅ DONE (`gc-mwoj9ncy`) |
+| 4 | **N4** | `local-tool-cap`-এর পুরোনো A1/D15 assertion update | `LOCAL_TOOL_CAP_OK` | ▶ NEXT |
 | 5 | **P1-10 + P1-02** | বাকি size budget (`SESSION_MAX_BYTES`, `WEB_UI_MAX_BYTES`, `TOOL_RESULT_MAX_BYTES`) + `request_log` trace column | `CONFIG_TRACE_OK` | TODO |
 | 6 | **P1-07** | R2T silent builtin fallback → log + response header | `R2T_TRACE_OK` | TODO |
 | 7 | **N5** | safe rebuild+restart এক কমান্ডে (stale dist risk বন্ধ) | `REBUILD_RESTART_OK` | TODO |
@@ -925,6 +925,7 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 - **Impact:** provider attribution-কে ঘিরে gate মিথ্যা red; কোন layer (bridge transport না upstream ollama) খরচ/error বহন করছে তা log থেকে বোঝা যায় না।
 - **Fix:** আগে সিদ্ধান্ত — `provider` হবে origin (`ollama`) না transport (`bridge`); তারপর P1-02-এর সাথে `upstream_provider`/`fallback_from` column যোগ করে test expectation ঠিক করা। routing বদলানো লাগলে আলাদা contract।
 - **Gate:** `ADMIN_CHAT_E2E_OK` (expectation + DB row একই truth)।
+- **Done (2026-11-20, `gc-mwoj9ncy`):** সিদ্ধান্ত — `provider` = যে transport সত্যিই answer করেছে (`bridge`); origin (`ollama`) P1-02-এ `upstream_provider` হিসেবে আসবে। `executeSingleAgent`/`callModelWithTools` এখন `provider`+`model` return করে; stream, non-stream success ও failure telemetry সেই result থেকে লেখে, `resolveProvider(agent.model)` দিয়ে re-resolve করে না (grep-এ residual নেই)। `tests/admin-chat-e2e-check.js` expected provider live `/api/admin/providers` থেকে derive করে (enabled, confirmed-down নয়, `NEW_MODEL` advertise, lowest priority) এবং self-contained panel-এর stale marker/hiding assertion update করা হয়েছে। Live evidence: `ADMIN_CHAT_E2E_OK`; `request_log` + `model_stats` দুটোই `deepseek-r1:1.5b` on `bridge`; আলাদা stream request-ও `provider=bridge` লগ করেছে।
 
 #### N2 — test-spawned gateway live `.missionbarisal` config overwrite করে
 
