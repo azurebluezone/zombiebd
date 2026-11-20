@@ -42,7 +42,9 @@ const SCRATCH = path.join(os.tmpdir(), "zombiecoder", "uds-e2e-" + process.pid);
 
 let pass = 0;
 let fail = 0;
+let skip = 0;
 const failures = [];
+const skips = [];
 
 function check(name, ok, detail) {
   if (ok) {
@@ -52,6 +54,24 @@ function check(name, ok, detail) {
     fail += 1;
     failures.push(name + (detail ? " :: " + detail : ""));
     console.log("FAIL " + name + (detail ? " :: " + detail : ""));
+  }
+}
+
+function skipCheck(name, reason) {
+  skip += 1;
+  skips.push(name + " :: " + reason);
+  console.log("SKIP " + name + " :: " + reason);
+}
+
+// dist/data is a symlink to data, so the live gateway reports the bind path it
+// was started with while the test derives candidates from the project root.
+// Compare the real parent directory, not the literal string.
+function canonicalSocketPath(socketPath) {
+  const absolute = path.resolve(String(socketPath || ""));
+  try {
+    return path.join(fs.realpathSync(path.dirname(absolute)), path.basename(absolute));
+  } catch (_) {
+    return absolute;
   }
 }
 
@@ -277,8 +297,10 @@ async function main() {
   );
   check(
     "bound path is one of the configured candidates",
-    !!(entry && UDS_PATHS.includes(entry.bound_path)),
-    String(entry && entry.bound_path),
+    !!(entry && UDS_PATHS
+      .map(canonicalSocketPath)
+      .includes(canonicalSocketPath(entry.bound_path))),
+    "bound=" + canonicalSocketPath(entry && entry.bound_path),
   );
   check(
     "transports exposes bind attempts",
@@ -368,46 +390,67 @@ async function main() {
       fileAgents.filter((agent) => String(agent.persona || "").trim()).length,
   );
 
-  // 6. Real Gemini provider through the socket.
-  const gemini = await uds("/v1/chat/completions", {
-    model: "gemini-lite",
-    messages: [{ role: "user", content: "Reply with exactly: PROVIDER-OK" }],
-    max_tokens: 24,
-    temperature: 0,
-  });
-  check(
-    "Gemini live reply over UDS",
-    gemini.status === 200 && /PROVIDER-OK/.test(contentOf(gemini.json)),
-    "status=" + gemini.status + " content=" + JSON.stringify(contentOf(gemini.json).slice(0, 50)),
-  );
-
-  // 7. OpenCode: a real reply or an honestly recorded upstream quota block.
+  // 6. Real Gemini provider through the socket. The catalog is the source of
+  // truth: provider-side retirements (gemini-2.5-flash) must not fail a build
+  // that only pins a model name from an old fixture.
   const catalog = await uds("/api/v1/models", undefined, 10000);
-  const opencodeModel = ((catalog.json && catalog.json.data) || []).find((m) => m.provider === "opencode");
-  let opencodeOk = false;
-  let opencodeDetail = "no opencode model in /api/v1/models";
-  if (opencodeModel) {
-    const reply = await uds("/v1/chat/completions", {
-      model: opencodeModel.id,
-      messages: [{ role: "user", content: "Reply with exactly: OPENCODE-OK" }],
+  const catalogModels = (catalog.json && catalog.json.data) || [];
+  const geminiModel = catalogModels.find(
+    (m) => m.provider === "gemini" && typeof m.id === "string" && m.id,
+  );
+  let geminiDetail = "no gemini model in /api/v1/models";
+  let geminiOk = false;
+  if (geminiModel) {
+    const gemini = await uds("/v1/chat/completions", {
+      model: geminiModel.id,
+      messages: [{ role: "user", content: "Reply with exactly: PROVIDER-OK" }],
       max_tokens: 24,
       temperature: 0,
     });
-    const text = contentOf(reply.json);
-    const errText = (reply.json && reply.json.error && reply.json.error.message) || reply.text || "";
-    if (reply.status === 200 && text) {
-      opencodeOk = true;
-      opencodeDetail = "model=" + opencodeModel.id + " status=200 content=" + JSON.stringify(text.slice(0, 40));
-    } else if (/429|rate.?limit|quota|Free usage limit/i.test(text + " " + errText)) {
-      opencodeOk = true;
-      opencodeDetail = "model=" + opencodeModel.id + " status=" + reply.status +
-        " recorded quota=" + JSON.stringify(String(errText).slice(0, 90));
-    } else {
-      opencodeDetail = "model=" + opencodeModel.id + " status=" + reply.status +
-        " err=" + JSON.stringify(String(errText).slice(0, 90));
-    }
+    geminiOk = gemini.status === 200 && /PROVIDER-OK/.test(contentOf(gemini.json));
+    geminiDetail = "model=" + geminiModel.id + " status=" + gemini.status +
+      " content=" + JSON.stringify(contentOf(gemini.json).slice(0, 50));
   }
-  check("OpenCode reachable (reply or recorded quota)", opencodeOk, opencodeDetail);
+  check("Gemini live reply over UDS", geminiOk, geminiDetail);
+
+  // 7. OpenCode: a real reply or an honestly recorded upstream quota block.
+  // An admin-disabled provider is a deliberate state, not a failure: report
+  // SKIP and keep the rest of the gate strict.
+  const opencodeModel = catalogModels.find((m) => m.provider === "opencode");
+  const opencodeDisabled =
+    String((ENV.values && ENV.values.OPENCODE_ENABLED) || "").toLowerCase() === "false";
+  if (opencodeDisabled) {
+    skipCheck(
+      "OpenCode reachable (reply or recorded quota)",
+      "OPENCODE_ENABLED=false (admin-disabled)" +
+        (opencodeModel ? " model=" + opencodeModel.id : ""),
+    );
+  } else {
+    let opencodeOk = false;
+    let opencodeDetail = "no opencode model in /api/v1/models";
+    if (opencodeModel) {
+      const reply = await uds("/v1/chat/completions", {
+        model: opencodeModel.id,
+        messages: [{ role: "user", content: "Reply with exactly: OPENCODE-OK" }],
+        max_tokens: 24,
+        temperature: 0,
+      });
+      const text = contentOf(reply.json);
+      const errText = (reply.json && reply.json.error && reply.json.error.message) || reply.text || "";
+      if (reply.status === 200 && text) {
+        opencodeOk = true;
+        opencodeDetail = "model=" + opencodeModel.id + " status=200 content=" + JSON.stringify(text.slice(0, 40));
+      } else if (/429|rate.?limit|quota|Free usage limit/i.test(text + " " + errText)) {
+        opencodeOk = true;
+        opencodeDetail = "model=" + opencodeModel.id + " status=" + reply.status +
+          " recorded quota=" + JSON.stringify(String(errText).slice(0, 90));
+      } else {
+        opencodeDetail = "model=" + opencodeModel.id + " status=" + reply.status +
+          " err=" + JSON.stringify(String(errText).slice(0, 90));
+      }
+    }
+    check("OpenCode reachable (reply or recorded quota)", opencodeOk, opencodeDetail);
+  }
 
   // 8. Agent non-streaming.
   const agentReply = await uds("/v1/chat/completions", {
@@ -658,7 +701,12 @@ async function main() {
   fs.rmSync(proofFile, { force: true });
 
   console.log("");
-  console.log("checks=" + (pass + fail) + " pass=" + pass + " fail=" + fail);
+  console.log(
+    "checks=" + (pass + fail + skip) +
+      " pass=" + pass +
+      " fail=" + fail +
+      " skip=" + skip,
+  );
   if (fail === 0) {
     console.log("RESULT: UDS E2E PASS");
   } else {

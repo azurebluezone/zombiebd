@@ -39,7 +39,7 @@
       "name": "facebook-ads",
       "url": "http://localhost:${FB_ADS_MCP_PORT}/mcp",
       "transport": "http",
-      "enabled": true,
+      "enabled": false,
       "autoConnect": true,
       "token": "",
       "local": true,

@@ -114,15 +114,15 @@ assert(
     (noOldTransport ? "0" : "STILL PRESENT"),
 );
 
-// A8. OpenCode-specific headers live only in the adapter, not in the server
-//   (operator rule: the server must not carry OpenCode-only code).
+// A8. No client-identity impersonation: the provider key is the only
+//   credential, and no fake CLI headers appear in the adapter or server.
 const ocAdapterSrc = fs.readFileSync(path.resolve(__dirname, "..", "provider", "opencode.js"), "utf8");
-const headersInAdapter = /"opencode\/latest\/1\.3\.15\/cli"/.test(ocAdapterSrc) && /x-opencode-session/.test(ocAdapterSrc);
+const fakeIdentity = /x-opencode|opencode\/latest/.test(ocAdapterSrc);
 const headersNotInServer = !/x-opencode/.test(src);
 assert(
-  "A8  x-opencode-* + CLI UA only in provider/opencode.js, not in api.js",
-  headersInAdapter && headersNotInServer,
-  "adapter=" + headersInAdapter + ", server-clean=" + headersNotInServer,
+  "A8  no fake x-opencode-* headers in provider/opencode.js or api.js",
+  !fakeIdentity && headersNotInServer,
+  "adapter-clean=" + !fakeIdentity + ", server-clean=" + headersNotInServer,
 );
 
 // A9. Local provider priority defaults to 10 (lowest precedence).
@@ -149,11 +149,11 @@ for (let i = 0; i < 155; i += 1) {
 budgetTools[37].function.name = "tts__tts_speak";
 budgetTools[80].function.name = "ocr__ocr_image";
 const budgetCloud = toolBudget.resolveToolBudget({ tools: budgetTools, timeoutMs: 300000 });
-const budgetBridge = toolBudget.resolveToolBudget({ tools: budgetTools, providerMax: 5, timeoutMs: 300000 });
+const budgetCapped = toolBudget.resolveToolBudget({ tools: budgetTools, providerMax: 5, timeoutMs: 300000 });
 assert("B1  155 tools -> limit 24", budgetCloud.limit === 24, "limit=" + budgetCloud.limit);
 assert("B2  pinned tts__tts_speak survives", budgetCloud.tools.some((t) => t.function.name === "tts__tts_speak"));
-assert("B3  bridge -> limit 5", budgetBridge.limit === 5, "limit=" + budgetBridge.limit);
-assert("B4  bridge keeps tts__tts_speak", budgetBridge.tools.some((t) => t.function.name === "tts__tts_speak"));
+assert("B3  provider ceiling -> limit 5", budgetCapped.limit === 5, "limit=" + budgetCapped.limit);
+assert("B4  provider ceiling keeps tts__tts_speak", budgetCapped.tools.some((t) => t.function.name === "tts__tts_speak"));
 assert("B5  bytes <= 12000", budgetCloud.bytes <= 12000, "bytes=" + budgetCloud.bytes);
 assert("B6  estPrefillMs <= min(timeout/2, 45000)", budgetCloud.estPrefillMs <= Math.min(150000, 45000), "ms=" + budgetCloud.estPrefillMs);
 fact("B7  limits live only in lib/tool-budget.js", "no MAX_TOOLS_LIMIT in api.js");

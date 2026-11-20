@@ -340,6 +340,8 @@ async function liveCheck() {
     GRPC_PORT: String(grpcPort),
     HTTPS_PORT: String(httpsPort),
     UDS_PORT: String(udsPort),
+    // Keep generated .missionbarisal config inside this test's temp tree.
+    APP_ROOT: TMP,
     DATA_DIR: dataDir,
     LOG_DIR: logDir,
     DB_SQLITE_PATH: path.join(dataDir, "models.db"),
@@ -383,6 +385,13 @@ async function liveCheck() {
       return;
     }
     pass("source gateway healthy", "agents=" + health.agents + " models=" + health.models);
+
+    const tempConfig = path.join(TMP, ".missionbarisal", "mcp-config.json");
+    if (fs.existsSync(tempConfig)) {
+      pass("runtime config stays inside APP_ROOT", tempConfig);
+    } else {
+      fail("runtime config stays inside APP_ROOT", "missing " + tempConfig);
+    }
 
     const hitDeadline = Date.now() + 20000;
     while (stubHits === 0 && Date.now() < hitDeadline) await sleep(200);

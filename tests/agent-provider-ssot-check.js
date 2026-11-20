@@ -522,15 +522,11 @@ run("custom egress headers are provider-native and explicitly allowlisted", () =
     "provider/llamacpp.js",
   ];
   // These are provider-owned headers, not internal ZombieCoder markers:
-  // Gemini auth, Groq's documented app title, and the OpenCode client
-  // identity contract that adapter exists to preserve.
+  // Gemini auth and Groq's documented app title. Client identity is never
+  // impersonated.
   const allowed = new Set([
     "x-goog-api-key",
     "x-title",
-    "x-opencode-client",
-    "x-opencode-session",
-    "x-opencode-project",
-    "x-opencode-request",
   ]);
   const found = new Set();
   for (const relative of files) {
@@ -546,6 +542,13 @@ run("custom egress headers are provider-native and explicitly allowlisted", () =
     [...found],
     [],
     "undocumented egress header(s): " + [...found].join(", "),
+  );
+  const opencode = stripComments(
+    fs.readFileSync(path.join(ROOT, "provider/opencode.js"), "utf8"),
+  );
+  assert.ok(
+    !/x-opencode|opencode\/latest/.test(opencode),
+    "provider/opencode.js must not impersonate the OpenCode CLI",
   );
 });
 

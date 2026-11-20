@@ -5,7 +5,7 @@
 //
 // Proves the acceptance contract, not a copy of it:
 //   1. lib/tool-budget.js is the only resolver; api.js/provider define no limits
-//   2. 155 tools -> limit 24 (cloud) and 5 (bridge)
+//   2. 155 tools -> global limit 24 and a provider ceiling of 5
 //   3. pinned tts__tts_speak survives even when it sits at index 37
 //   4. output bytes <= 12000 and estPrefillMs <= min(timeout/2, 45000)
 //   5. provider/tools.prepare honors the effective provider max
@@ -160,17 +160,17 @@ check("pinned ocr__ocr_image survives trim", cloudNames.includes("ocr__ocr_image
 check("cloud bytes <= 12000", cloud.bytes <= 12000, "bytes=" + cloud.bytes);
 check("cloud estPrefillMs <= timeout/2", cloud.estPrefillMs <= 30000, "ms=" + cloud.estPrefillMs);
 
-const bridge = withEnv({ MCP_TOOL_BUDGET_MAX: "24", PROVIDER_BRIDGE_MAX_TOOLS: "5" }, () =>
+const capped = withEnv({ MCP_TOOL_BUDGET_MAX: "24" }, () =>
   toolBudget.resolveToolBudget({
     tools: synthetic,
-    providerMax: toolBudget.providerMaxOf({ capabilities: { maxTools: toolBudget.bridgeMaxTools() } }),
+    providerMax: toolBudget.providerMaxOf({ capabilities: { maxTools: 5 } }),
     timeoutMs: 60000,
   }),
 );
-const bridgeNames = bridge.tools.map((tool) => tool.function.name);
-check("bridge max is 5", bridge.limit === 5, "limit=" + bridge.limit);
-check("bridge sends 5 tools", bridge.tools.length === 5, "selected=" + bridge.tools.length);
-check("bridge keeps tts__tts_speak", bridgeNames.includes("tts__tts_speak"));
+const cappedNames = capped.tools.map((tool) => tool.function.name);
+check("provider max 5 is respected", capped.limit === 5, "limit=" + capped.limit);
+check("provider max sends 5 tools", capped.tools.length === 5, "selected=" + capped.tools.length);
+check("provider max keeps tts__tts_speak", cappedNames.includes("tts__tts_speak"));
 
 // Intent ranking + deterministic tie-break (pins disabled for this probe).
 const ranked = withEnv({ MCP_TOOL_BUDGET_PIN: "" }, () =>
@@ -236,17 +236,17 @@ if (mcpTools) {
 toolRegister.setDatabase({
   prepare: () => ({ get: () => ({ supports_tools: null }) }),
 });
-const preparedBridge = toolRegister.prepare("bridge", "m", synthetic, {
+const preparedCapped = toolRegister.prepare("capped", "m", synthetic, {
   capabilities: { maxTools: 5 },
 });
 const preparedCloud = toolRegister.prepare("opencode", "m", synthetic, {});
 toolRegister.setDatabase(null);
 
 check(
-  "prepare(bridge) caps at 5 and keeps tts",
-  preparedBridge.length === 5 &&
-    preparedBridge.some((tool) => tool.function.name === "tts__tts_speak"),
-  "count=" + preparedBridge.length,
+  "prepare(capped) caps at 5 and keeps tts",
+  preparedCapped.length === 5 &&
+    preparedCapped.some((tool) => tool.function.name === "tts__tts_speak"),
+  "count=" + preparedCapped.length,
 );
 check(
   "prepare(cloud) caps at 24 and keeps tts",
@@ -264,27 +264,18 @@ const defaults = withEnv(
     MCP_TOOL_BUDGET_MAX_BYTES: undefined,
     MCP_TOOL_BUDGET_MAX_PREFILL_MS: undefined,
     MCP_TOOL_PREFILL_TOKENS_PER_SEC: undefined,
-    PROVIDER_BRIDGE_MAX_TOOLS: undefined,
-    BRIDGE_MAX_TOOLS: undefined,
   },
   () => toolBudget.validateConfig(),
 );
 check("default config is valid", defaults.ok, defaults.errors.join("; "));
 check("default max is 24", defaults.config.max === 24, String(defaults.config.max));
 check("default pin has tts__tts_speak", defaults.config.pinned.includes("tts__tts_speak"));
-check("default bridge max is 5", toolBudget.bridgeMaxTools() === 5, String(toolBudget.bridgeMaxTools()));
 
 const invalid = withEnv(
   { MCP_TOOL_BUDGET_MAX: "1", MCP_TOOL_BUDGET_PIN: "tts__tts_speak,ocr__ocr_image" },
   () => toolBudget.validateConfig(),
 );
 check("pinned > limit is a boot error", !invalid.ok, invalid.errors.join("; "));
-
-const legacyBridge = withEnv(
-  { PROVIDER_BRIDGE_MAX_TOOLS: undefined, BRIDGE_MAX_TOOLS: "6" },
-  () => toolBudget.bridgeMaxTools(),
-);
-check("legacy BRIDGE_MAX_TOOLS is still read", legacyBridge === 6, String(legacyBridge));
 
 // ─── Summary ─────────────────────────────────────────────────────────────
 console.log("");

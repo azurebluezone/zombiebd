@@ -850,14 +850,8 @@ function parseModelsEnv(str) {
     });
 }
 
-function positiveIntEnv(name) {
-  const n = parseInt(process.env[name] || "", 10);
-  return Number.isFinite(n) && n > 0 ? n : undefined;
-}
-
 // Provider wire quirks that the OpenAI schema does not define arrive as one
-// JSON object (Ollama reasoning_effort, llama.cpp chat_template_kwargs).
-// Invalid JSON is ignored with a log line instead of crashing the gateway.
+// JSON object. Invalid JSON is ignored with a log line instead of crashing.
 function jsonObjectEnv(name) {
   const raw = process.env[name];
   if (!raw) return undefined;
@@ -966,33 +960,15 @@ const PROVIDER_CONFIG = {
     key: process.env.OLLAMA_API_KEY || "",
     priority: parseInt(process.env.OLLAMA_PRIORITY || "999", 10), // NaN-proof: unset → lowest
     type: process.env.OLLAMA_TYPE || "openai",
-    // DIALECT_FIX (2026-10-12): `type` alone CANNOT pick the wire dialect.
-    // adapterFor() (provider/index.js) matches by provider ID before `type`,
-    // so id "ollama" always reached provider/ollama.js — and that adapter
-    // defaults to the NATIVE /api/chat. Any OpenAI-compatible endpoint
-    // (local-llm-bridge, LM Studio, vLLM, Ollama's own /v1) therefore got a
-    // 404 "no route for POST /api/chat" in ~1ms and silently fell through to
-    // the cloud fallback. Evidence: OLLAMA_BASE=http://localhost:11435/v1
-    // (the bridge) + log 07:28:55 `no route for POST /api/chat`.
-    // Set OLLAMA_DIALECT=openai to route through {base}/v1/chat/completions.
-    // Unset ⇒ "" (falsy) ⇒ adapterFor() falls through exactly as before.
+    // adapterFor() matches the provider id before `type`, so OLLAMA_DIALECT
+    // selects the wire format. Set openai for /v1 endpoints; empty keeps the
+    // native /api/chat path.
     dialect: process.env.OLLAMA_DIALECT || "",
-    // Outbound provider calls use the HTTP base URL. The gateway's UDS is an
-    // inbound transport; it is never reused as a provider socket.
-    // CPU inference on a small box can exceed the 60s transport default while
-    // still producing a valid answer. The budget is env-only, per provider.
-    // Both deadlines come from the one resolver (OLLAMA_*_TIMEOUT_MS →
-    // PROVIDER_*_TIMEOUT_MS → default), never from a local literal.
+    // Provider calls can exceed the 60s transport default while still
+    // producing a valid answer. Both deadlines come from one resolver.
     ...resolveProviderTimeouts("ollama", process.env),
-    // Small local models drown in a 4.5k-char persona and keep generating
-    // reasoning. Both knobs are env-only so a CPU box can stay responsive.
-    maxPromptChars: positiveIntEnv("OLLAMA_MAX_PROMPT_CHARS"),
-    maxTokens: positiveIntEnv("OLLAMA_MAX_TOKENS"),
-    // qwen3 thinks by default; /v1 only honours reasoning_effort, not think.
-    extraBody: jsonObjectEnv("OLLAMA_EXTRA_BODY"),
-    // Model list is NOT hardcoded here: the DB or provider sync supplies it.
-    // The env override keeps Ollama tags intact — "qwen2:0.5b" is a model id,
-    // not a "qwen2 -> 0.5b" mask — so it uses the tag-safe parser.
+    // Model list is not hardcoded: the DB or provider sync supplies it. The
+    // env override keeps Ollama tags intact ("qwen2:0.5b" is one model id).
     models: parseCustomModelsEnv(process.env.OLLAMA_MODELS || ""),
     // Model discovery is dynamic (the server can start or stop while the
     // gateway runs). This is a capability, not a "local" category.
@@ -1032,14 +1008,9 @@ const PROVIDER_CONFIG = {
     models: parseCustomModelsEnv(process.env.BRIDGE_MODELS || ""),
     enabled: process.env.BRIDGE_ENABLED !== "0",
     dynamicModels: true,
-    // The upstream may legitimately prefill for BRIDGE_TIMEOUT_MS. The
-    // resolver adds the grace, so this gateway deadline never fires before
-    // the bridge's own upstream timeout (P0-07 / P1-01).
+    // The gateway deadline must not fire before the bridge's own upstream
+    // timeout; the resolver adds the grace.
     ...resolveProviderTimeouts("bridge", process.env),
-    // CPU-bound bridge upstreams still choke on a large tool catalog. This is
-    // a per-provider capability and can be raised by config, never inferred
-    // from a hostname.
-    capabilities: { maxTools: toolBudget.bridgeMaxTools() },
   },
 };
 
