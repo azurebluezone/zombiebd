@@ -16535,6 +16535,10 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
           editor: parsed.editor || "hermes",
         });
       }
+      // Observable attribution: the provider that actually served this
+      // non-stream call. The e2e gate compares it with request_log and
+      // model_stats, so a wrong attribution cannot hide.
+      res.setHeader("x-zc-chat-provider", singleResult.provider || "unknown");
       jsonResponse(res, 200, {
         id: "chatcmpl-" + crypto.randomUUID().replace(/-/g, ""),
         object: "chat.completion",

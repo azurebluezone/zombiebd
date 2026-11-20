@@ -18,11 +18,11 @@
  *      /api/admin/agents still work
  *   5. the panel source carries no hardcoded agent-count fallback and no
  *      synthesized persona; index.html declares web-chat
- *   6. POST /api/admin/agents maps doc-king to deepseek-r1:1.5b: persona is
+ *   6. POST /api/admin/agents maps doc-king to lfm3:1.7b: persona is
  *      preserved, a real chat request returns content with x-zc-chat-*
  *      headers and no swap_notice, and request_log/model_stats record the
- *      new model on the provider that actually served it (derived from
- *      GET /api/admin/providers, not hardcoded)
+ *      new model on the provider that actually served it (response header
+ *      + live provider list, not hardcoded)
  *   7. the original mapping and persona are restored
  */
 
@@ -47,7 +47,10 @@ const ADMIN_SRC = path.join(ROOT, "public", "admin.html");
 const ADMIN_DIST = path.join(ROOT, "dist", "public", "admin.html");
 const INDEX_SRC = path.join(ROOT, "public", "index.html");
 const AGENT_ID = "doc-king";
-const NEW_MODEL = "deepseek-r1:1.5b";
+// Fast local model advertised by BOTH bridge (priority 8) and ollama
+// (priority 9), so attribution still has to choose between them, while the
+// non-reasoning 1.7B model keeps the gate inside the 120s close cap.
+const NEW_MODEL = "lfm3:1.7b";
 
 function die(message) {
   console.error("FAIL " + message);
@@ -77,7 +80,7 @@ function request(method, pathname, body, headers) {
             : {},
           headers || {},
         ),
-        timeout: pathname === "/v1/chat/completions" ? 180000 : 20000,
+        timeout: pathname === "/v1/chat/completions" ? 90000 : 20000,
       },
       (res) => {
         const chunks = [];
@@ -293,15 +296,15 @@ async function main() {
   }
   ok("admin mapping applied: " + AGENT_ID + " -> " + NEW_MODEL + " (persona preserved)");
 
-  // The serving provider is decided by routing, so derive the expectation
-  // from the live provider list instead of hardcoding one: enabled, not
-  // confirmed down, advertises NEW_MODEL, lowest priority wins.
+  // Routing may fall back, so the live list defines the candidate set. The
+  // response header then names the provider that actually served; both DB
+  // records must agree with that header.
   const providerPayload = await adminJson("/api/admin/providers", "providers");
   const advertises = (p) =>
     (p.modelList || []).some(
       (entry) => String(entry).split("=>")[0] === NEW_MODEL,
     );
-  const expectedProvider = (providerPayload.providers || [])
+  const candidates = (providerPayload.providers || [])
     .filter((p) => p && p.enabled !== false && p.envDisabled !== true)
     .filter((p) => p.status !== "down")
     .filter(advertises)
@@ -309,18 +312,13 @@ async function main() {
       (a, b) =>
         Number(a.priority) - Number(b.priority) ||
         String(a.id).localeCompare(String(b.id)),
-    )[0];
-  if (!expectedProvider) {
+    );
+  if (!candidates.length) {
     die("no enabled provider advertises " + NEW_MODEL);
   }
   ok(
-    "expected serving provider from live list: " +
-      expectedProvider.id +
-      " (priority " +
-      expectedProvider.priority +
-      ", status " +
-      expectedProvider.status +
-      ")",
+    "candidate providers from live list: " +
+      candidates.map((p) => p.id + "(p" + p.priority + ")").join(", "),
   );
 
   try {
@@ -343,13 +341,30 @@ async function main() {
     }
     ok("x-zc-channel header reaches the chat interpreter");
 
-    // The real call: doc-king now routes to deepseek-r1:1.5b; whichever
-    // enabled provider advertises it with the lowest priority must answer.
+    // The real call: doc-king now routes to the fast lfm3:1.7b model;
+    // whichever enabled provider actually answers must be the one both DB
+    // records name. A fresh session per run keeps old agent memory out of
+    // the prompt, so the gate stays inside the 120s close cap.
+    const chatSession = "e2e-admin-chat-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
     const chat = await request("POST", "/v1/chat/completions", {
       channel: "web-chat",
+      session_id: chatSession,
       model: AGENT_ID,
       messages: [{ role: "user", content: "Answer in one short sentence: what is 2+2?" }],
-      max_tokens: 256,
+      // One tiny schema keeps the gateway from auto-injecting all 99 MCP
+      // tools; the local CPU prefills ~18 tokens/s, so the full catalog
+      // alone would blow the 120s close cap.
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "get_time",
+            description: "Return the current time. Not needed for this question.",
+            parameters: { type: "object", properties: {} },
+          },
+        },
+      ],
+      max_tokens: 64,
       temperature: 0,
       stream: false,
     });
@@ -373,6 +388,17 @@ async function main() {
         " web=" + chat.headers["x-zc-chat-web"],
     );
 
+    const servedBy = String(chat.headers["x-zc-chat-provider"] || "").trim();
+    if (!servedBy || servedBy === "unknown") {
+      die("response missing x-zc-chat-provider (actual serving provider)");
+    }
+    if (!candidates.some((p) => p.id === servedBy)) {
+      die(
+        "x-zc-chat-provider=" + servedBy + " is not an enabled provider that advertises " + NEW_MODEL,
+      );
+    }
+    ok("response reports serving provider: " + servedBy);
+
     const logged = db
       .prepare(
         `SELECT agent, model, provider, status, ok FROM request_log
@@ -382,10 +408,10 @@ async function main() {
       .get(AGENT_ID);
     if (!logged) die("no request_log row for " + AGENT_ID);
     if (logged.model !== NEW_MODEL) die("request_log model=" + logged.model + " want " + NEW_MODEL);
-    if (logged.provider !== expectedProvider.id) {
+    if (logged.provider !== servedBy) {
       die(
-        "request_log provider=" + logged.provider + " want " + expectedProvider.id +
-          " (live list says " + JSON.stringify(expectedProvider.modelList) + ")",
+        "request_log provider=" + logged.provider + " want " + servedBy +
+          " (the provider the response reported)",
       );
     }
     if (Number(logged.status) !== 200 || Number(logged.ok) !== 1) {
@@ -393,13 +419,13 @@ async function main() {
     }
     const stat = db
       .prepare("SELECT requests FROM model_stats WHERE model = ? AND provider = ?")
-      .get(NEW_MODEL, expectedProvider.id);
+      .get(NEW_MODEL, servedBy);
     if (!stat || Number(stat.requests) < 1) {
-      die("model_stats has no successful request for " + NEW_MODEL + " on " + expectedProvider.id);
+      die("model_stats has no successful request for " + NEW_MODEL + " on " + servedBy);
     }
     ok(
       "provider evidence: request_log + model_stats record " + NEW_MODEL +
-        " on " + expectedProvider.id + " (the provider that actually served)",
+        " on " + servedBy + " (matches x-zc-chat-provider)",
     );
   } finally {
     await restoreAgent(db, before);
