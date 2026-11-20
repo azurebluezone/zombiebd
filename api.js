@@ -13932,7 +13932,13 @@ const handleHttpRequest = async (req, res) => {
       });
       jsonResponse(res, 200, {
         count: AGENTS.length,
-        source: "agent/*.js",
+        // The registry is DB-first now; the label must not claim the file
+        // source while serving DB personas.
+        source: (() => {
+          const sources = new Set(AGENTS.map((a) => a.source || "agent/*.js"));
+          if (sources.size === 0) return "agent/*.js";
+          return [...sources].sort().join("+");
+        })(),
         tools: {
           catalog: toolNames.length,
           execution_limit: globalLimit,
