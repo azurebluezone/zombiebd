@@ -157,11 +157,13 @@ const {
 // Everything wire-related — headers, payloads, dialects, response
 // normalization — lives in ./provider and ./normalizer. api.js only routes.
 const providerRegistry = require("./provider");
+const customProviders = require("./provider/custom.js");
 const providerDefaults = require("./provider/defaults");
 const providerTransport = require("./provider/transport");
 const providerCapabilities = require("./provider/capabilities");
 const providerSecretStore = require("./lib/secret-store");
 const adminApi = require("./lib/admin-routes");
+const adminPanel = require("./lib/admin-panel.js");
 const toolRegister = require("./provider/tools");
 const toolBudget = require("./lib/tool-budget.js");
 
@@ -179,6 +181,8 @@ function adminApiContext() {
     providerPriority,
     saveProviderFromAdmin,
     deleteProviderFromAdmin,
+    testProviderFromAdmin,
+    syncProvidersFromAdmin,
     refreshFreeModels,
     persistProviderDisabled,
     normalizeProviderPriorities,
@@ -1030,105 +1034,72 @@ if (String(process.env.OPENCODE_ENABLED || "").toLowerCase() === "false") {
 }
 
 // ─── Dynamic Custom Provider Loader ─────────────────────────
-// Scans CUSTOM_PROVIDER_N_* env vars and dynamically adds them to
-// PROVIDER_CONFIG. Supports any number of custom OpenAI-compatible APIs.
-// Named function (not IIFE) so it can be re-run at runtime when the
-// user triggers an env-var re-sync (env vars are the single source of truth).
+// provider/custom.js is the one env→config resolver. This function only
+// projects that config into PROVIDER_CONFIG; DB rows are applied later by
+// loadProvidersFromDb(). N is any positive integer (no list, no cap), and
+// every custom_N provider speaks the OpenAI /v1 protocol.
 function loadCustomProviders() {
-  const seen = new Set();
-  for (const key of Object.keys(process.env)) {
-    const m = key.match(/^CUSTOM_PROVIDER_(\d+)_(.+)$/);
-    if (!m) continue;
-    const num = m[1];
-    const prop = m[2].toLowerCase();
-    if (seen.has(num)) continue;
-    seen.add(num);
+  const numbers = customProviders.listCustomNumbers(process.env);
+  let loaded = 0;
 
-    // ENABLED handling (was documented in .env but NEVER read):
-    // CUSTOM_PROVIDER_N_ENABLED=false removes the provider entirely from
-    // PROVIDER_CONFIG (no auto-sync attempt, no model rows, no /api/v1/models).
-    const enabled = String(
-      process.env["CUSTOM_PROVIDER_" + num + "_ENABLED"] || "true"
-    ).toLowerCase() !== "false";
-    if (!enabled) {
+  for (const num of numbers) {
+    if (!customProviders.enabledFromEnv(num, process.env)) {
       console.log(
         "[CUSTOM_PROVIDER_" + num + "] Disabled (ENABLED=false) — skipped",
       );
       continue;
     }
 
-    const name =
-      process.env["CUSTOM_PROVIDER_" + num + "_NAME"] || "Custom-" + num;
-    const url = expandEnv(process.env["CUSTOM_PROVIDER_" + num + "_URL"] || "").trim();
-    const socketPath = expandEnv(
-      process.env["CUSTOM_PROVIDER_" + num + "_SOCKET"] || "",
-    ).trim();
-    const apiKey = process.env["CUSTOM_PROVIDER_" + num + "_KEY"] || "";
-    const modelsStr = process.env["CUSTOM_PROVIDER_" + num + "_MODELS"] || "";
-    const priority = parseInt(
-      process.env["CUSTOM_PROVIDER_" + num + "_PRIORITY"] || "10",
-      10,
-    );
-    const type = process.env["CUSTOM_PROVIDER_" + num + "_TYPE"] || "openai";
-
-    if (!url && !socketPath) {
+    const cfg = customProviders.fromEnv(num, process.env);
+    if (!cfg) {
       console.warn(
         "[CUSTOM_PROVIDER_" + num + "] Skipped: no URL or SOCKET set",
       );
       continue;
     }
 
-    const models = modelsStr ? parseCustomModelsEnv(modelsStr) : ["*"];
+    const native = customProviders.requestedType(num, process.env);
+    if (native) {
+      log("WARN", "CUSTOM_PROVIDER_TYPE_IGNORED", {
+        provider: cfg.id,
+        configured: native,
+        using: "openai",
+        hint:
+          "custom_N is OpenAI-compatible only; create a DB provider with the native type instead",
+      });
+    }
 
-    const providerId = "custom_" + num;
-    // A CPU model can spend minutes on prefill; the cloud-shaped 60s default
-    // aborted real answers. Budget is per provider, set by env only.
-    const timeout = parseInt(
-      process.env["CUSTOM_PROVIDER_" + num + "_TIMEOUT_MS"] || "",
-      10,
-    );
-    const streamTimeout = parseInt(
-      process.env["CUSTOM_PROVIDER_" + num + "_STREAM_TIMEOUT_MS"] || "",
-      10,
-    );
-    const maxPromptChars = parseInt(
-      process.env["CUSTOM_PROVIDER_" + num + "_MAX_PROMPT_CHARS"] || "",
-      10,
-    );
-    const maxTools = parseInt(
-      process.env["CUSTOM_PROVIDER_" + num + "_MAX_TOOLS"] || "",
-      10,
-    );
-    const contextWindow = parseInt(
-      process.env["CUSTOM_PROVIDER_" + num + "_CONTEXT_WINDOW"] || "",
-      10,
-    );
-    PROVIDER_CONFIG[providerId] = {
-      name: name,
-      baseUrl: url || "http://localhost",
-      socketPath: socketPath || "",
-      key: apiKey,
-      envKey: apiKey,
-      keySource: apiKey ? "env" : "none",
+    const models = cfg.modelsStr ? parseCustomModelsEnv(cfg.modelsStr) : ["*"];
+    PROVIDER_CONFIG[cfg.id] = {
+      name: cfg.name,
+      baseUrl: cfg.baseUrl,
+      socketPath: cfg.socketPath,
+      key: cfg.key,
+      envKey: cfg.envKey,
+      keySource: cfg.keySource,
       source: "env",
-      priority: priority,
-      type: type,
+      priority: cfg.priority,
+      type: "openai",
       models: models,
       // An explicit CUSTOM_PROVIDER_N_MODELS list is an allowlist, not a
       // seed to be expanded by the live catalog. Kept separately so a stale
       // DB row cannot re-expand the provider on the next boot.
-      envModels: modelsStr ? models.slice() : null,
+      envModels: cfg.modelsStr ? models.slice() : null,
       custom: true,
-      ...(Number.isFinite(timeout) && timeout > 0 ? { timeout } : {}),
-      ...(Number.isFinite(streamTimeout) && streamTimeout > 0 ? { streamTimeout } : {}),
-      ...(Number.isFinite(maxPromptChars) && maxPromptChars > 0 ? { maxPromptChars } : {}),
-      ...(Number.isFinite(maxTools) && maxTools >= 0 ? { maxTools } : {}),
-      ...(Number.isFinite(contextWindow) && contextWindow > 0 ? { contextWindow } : {}),
+      ...(cfg.timeout ? { timeout: cfg.timeout } : {}),
+      ...(cfg.streamTimeout ? { streamTimeout: cfg.streamTimeout } : {}),
+      ...(cfg.maxPromptChars ? { maxPromptChars: cfg.maxPromptChars } : {}),
+      ...(cfg.maxTools !== undefined ? { maxTools: cfg.maxTools } : {}),
+      ...(cfg.contextWindow ? { contextWindow: cfg.contextWindow } : {}),
     };
-    console.log("[CUSTOM_PROVIDER] Loaded: " + name + " (" + url + ")");
+    loaded++;
+    console.log(
+      "[CUSTOM_PROVIDER] Loaded: " + cfg.name + " (" + cfg.baseUrl + ")",
+    );
   }
-  if (seen.size > 0) {
-    console.log("[CUSTOM_PROVIDER] Total loaded: " + seen.size);
+
+  if (loaded > 0) {
+    console.log("[CUSTOM_PROVIDER] Total loaded: " + loaded);
   }
 }
 loadCustomProviders();
@@ -1795,10 +1766,20 @@ function loadProvidersFromDb() {
     const maxTools = parseInt(process.env[envPrefix + "_MAX_TOOLS"] || "", 10);
     const contextWindow = parseInt(process.env[envPrefix + "_CONTEXT_WINDOW"] || "", 10);
     const extraBody = jsonObjectEnv(envPrefix + "_EXTRA_BODY");
+    let rowType = String(row.type || existing.type || "openai").toLowerCase();
+    if (customProviders.isCustomId(row.id) && rowType !== "openai") {
+      log("WARN", "CUSTOM_PROVIDER_TYPE_IGNORED", {
+        provider: row.id,
+        configured: rowType,
+        using: "openai",
+        source: "db",
+      });
+      rowType = "openai";
+    }
     PROVIDER_CONFIG[row.id] = Object.assign({}, existing, {
       name: row.name || existing.name || row.id,
       baseUrl: row.base_url || existing.baseUrl || "",
-      type: row.type || existing.type || "openai",
+      type: rowType,
       key,
       envKey,
       keySource: dbKey ? "db" : envKey ? "env" : "none",
@@ -1896,6 +1877,37 @@ function modelKind(p, m) {
   return "chat";
 }
 
+// Per-model admin state: the config list is the source of order, the DB row
+// carries the persisted enabled flag. DISABLED_MODELS is the runtime truth the
+// router actually uses, so a stale DB row can never claim a model is on.
+function providerModelStates(id, p) {
+  const rows = new Map();
+  if (MODELS_DB) {
+    try {
+      for (const row of MODELS_DB.prepare(
+        "SELECT name, enabled, supports_tools FROM models WHERE provider = ?",
+      ).all(id)) {
+        rows.set(row.name, row);
+      }
+    } catch (e) {
+      log("WARN", "PROVIDER_MODEL_STATE_FAIL", { provider: id, error: e.message });
+    }
+  }
+  return (p.models || []).map((m) => {
+    const name = getModelName(m);
+    const row = rows.get(name);
+    return {
+      name,
+      apiModel: getApiModelName(m),
+      enabled: !DISABLED_MODELS.has(id + "::" + name),
+      supportsTools:
+        row && row.supports_tools !== null && row.supports_tools !== undefined
+          ? row.supports_tools === 1
+          : null,
+    };
+  });
+}
+
 function providerSummary(id, p) {
   const st = getProviderStat(id);
   const reqs = st ? st.requests : 0;
@@ -1924,6 +1936,8 @@ function providerSummary(id, p) {
       const apiModel = getApiModelName(m);
       return name === apiModel ? name : name + "=>" + apiModel;
     }),
+    modelStates: providerModelStates(id, p),
+    status: healthy ? "up" : "down",
     source: p.source || "env",
     hasKey: !!keyState.key,
     keySource: keyState.source,
@@ -1997,10 +2011,32 @@ const PROVIDER_TYPES = new Set([
   "opencode",
 ]);
 
+// The panel never asks the operator to invent an id: a new provider gets the
+// next custom_N. The number is derived from the live config plus the DB rows,
+// so a deleted-then-recreated provider cannot collide with an env seed.
+function nextCustomProviderId() {
+  let max = 0;
+  const scan = (candidate) => {
+    const m = /^custom_(\d+)$/i.exec(String(candidate || ""));
+    if (m) max = Math.max(max, Number(m[1]));
+  };
+  for (const id of Object.keys(PROVIDER_CONFIG)) scan(id);
+  if (MODELS_DB) {
+    try {
+      for (const row of MODELS_DB.prepare("SELECT id FROM providers").all()) {
+        scan(row.id);
+      }
+    } catch (e) {
+      log("WARN", "PROVIDER_AUTO_ID_SCAN_FAIL", { error: e.message });
+    }
+  }
+  return "custom_" + (max + 1);
+}
+
 async function saveProviderFromAdmin(rawBody) {
   const b = rawBody || {};
   const requestedId = String(b.id || "").trim();
-  const id = requestedId || "auto_" + crypto.randomBytes(4).toString("hex");
+  const id = requestedId || nextCustomProviderId();
   if (!/^[a-z0-9][a-z0-9_-]{1,48}$/i.test(id)) {
     return {
       status: 400,
@@ -2023,6 +2059,21 @@ async function saveProviderFromAdmin(rawBody) {
       payload: {
         ok: false,
         error: "Unsupported provider type: " + type,
+      },
+    };
+  }
+  // custom_N is the OpenAI-compatible surface, full stop. A native dialect
+  // must use a non-custom id, so the env seed and the DB row can never
+  // disagree about what a custom provider speaks.
+  if (customProviders.isCustomId(id) && type !== "openai") {
+    return {
+      status: 400,
+      payload: {
+        ok: false,
+        error:
+          "custom_N providers are OpenAI-compatible only (type must be openai). " +
+          "Use a non-custom id for a native adapter.",
+        code: "CUSTOM_PROVIDER_TYPE_REJECTED",
       },
     };
   }
@@ -2105,11 +2156,65 @@ async function saveProviderFromAdmin(rawBody) {
     models = b.models.trim() ? parseCustomModelsEnv(b.models) : models;
   }
 
-  const priority = Number.isFinite(Number(b.priority))
+  // Priority is a single unique slot, so an explicit value is a placement,
+  // not a hint. The provider already holding that slot moves to the slot the
+  // incoming provider is vacating (a swap); a brand-new provider pushes the
+  // holder to the end. Omitting priority assigns the next free slot through
+  // normalizeProviderPriorities below.
+  const requestedPriority = Number.isFinite(Number(b.priority))
     ? Number(b.priority)
-    : existing && Number.isFinite(Number(existing.priority))
+    : null;
+  const previousPriority =
+    existing && Number.isFinite(Number(existing.priority))
       ? Number(existing.priority)
-      : 999;
+      : null;
+  let priority =
+    requestedPriority !== null
+      ? requestedPriority
+      : previousPriority !== null
+        ? previousPriority
+        : 999;
+  let prioritySwap = null;
+  if (requestedPriority !== null) {
+    const holder = Object.entries(PROVIDER_CONFIG).find(
+      ([otherId, other]) =>
+        otherId !== id && providerPriority(other) === requestedPriority,
+    );
+    if (holder) {
+      const [holderId, holderCfg] = holder;
+      let movedTo;
+      if (previousPriority !== null && previousPriority !== requestedPriority) {
+        movedTo = previousPriority;
+      } else {
+        let maxPriority = 0;
+        for (const [otherId, other] of Object.entries(PROVIDER_CONFIG)) {
+          if (otherId === id) continue;
+          maxPriority = Math.max(maxPriority, providerPriority(other));
+        }
+        movedTo = maxPriority + 1;
+      }
+      holderCfg.priority = movedTo;
+      prioritySwap = { id: holderId, from: requestedPriority, to: movedTo };
+      if (MODELS_DB) {
+        try {
+          MODELS_DB.prepare(
+            "UPDATE providers SET priority = ?, updated_at = ? WHERE id = ?",
+          ).run(movedTo, Date.now(), holderId);
+        } catch (e) {
+          log("WARN", "PROVIDER_PRIORITY_SWAP_FAIL", {
+            provider: holderId,
+            error: e.message,
+          });
+        }
+      }
+      log("INFO", "PROVIDER_PRIORITY_SWAP", {
+        incoming: id,
+        requested: requestedPriority,
+        moved: holderId,
+        movedTo,
+      });
+    }
+  }
   // An env-disabled provider stays off even when an admin save payload asks
   // for enabled:true. Only the env flag can reopen it.
   const envLocked = !!(existing && existing.envDisabled === true);
@@ -2199,8 +2304,192 @@ async function saveProviderFromAdmin(rawBody) {
     payload: {
       ok: true,
       keyValid: apiKey ? true : undefined,
+      prioritySwap,
       provider: providerSummary(id, PROVIDER_CONFIG[id]),
     },
+  };
+}
+
+// POST /api/admin/providers {action:"test"} — discover /v1/models with the
+// entered URL/key before anything is written. A draft (no saved row) is a
+// pure probe; an existing DB row can persist the discovered list in one call.
+async function testProviderFromAdmin(rawBody) {
+  const b = rawBody || {};
+  const id = String(b.id || "").trim();
+  const existing = id ? PROVIDER_CONFIG[id] || null : null;
+  const type = String(
+    b.type || (existing && existing.type) || "openai",
+  ).toLowerCase();
+  if (!PROVIDER_TYPES.has(type)) {
+    return {
+      status: 400,
+      payload: { ok: false, error: "Unsupported provider type: " + type },
+    };
+  }
+  const baseUrl = String(
+    b.baseUrl !== undefined && b.baseUrl !== null && b.baseUrl !== ""
+      ? b.baseUrl
+      : (existing && existing.baseUrl) || "",
+  ).trim();
+  const socketPath = String(
+    b.socketPath !== undefined && b.socketPath !== null && b.socketPath !== ""
+      ? b.socketPath
+      : (existing && existing.socketPath) || "",
+  ).trim();
+  if (!baseUrl && !socketPath) {
+    return {
+      status: 400,
+      payload: { ok: false, error: "baseUrl or socketPath is required" },
+    };
+  }
+  let apiKey = typeof b.apiKey === "string" ? b.apiKey.trim() : "";
+  if (!apiKey && existing) apiKey = providerKey(id, existing).key;
+  const probe = {
+    type,
+    baseUrl: baseUrl || "http://localhost",
+    key: apiKey,
+    socketPath,
+    enabled: true,
+    models: [],
+    custom: true,
+  };
+  const fetched = await fetchProviderModels(id || "admin_test", probe);
+  if (!fetched.ok) {
+    return {
+      status: 502,
+      payload: {
+        ok: false,
+        error: fetched.error || "model discovery failed",
+        raw: fetched.raw || undefined,
+      },
+    };
+  }
+  const models = (fetched.models || []).filter(Boolean);
+  let persisted = false;
+  if (b.persist === true && existing && existing.source === "db" && MODELS_DB) {
+    const now = Date.now();
+    existing.models = models;
+    try {
+      MODELS_DB.prepare(
+        "UPDATE providers SET models = ?, updated_at = ? WHERE id = ?",
+      ).run(serializeModelList(models), now, id);
+      persisted = true;
+    } catch (e) {
+      log("WARN", "ADMIN_PROVIDER_TEST_PERSIST_FAIL", {
+        provider: id,
+        error: e.message,
+      });
+    }
+    syncModelsToDb();
+    refreshFreeModels();
+  }
+  log("INFO", "ADMIN_PROVIDER_TEST", {
+    provider: id || null,
+    baseUrl: probe.baseUrl,
+    found: models.length,
+    persisted,
+  });
+  return {
+    status: 200,
+    payload: {
+      ok: true,
+      id: id || null,
+      count: models.length,
+      models,
+      persisted,
+    },
+  };
+}
+
+// POST /api/admin/providers {action:"sync"} — re-read the live /v1/models list
+// at runtime and persist it. Without an id this covers every DB-managed
+// provider, which is the "a model appeared upstream and we never knew" case.
+async function syncProvidersFromAdmin(rawBody) {
+  const b = rawBody || {};
+  const only = String(b.id || "").trim();
+  if (!MODELS_DB) {
+    return { status: 503, payload: { ok: false, error: "sqlite unavailable" } };
+  }
+  if (only && !PROVIDER_CONFIG[only]) {
+    return {
+      status: 404,
+      payload: { ok: false, error: "Unknown provider: " + only },
+    };
+  }
+  const ids = only
+    ? [only]
+    : Object.entries(PROVIDER_CONFIG)
+        .filter(([, p]) => p.source === "db")
+        .map(([id]) => id);
+  const results = {};
+  let changed = 0;
+  for (const id of ids) {
+    const p = PROVIDER_CONFIG[id];
+    if (!p) {
+      results[id] = { ok: false, error: "not configured" };
+      continue;
+    }
+    if (p.enabled === false) {
+      results[id] = { ok: false, skipped: true, reason: "admin-disabled" };
+      continue;
+    }
+    const fetched = await fetchProviderModels(id, p);
+    if (!fetched.ok) {
+      results[id] = { ok: false, error: fetched.error || "no models" };
+      continue;
+    }
+    const live = (fetched.models || []).filter(Boolean);
+    if (!live.length) {
+      results[id] = { ok: false, error: "provider reported no models" };
+      continue;
+    }
+    const before = p.models.map((m) => getApiModelName(m));
+    const envModels = Array.isArray(p.envModels) ? p.envModels : [];
+    p.models = providerModels.reconcileModels(p.models, live, {
+      envModels,
+      strict: false,
+    });
+    const after = p.models.map((m) => getApiModelName(m));
+    const added = after.filter((name) => !before.includes(name));
+    const removed = before.filter((name) => !after.includes(name));
+    const now = Date.now();
+    MODELS_DB.prepare(
+      "UPDATE providers SET models = ?, updated_at = ? WHERE id = ? AND source = 'db'",
+    ).run(serializeModelList(p.models), now, id);
+    // Drop stale mirror rows so the models table and the live list agree.
+    try {
+      if (after.length) {
+        const placeholders = after.map(() => "?").join(",");
+        MODELS_DB.prepare(
+          "DELETE FROM models WHERE provider = ? AND name NOT IN (" + placeholders + ")",
+        ).run(id, ...after);
+      } else {
+        MODELS_DB.prepare("DELETE FROM models WHERE provider = ?").run(id);
+      }
+    } catch (e) {
+      log("WARN", "ADMIN_PROVIDER_SYNC_PRUNE_FAIL", {
+        provider: id,
+        error: e.message,
+      });
+    }
+    changed += added.length + removed.length;
+    results[id] = {
+      ok: true,
+      fetched: live.length,
+      added,
+      removed,
+      total: p.models.length,
+    };
+  }
+  const db = syncModelsToDb();
+  refreshFreeModels();
+  log("INFO", "ADMIN_PROVIDER_SYNC", {
+    providers: Object.keys(results).length,
+    changed,
+  });
+  return {
+    status: 200,
+    payload: { ok: true, changed, results, db: db && db.ok !== false },
   };
 }
 
@@ -2782,6 +3071,18 @@ function resolveProvider(model, exactOnly) {
   );
   for (const [id, p] of sortedProviders) {
     if (p.enabled === false) continue; // admin-disabled provider
+    // Runtime-down is not the same as admin-disabled. A provider that keeps
+    // failing is skipped for the cooldown window so one dead endpoint cannot
+    // make every model it happens to list unusable. It stays enabled in the
+    // DB and recovers by itself after HEALTH_CONFIG.RECOVERY_COOLDOWN_MS.
+    if (!isProviderHealthy(id)) {
+      log("INFO", "PROVIDER_SKIP_DOWN", {
+        provider: id,
+        model,
+        reason: "unhealthy",
+      });
+      continue;
+    }
     for (const m of p.models) {
       const name = getModelName(m);
       // admin-disabled model — never resolved, still re-enableable in admin
@@ -2851,13 +3152,19 @@ function resolveProvider(model, exactOnly) {
 
 // ─── Resolve all matching providers in priority order (for fallback) ──
 // If primary provider fails, callModel tries the next provider
-function resolveAllProviders(model) {
+function resolveAllProviders(model, options) {
+  const opts = options || {};
   const sorted = Object.entries(PROVIDER_CONFIG).sort(
     ([, a], [, b]) => providerPriority(a) - providerPriority(b),
   );
   const matches = [];
   for (const [id, p] of sorted) {
     if (p.enabled === false) continue; // admin-disabled provider
+    // Runtime-down is separate from admin-disabled: keep the provider in the
+    // registry (and re-enableable), but do not hand a request to an endpoint
+    // that is inside its failure cooldown. The proxy path uses this function
+    // directly, so the skip has to live here as well as in resolveProvider().
+    if (!opts.includeUnhealthy && !isProviderHealthy(id, model)) continue;
     for (const m of p.models) {
       if (DISABLED_MODELS.has(id + "::" + getModelName(m))) continue; //
       if (getModelName(m) === model || getApiModelName(m) === model) {
@@ -13948,19 +14255,41 @@ const handleHttpRequest = async (req, res) => {
     // The admin page is only a client; no UI file is required to boot.
     if (await adminApi.handle(adminApiContext(), req, res, url, method)) return;
 
-    // ─── GET /admin/:file — Admin Panel static files ─
+    // ─── GET /admin — self-contained panel ────────────────────
+    // The full document, CSS and client JS come from lib/admin-panel.js.
+    // public/admin.html is never read here, so an absent or renamed file
+    // cannot break the panel. The client verifies the admin credential once
+    // and then polls the same plain routes curl uses.
+    if ((url === "/admin" || url === "/admin/") && method === "GET") {
+      const html = adminPanel.renderAdminPanel({
+        domain: DETECTED_DOMAIN,
+        version: DOMAIN_CFG.version,
+        serverType: DOMAIN_CFG.type,
+      });
+      res.writeHead(200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Access-Control-Allow-Origin": getCorsOrigin(req.headers.origin),
+        "Cache-Control": "no-cache",
+      });
+      res.end(html);
+      log("INFO", "REQUEST", {
+        method,
+        url,
+        status: 200,
+        elapsed: Date.now() - startTime,
+      });
+      return;
+    }
+
+    // ─── GET /admin/:file — legacy static assets ──────────────
     // Directory resolution: ADMIN_DIR env var first; NO hardcoded path —
-    // fallback is <project>/public (ships with this repo, always exists).
-    // Injects dynamic BASE_URL into HTML files before serving
-    if ((url === "/admin" || url.startsWith("/admin/")) && method === "GET") {
+    // fallback is <project>/public. The panel itself no longer depends on
+    // this route; it remains for operators who keep extra assets there.
+    if (url.startsWith("/admin/") && method === "GET") {
       const ADMIN_DIR = path.resolve(
         process.env.ADMIN_DIR || path.join(__dirname, "public"),
       );
-      // /admin is the panel itself; /admin/<file> serves its assets.
-      let filePath =
-        url === "/admin" || url === "/admin/"
-          ? "/admin.html"
-          : url.replace("/admin", "");
+      let filePath = url.replace("/admin", "");
       if (!filePath || filePath === "/") filePath = "/admin.html";
       const fullPath = path.join(ADMIN_DIR, filePath);
 
@@ -15461,6 +15790,28 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
           return;
         }
         if (!orderedProviders.length) {
+          // A model that exists but whose only providers are inside a failure
+          // cooldown is NOT an unknown model. Say "temporarily unavailable"
+          // so a client retries later instead of rewriting its config.
+          const downProviders = resolveAllProviders(model, {
+            includeUnhealthy: true,
+          });
+          if (downProviders.length) {
+            log("WARN", "PROXY_ALL_PROVIDERS_DOWN", {
+              model,
+              providers: downProviders.map((p) => p.providerId),
+            });
+            jsonResponse(res, 503, {
+              error: {
+                message:
+                  `All providers serving "${model}" are temporarily unavailable ` +
+                  `(${downProviders.map((p) => p.providerId).join(", ")}). Retry after the cooldown.`,
+                type: "server_error",
+                code: "providers_down",
+              },
+            });
+            return;
+          }
           const known = [...new Set(
             Object.values(PROVIDER_CONFIG)
               .filter((p) => p.enabled !== false)

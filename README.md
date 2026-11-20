@@ -105,8 +105,8 @@ leftover copy exits with code 78.
 | MCP tools | 155 | `tools/list` over `/mcp` |
 | Model rows | 111 | `/health` |
 | Advertised catalogue | 121 entries | `/api/v0/models` |
-| llama.cpp OpenAI | `custom_5`, `http://localhost:9932/v1` | `/api/v0/models` |
-| llama.cpp native | `custom_6`, `http://localhost:9932` | `/api/v0/models` |
+| llama.cpp OpenAI | custom provider row, `http://localhost:9932/v1` | `/api/v0/models` |
+| llama.cpp native | DB provider, type `llamacpp`, `http://localhost:9932` | `/api/v0/models` |
 | llama.cpp model | `qwen3-1.7b-abliterated` | `/api/v0/models` |
 | Ollama | `http://localhost:11434` | `/api/tags` |
 | Local bridge | `localhost:11435`, backend `ollama`, model `qwen2:0.5b` | `/health` |
@@ -227,9 +227,11 @@ above for that evidence.
 
 ## Providers and routing
 
-Providers are configured by environment variables only. The router resolves
-`model name -> provider -> adapter` and never writes a provider choice into
-source code.
+Providers come from two sources: the environment and SQLite (`providers`
+table). Env seeds the first default and DB rows own the rest, so
+`POST /api/admin/providers` persists a provider without touching `.env`. The
+router resolves `model name -> provider -> adapter` and never writes a
+provider choice into source code.
 
 | Provider | Config | Notes |
 |----------|--------|-------|
@@ -237,13 +239,16 @@ source code.
 | `groq` | `GROQ_*` | Requires a valid key. |
 | `gemini` | `GEMINI_*` | Requires a valid key. |
 | `ollama` | `OLLAMA_*` | Local, default `localhost:11434`. |
-| `custom_5` | `CUSTOM_PROVIDER_5_*` | llama.cpp OpenAI-compatible `/v1`, priority 0. |
-| `custom_6` | `CUSTOM_PROVIDER_6_*` | llama.cpp native `/completion`, priority 1. |
+| `custom_<N>` | `CUSTOM_PROVIDER_<N>_*` | Any positive integer, no cap. Always the OpenAI-compatible `/v1` adapter. |
+| DB rows | admin panel or curl | Any id, type and endpoint; `custom_N` ids are restricted to `openai`. |
 
-Both llama.cpp providers read one URL pair from `.env`:
-`LLAMA_CPP_BASE` and `LLAMA_CPP_URL=${LLAMA_CPP_BASE}/v1`. `custom_5` uses
-`${LLAMA_CPP_URL}` with the OpenAI adapter; `custom_6` uses `${LLAMA_CPP_BASE}`
-with the native `llamacpp` adapter. No provider URL is hardcoded in source.
+`custom_<N>` providers are OpenAI-compatible by contract: a native dialect is
+rejected for a `custom_N` id. Native llama.cpp (`/completion`, no `/v1`) is a
+DB row with type `llamacpp`, created in the admin panel — not a custom
+provider. No provider URL is hardcoded in source.
+
+The URL pair `LLAMA_CPP_BASE` / `LLAMA_CPP_URL=${LLAMA_CPP_BASE}/v1` is an
+optional anchor for your own custom-provider URL lines.
 
 A CPU-served model gets its budgets from the same per-provider keys:
 

@@ -27,10 +27,10 @@ const ollama = require("./ollama");
 const opencode = require("./opencode");
 const llamacpp = require("./llamacpp");
 const defaults = require("./defaults");
+const custom = require("./custom");
 const validator = require("./validator");
 const capabilities = require("./capabilities");
 const zclog = require("../lib/zc-log");
-const { expandEnv } = require("../lib/expand-env");
 
 // Adapter keyed by WIRE dialect — not by vendor marketing name.
 // `openai` covers OpenAI, vLLM, and every custom_N endpoint.
@@ -138,23 +138,22 @@ function configForId(id) {
   const builtin = defaults.builtinConfig(id, env);
   if (builtin) return builtin;
 
-  // custom_N providers: CUSTOM_PROVIDER_<n>_{URL,KEY,TYPE,...}
-  const m = /^custom_(\d+)$/i.exec(id);
-  if (m) {
-    const n = m[1];
-    // A CPU llama.cpp server can take far longer than the 60s default to
-    // prefill a large prompt. The timeout is per provider because a local
-    // box and a cloud API must not share one budget.
-    const timeout = parseInt(env["CUSTOM_PROVIDER_" + n + "_TIMEOUT_MS"] || "", 10);
-    const streamTimeout = parseInt(env["CUSTOM_PROVIDER_" + n + "_STREAM_TIMEOUT_MS"] || "", 10);
-    return {
-      id: id,
-      baseUrl: expandEnv(env["CUSTOM_PROVIDER_" + n + "_URL"] || "").trim(),
-      key: env["CUSTOM_PROVIDER_" + n + "_KEY"],
-      type: (env["CUSTOM_PROVIDER_" + n + "_TYPE"] || "openai").toLowerCase(),
-      ...(Number.isFinite(timeout) && timeout > 0 ? { timeout } : {}),
-      ...(Number.isFinite(streamTimeout) && streamTimeout > 0 ? { streamTimeout } : {}),
-    };
+  // custom_N providers: CUSTOM_PROVIDER_<n>_{URL,KEY,...}. One shared
+  // resolver owns the mapping; custom_N is always the OpenAI adapter. A CPU
+  // model can spend minutes on prefill, so the per-provider budget travels
+  // with the config instead of sharing the cloud 60s default.
+  if (custom.isCustomId(id)) {
+    const cfg = custom.fromEnv(id, env);
+    if (cfg) {
+      return {
+        id: cfg.id,
+        baseUrl: cfg.baseUrl,
+        key: cfg.key,
+        type: "openai",
+        ...(cfg.timeout ? { timeout: cfg.timeout } : {}),
+        ...(cfg.streamTimeout ? { streamTimeout: cfg.streamTimeout } : {}),
+      };
+    }
   }
   return { id: id, baseUrl: "", key: "", type: "openai" };
 }

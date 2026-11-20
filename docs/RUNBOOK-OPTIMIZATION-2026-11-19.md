@@ -856,6 +856,119 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 
 ---
 
+## 10. পরবর্তী এক্সিকিউশন প্ল্যান ও নতুন সমস্যা (2026-11-20 audit)
+
+**এই সেকশনটি section 9-এর শেষের “পরের ধাপ” লাইনটির বর্তমান প্রতিস্থাপন।** এখানে শুধু verified state, ordered backlog আর নতুন সমস্যা; এই pass-এ কোনো product code বদলায়নি।
+
+### 10.1 Verified baseline (HEAD `2ba48b4`)
+
+| বিষয় | প্রমাণ |
+|---|---|
+| MCP transport | local servers (`ocr`, `screen-recorder`, `tts`, `public-api`, `universal-adapter`) সব `transport=stdio`; `3110/3111/3112/3121/3122/3123`-এ কোনো listener নেই |
+| Admin decoupling | `ADMIN_DIR` না থাকলেও gateway boot করে; `/api/admin/agents` POST SQLite-এ লেখে; `/api/mcp-remote/add` token encrypted persist করে |
+| Runtime path | `.missionbarisal/mcp-config.json` → `/home/sahon/zombiebd/data/run/mcp.sock` (APP_ROOT; `dist/data` নেই) |
+| Gates | `node tests/mcp-architecture-check.js` → `MCP_STDIO_ADMIN_OK` (21/21); `node tests/provider-neutrality-check.js` → `PROVIDER_NEUTRAL_OK`; `node tests/uds-e2e-check.js` → `RESULT: UDS E2E PASS`; `node tests/broker-free-check.js` → `BROKER-FREE PASS`; live `/health` → 97 models, 9 agents |
+
+এক-লাইনে: **MCP stdio/admin batch বন্ধ; এখন একমাত্র খোলা P0 হলো P0-08।**
+
+### 10.2 পরবর্তী একক ধাপ — P0-08 (provider health honesty)
+
+**কেন এটাই প্রথম:** P0 তালিকার একমাত্র OPEN আইটেম; ভুল `healthy` মানে operator ভাঙা provider-কে সুস্থ ভাবছে, আর পুরোনো `last_error` সফল request-এর পরেও থেকে যাচ্ছে।
+
+**বর্তমান প্রমাণ (line numbers HEAD-এ shift হয়েছে):**
+
+- `api.js:12518` — `getProviderHealth()` নতুন provider-কে probe ছাড়াই `healthy: true` দেয়।
+- `api.js:13443` — `/health` সবসময় `healthy: true` লেখে; provider-দের অবস্থা আলাদা করে বলে না।
+- `api.js:12807` — `last_error = COALESCE(excluded.last_error, last_error)`; success-এ `null` পাঠালেও পুরোনো error মুছে না।
+
+**প্রস্তাবিত fix (একই batch-এ, আলাদা commit):**
+
+1. initial state `healthy: null` + `lastProbeAt: null`; probe/attempt ছাড়া কোনো provider “healthy” নয়।
+2. `/health`-এ process liveness `healthy: true` থাকবে, কিন্তু নতুন additive `providers` block আসবে: `{id, status, lastProbeAt, lastError}`; TTL (`PROVIDER_HEALTH_TTL_MS`, default 60s) পেরোলে status `unknown`/`stale`, কখনো `true` নয়।
+3. success-এ `last_error = NULL, last_error_at = NULL` (COALESCE বাদ); failure-এ timestamp-সহ set.
+4. `/api/providers`, admin provider list আর `/health.providers` — তিনজন একই health source পড়বে; দ্বিতীয় map নয়।
+
+**Gate:** নতুন `tests/provider-health-honesty-check.js` → `PROVIDER_HEALTH_OK`:
+
+- stub 500 → provider degraded + `last_error` set;
+- stub 200 → SQLite-এ `last_error` NULL;
+- stub বন্ধ + TTL → status `unknown`/`stale`, `healthy: true` নয়;
+- `/health.healthy` process-এর জন্য true থাকে, কিন্তু `providers.<id>.status` probe ছাড়া true হয় না।
+
+**Done:** `PROVIDER_HEALTH_OK` + `PROVIDER_NEUTRAL_OK` + `RESULT: UDS E2E PASS`; `provider_stats`-এ success-এর পর পুরোনো error নেই।
+
+**Rollback:** `/health`-এর নতুন `providers` block additive, তাই পুরোনো consumer ভাঙে না; শুধু `api.js` revert করলেই আগের state।
+
+### 10.3 Ordered backlog — এরপর কী, কোন ক্রমে
+
+| # | আইটেম | কাজ | Gate |
+|---:|---|---|---|
+| 1 | **P0-08** | provider health honesty + stale `last_error` | `PROVIDER_HEALTH_OK` |
+| 2 | **N2** | test-spawned gateway `.missionbarisal` pollution বন্ধ (৪টি test বাকি) | `TEST_APP_ROOT_OK` |
+| 3 | **N1** | provider attribution: `bridge` vs `ollama` সত্য ঠিক করা | `ADMIN_CHAT_E2E_OK` |
+| 4 | **N4** | `local-tool-cap`-এর পুরোনো A1/D15 assertion update | `LOCAL_TOOL_CAP_OK` |
+| 5 | **P1-10 + P1-02** | বাকি size budget (`SESSION_MAX_BYTES`, `WEB_UI_MAX_BYTES`, `TOOL_RESULT_MAX_BYTES`) + `request_log` trace column | `CONFIG_TRACE_OK` |
+| 6 | **P1-07** | R2T silent builtin fallback → log + response header | `R2T_TRACE_OK` |
+| 7 | **N5** | safe rebuild+restart এক কমান্ডে (stale dist risk বন্ধ) | `REBUILD_RESTART_OK` |
+| 8 | **P1-09 + P1-08** | `package.json` + installer-এ apt/dnf/pacman/brew | `PACKAGE_INSTALL_OK` |
+| 9 | **P2-02 + P2-03** | log/backup retention + 30-case eval harness | `QUALITY_EVAL_OK` |
+| 10 | **N3** | PLAN/status snapshot drift ঠিক করা | `DOCS_CURRENT_OK` |
+| 11 | **N6** | skill MCP stdio integration (reference project read-only) | `SKILL_MCP_OK` |
+
+**নীতি:** ১–২ একই দিনে (P0 + live config safety), ৩–৪ test truth, ৫–৬ observability, ৭–৮ release portability, ৯ quality, ১০–১১ docs/feature. প্রতিটি আইটেম আলাদা contract + gate; এক batch-এ দুইটার বেশি নয়।
+
+### 10.4 নতুন সমস্যা — N1–N6 (প্রমাণসহ)
+
+#### N1 — provider attribution drift: test `ollama` চায়, log `bridge` লিখছে
+
+- **প্রমাণ:** `tests/admin-chat-e2e-check.js:340` — `logged.provider !== "ollama"` হলে fail; কিন্তু `data/models.db`-এর `request_log`-এ `doc-king`-এর local model row `provider=bridge` (ts `1795145597627`, আগের row-ও `bridge`)। `node tests/admin-chat-e2e-check.js` → `FAIL request_log provider=bridge want ollama`.
+- **Impact:** provider attribution-কে ঘিরে gate মিথ্যা red; কোন layer (bridge transport না upstream ollama) খরচ/error বহন করছে তা log থেকে বোঝা যায় না।
+- **Fix:** আগে সিদ্ধান্ত — `provider` হবে origin (`ollama`) না transport (`bridge`); তারপর P1-02-এর সাথে `upstream_provider`/`fallback_from` column যোগ করে test expectation ঠিক করা। routing বদলানো লাগলে আলাদা contract।
+- **Gate:** `ADMIN_CHAT_E2E_OK` (expectation + DB row একই truth)।
+
+#### N2 — test-spawned gateway live `.missionbarisal` config overwrite করে
+
+- **প্রমাণ:** `api.js:468` — `_MISSION_BARISAL_DIR = path.join(RUNTIME_PATHS.appRoot, ".missionbarisal")`; নিচের test-গুলো temp `DATA_DIR`/`UDS` দেয় কিন্তু `APP_ROOT` দেয় না, তাই config project root-এ লেখে: `tests/provider-suite-check.js`, `tests/transport-suite.js`, `tests/cwd-db-repair-check.js`, `tests/provider-matrix-check.js`। বাস্তবে observed: `node tests/broker-free-check.js` চালানোর পর live `.missionbarisal/mcp-config.json`-এ `/tmp/opencode/broker-free-34834/mcp.sock` ঢুকে গিয়েছিল; `2ba48b4`-এ broker-free-তে `APP_ROOT: TMP` যোগ করা হয়েছে, বাকি ৪টি এখনো বাকি।
+- **Impact:** যেকোনো test run live editor config ভাঙতে পারে; gateway restart না করলে client ভুল socket-এ যায়।
+- **Fix:** চারটি test-এ `APP_ROOT: TMP` (অথবা `MISSIONBARISAL_DIR` override); spawn audit gate।
+- **Gate:** `TEST_APP_ROOT_OK` — প্রতিটি `api.js` spawn-এ `APP_ROOT` থাকা বা explicit isolated config dir; live config hash test-এর আগে/পরে একই।
+
+#### N3 — PLAN ও status snapshot drift
+
+- **প্রমাণ:** `docs/PLAN-2026-11-20.md:3` — “কাজ শুরু হয়নি”; `:33` — “96 models”; `:34` — “pid 827, dist/start.js”; live এখন `/health` → 97 models, service MainPID `35382`, root `start.js`। `tmp/refactor-2026-11-20/runbook-status.md` — “audited against b805f65”, HEAD এখন `2ba48b4`।
+- **Impact:** plan/status পড়ে ভুল সিদ্ধান্ত; কোনটা solved তা নিয়ে দ্বিতীয় truth তৈরি হয়।
+- **Fix:** PLAN-এর snapshot block live `/health`+PID+HEAD দিয়ে update; status table নতুন HEAD-এ regenerate; freshness check।
+- **Gate:** `DOCS_CURRENT_OK` — PLAN/status-এ HEAD sha ও live models/PID মেলে।
+
+#### N4 — `local-tool-cap.test.js`-এ দুটি পুরোনো assertion
+
+- **প্রমাণ:** `node tests/local-tool-cap.test.js` → `RESULT: 43 passed, 2 failed`; `FAIL A1 api.js uses /^custom_/.test(agentProviderId) [line 0]`; `FAIL D15 agent header has no prose tool list`.
+- **Impact:** quality gate স্থায়ীভাবে red; নতুন regression আসলেও আলাদা করা কঠিন।
+- **Fix:** A1/D15-কে বর্তমান provider/tool contract-এর সাথে মেলানো, অথবা assertion মুছে নতুন gate-এ নেওয়া; আগে `git log -S` দিয়ে intent যাচাই।
+- **Gate:** `LOCAL_TOOL_CAP_OK` (0 fail)।
+
+#### N5 — rebuild/restart friction: stale dist-এর ঝুঁকি
+
+- **প্রমাণ:** `scripts/build.js:90` — live runtime থাকলে `BUILD_REFUSED dist is the live runtime (pid=...)`; তাই operator-কে `systemctl --user stop` → build → start করতে হয়। Build না করলে `provider-env-lock-check` fail করে: `dist is a fresh build of the current source — api.js is newer than dist`।
+- **Impact:** P0-09-এর মতো “কোড বদলেছি = লাইভে গেছে” ভুল ধারণা ফিরে আসতে পারে; প্রতিটি batch-এ manual stop/start।
+- **Fix:** `start.js --rebuild-restart` (active unit হলে stop → build → start → health 200, fail হলে rollback) অথবা runbook-এ একমাত্র অনুমোদিত command sequence।
+- **Gate:** `REBUILD_RESTART_OK` — active gateway-এ এক কমান্ডে build+restart+health, dist manifest sha = source sha।
+
+#### N6 — skill MCP gap (removal-এর পর নতুন surface নেই)
+
+- **প্রমাণ:** `external mcp/skill-mcp-tool.js` `2ba48b4`-এ delete; repo-র `skills/`-এ শুধু `404__Not_Found.md` আর `_instructions.md`; কোনো stdio skill server repo-তে নেই। User-provided reference `/home/sahon/Documents/GGUF/zombiecoder-agent-skills/` এই pass-এ read-only এবং verify করা হয়নি।
+- **Impact:** skills loading-এর কোনো MCP path নেই; future skill feature অর্ধেক।
+- **Fix:** reference project-এর stdio entry (`server/skill_mcp.py` হিসাবে user উল্লেখ করেছেন) verify করে `servers.json`-এ `transport:"stdio"` entry; না হলে skills আলাদা module হিসেবে রাখা।
+- **Gate:** `SKILL_MCP_OK` — initialize/tools/list/tools/call কাজ করে, reference project-এ কোনো write নেই।
+
+### 10.5 এই pass-এ যা করব না
+
+- P0-05/P0-09-এর solved কাজ আবার খোলা নয়; শুধু regression gate চালু থাকবে।
+- `docs/PLAN-2026-11-20.md`-এর uncommitted diff (`PLAN_EVIDENCE` marker) এই batch-এ touch করব না; N3 আলাদা contract।
+- নতুন dependency, দ্বিতীয় health map, বা admin UI-নির্ভরতা যোগ করব না।
+
+---
+
 ## Appendix A — Evidence table
 
 | Claim | Evidence |
