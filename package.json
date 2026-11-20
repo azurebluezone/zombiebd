@@ -1,0 +1,17 @@
+{
+  "name": "zombiecoder",
+  "version": "3.2.1",
+  "private": true,
+  "description": "ZombieCoder / Mission Barisal gateway",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node start.js --start-all -s",
+    "build": "node start.js --build-only",
+    "health": "node start.js --health-only",
+    "rebuild-restart": "bash scripts/rebuild-restart.sh",
+    "check:packaging": "node tests/package-install-check.js"
+  }
+}

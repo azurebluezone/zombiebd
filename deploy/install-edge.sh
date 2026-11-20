@@ -3,6 +3,8 @@
 #
 #   sudo bash deploy/install-edge.sh
 #   bash deploy/install-edge.sh --dry-run        render + validate only
+#   bash deploy/install-edge.sh --plan [--pm=apt|dnf|pacman|brew]
+#                                                print the install plan only
 #   sudo bash deploy/install-edge.sh --keep-apache
 #
 # This is the only step the agent cannot perform: binding ports below 1024
@@ -22,32 +24,86 @@ mkdir -p "$EDGE_TMP"
 
 DRY_RUN=0
 KEEP_APACHE=0
-for arg in "$@"; do
-  case "$arg" in
-    --dry-run) DRY_RUN=1 ;;
-    --keep-apache) KEEP_APACHE=1 ;;
+PLAN_ONLY=0
+PM_OVERRIDE=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dry-run) DRY_RUN=1; shift ;;
+    --keep-apache) KEEP_APACHE=1; shift ;;
+    --plan) PLAN_ONLY=1; shift ;;
+    --pm)
+      PM_OVERRIDE="${2:-}"
+      [ -n "$PM_OVERRIDE" ] || { echo "--pm needs a value" >&2; exit 2; }
+      shift 2
+      ;;
+    --pm=*) PM_OVERRIDE="${1#--pm=}"; shift ;;
     -h|--help)
-      sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
-    *) echo "unknown option: $arg" >&2; exit 2 ;;
+    *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
 
 say() { printf '%s\n' "$*"; }
 fail() { printf 'EDGE_INSTALL_FAIL %s\n' "$*" >&2; exit 1; }
 
+# The Caddy dependency is the only package-manager-specific step. The rest of
+# this script is the systemd edge install (Linux). --plan prints the exact
+# install command for the requested manager without touching the host, so the
+# apt/dnf/pacman/brew matrix is testable from one machine.
+detect_pm() {
+  if [ -n "$PM_OVERRIDE" ]; then printf '%s' "$PM_OVERRIDE"; return 0; fi
+  if command -v apt-get >/dev/null 2>&1; then printf 'apt'; return 0; fi
+  if command -v dnf >/dev/null 2>&1; then printf 'dnf'; return 0; fi
+  if command -v pacman >/dev/null 2>&1; then printf 'pacman'; return 0; fi
+  if command -v brew >/dev/null 2>&1; then printf 'brew'; return 0; fi
+  printf 'unknown'
+}
+
+caddy_install_plan() {
+  case "$1" in
+    apt) printf 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y caddy' ;;
+    dnf) printf 'dnf install -y caddy' ;;
+    pacman) printf 'pacman -Sy --noconfirm caddy' ;;
+    brew) printf 'brew install caddy' ;;
+    *) return 1 ;;
+  esac
+}
+
+install_caddy() {
+  case "$1" in
+    apt) apt-get update; DEBIAN_FRONTEND=noninteractive apt-get install -y caddy ;;
+    dnf) dnf install -y caddy ;;
+    pacman) pacman -Sy --noconfirm caddy ;;
+    brew) brew install caddy ;;
+    *) fail "unsupported package manager: $1" ;;
+  esac
+}
+
+PM="$(detect_pm)"
+case "$PM" in
+  apt|dnf|pacman|brew) ;;
+  *) fail "unsupported package manager: $PM (use --pm=apt|dnf|pacman|brew)" ;;
+esac
+
+if [ -n "$PM_OVERRIDE" ] && [ "$PLAN_ONLY" != "1" ]; then
+  fail "--pm is only supported with --plan"
+fi
+
+if [ "$PLAN_ONLY" = "1" ]; then
+  say "PM=$PM"
+  say "CADDY_INSTALL=$(caddy_install_plan "$PM")"
+  say "EDGE_PLAN_OK"
+  exit 0
+fi
+
 if ! command -v caddy >/dev/null 2>&1; then
   if [ "$DRY_RUN" = "1" ]; then
     fail "caddy binary not found"
   fi
-  if command -v apt-get >/dev/null 2>&1; then
-    say "caddy not found — installing the distribution package"
-    apt-get update
-    DEBIAN_FRONTEND=noninteractive apt-get install -y caddy
-  else
-    fail "caddy binary not found; install Caddy first"
-  fi
+  say "caddy not found — installing via $PM"
+  install_caddy "$PM"
 fi
 
 if [ ! -f .env ]; then

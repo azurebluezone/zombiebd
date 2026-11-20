@@ -223,8 +223,8 @@ exit=0
 | P1-05 | Bridge default port দুই জায়গায় | `api.js:1159` (`11435`) vs `local-llm-bridge.js:136` (`11437`) | ✅ SOLVED (2026-11-20): `lib/env.js` DEFAULTS একমালিক; `local-llm-bridge.js`/`api.js`/`provider/defaults.js` সব সেখান থেকেই পড়ে; proof `node tests/agent-provider-ssot-check.js` |
 | P1-06 | Capability query fail-open | `provider/index.js:79/88/95`, `provider/tools.js:106-113` | Phase 6 — ✅ SOLVED (2026-11-20): deny + `CAPABILITY_UNKNOWN` |
 | P1-07 | R2T module না পেলে silent builtin fallback | `api.js:19574-19581` (`builtin-fallback`) | ✅ SOLVED (2026-11-20): `R2T_BUILTIN_FALLBACK` log + `x-zc-r2t-engine`/`x-zc-r2t-fallback` headers; proof `node tests/r2t-trace-check.js` |
-| P1-08 | Edge installer শুধু apt ধরে | `deploy/install-edge.sh:44` | Phase 4 |
-| P1-09 | `package.json` নেই | `ls package.json` → No such file | Phase 4 |
+| P1-08 | Edge installer শুধু apt ধরে | `deploy/install-edge.sh:44` | ✅ SOLVED (2026-11-20): `detect_pm` + `caddy_install_plan` + `install_caddy`; apt/dnf/pacman/brew `--plan` matrix; proof `node tests/package-install-check.js` |
+| P1-09 | `package.json` নেই | `ls package.json` → No such file | ✅ SOLVED (2026-11-20): minimal `package.json` (private, Node >=24, real scripts); version SSOT 3.2.1; proof `node tests/package-install-check.js` |
 | P1-10 | Size limit ছড়িয়ে আছে | `api.js:235` (10MB), `provider/transport.js:34` (8MB), `api.js:251` (10 msg) | ✅ SOLVED (2026-11-20): সব default `lib/env.js`-এ, একমাত্র helper `lib/size-budget.js`; overflow `BUDGET_EXCEEDED` log করে; proof `node tests/config-trace-check.js` |
 
 ### 2.3 P2 — portability/hygiene
@@ -910,7 +910,7 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 | 5 | **P1-10 + P1-02** | বাকি size budget (`SESSION_MAX_BYTES`, `WEB_UI_MAX_BYTES`, `TOOL_RESULT_MAX_BYTES`) + `request_log` trace column | `CONFIG_TRACE_OK` | ✅ DONE (`gc-mwolit04`) |
 | 6 | **P1-07** | R2T silent builtin fallback → log + response header | `R2T_TRACE_OK` | ✅ DONE (`gc-mwoslpev`) |
 | 7 | **N5** | safe rebuild+restart এক কমান্ডে (stale dist risk বন্ধ) | `REBUILD_RESTART_OK` | ✅ DONE (`gc-mwot2is2`) |
-| 8 | **P1-09 + P1-08** | `package.json` + installer-এ apt/dnf/pacman/brew | `PACKAGE_INSTALL_OK` | TODO |
+| 8 | **P1-09 + P1-08** | `package.json` + installer-এ apt/dnf/pacman/brew | `PACKAGE_INSTALL_OK` | ✅ DONE (`gc-mwotctcf`) |
 | 9 | **P2-02 + P2-03** | log/backup retention + 30-case eval harness | `QUALITY_EVAL_OK` | TODO |
 | 10 | **N3** | PLAN/status snapshot drift ঠিক করা | `DOCS_CURRENT_OK` | TODO |
 | 11 | **N6** | skill MCP stdio integration (reference project read-only) | `SKILL_MCP_OK` | TODO |
