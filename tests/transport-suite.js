@@ -481,6 +481,9 @@ function spawnServer(ports) {
     HTTPS_PORT: String(ports.https),
     HTTPS_CERT_PATH: path.join(TMP, "cert.pem"),
     HTTPS_KEY_PATH: path.join(TMP, "key.pem"),
+    // .missionbarisal is anchored at APP_ROOT, not DATA_DIR: isolate it or a
+    // transport test rewrites the live editor's mcp-config.json.
+    APP_ROOT: TMP,
     DATA_DIR: path.join(TMP, "data"),
     LOG_DIR: path.join(TMP, "logs"),
     CACHE_DIR: path.join(TMP, "cache"),

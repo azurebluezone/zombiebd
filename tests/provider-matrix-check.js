@@ -224,6 +224,8 @@ function startInstance(port, grpcPort, httpsPort) {
     PORT: String(port),
     GRPC_PORT: String(grpcPort),
     HTTPS_PORT: String(httpsPort),
+    // Provider matrix must not touch the live .missionbarisal config.
+    APP_ROOT: TMP,
     DATA_DIR,
     LOG_DIR,
     DB_SQLITE_PATH: DB_PATH,

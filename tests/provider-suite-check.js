@@ -169,6 +169,10 @@ function startSourceInstance(port, grpcPort, httpsPort) {
     PORT: String(port),
     GRPC_PORT: String(grpcPort),
     HTTPS_PORT: String(httpsPort),
+    // Anchor project-owned state (.missionbarisal, UDS config) in the temp
+    // root. Without APP_ROOT a spawned test gateway rewrites the live
+    // project's editor config even though DATA_DIR/LOG_DIR are isolated.
+    APP_ROOT: TMP,
     DATA_DIR: dataDir,
     LOG_DIR: logDir,
     DB_SQLITE_PATH: path.join(dataDir, "models.db"),

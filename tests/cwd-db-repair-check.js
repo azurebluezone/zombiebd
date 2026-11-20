@@ -102,6 +102,9 @@ function startInstance(ports) {
     PORT: String(ports.api),
     GRPC_PORT: String(ports.grpc),
     HTTPS_PORT: String(ports.https),
+    // The cwd test launches from /tmp but APP_ROOT still defaulted to the
+    // project; pin it so .missionbarisal never lands in the live tree.
+    APP_ROOT: TMP,
     DATA_DIR,
     LOG_DIR,
     DB_SQLITE_PATH: DB_PATH,

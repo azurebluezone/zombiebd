@@ -895,25 +895,25 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 - stub বন্ধ + TTL → status `unknown`/`stale`, `healthy: true` নয়;
 - `/health.healthy` process-এর জন্য true থাকে, কিন্তু `providers.<id>.status` probe ছাড়া true হয় না।
 
-**Done:** `PROVIDER_HEALTH_OK` + `PROVIDER_NEUTRAL_OK` + `RESULT: UDS E2E PASS`; `provider_stats`-এ success-এর পর পুরোনো error নেই।
+**Done (2026-11-20, `gc-mwoi9t5a`):** `node tests/provider-health-honesty-check.js` → 11/11 `PROVIDER_HEALTH_OK`; fresh provider `unknown`, 3×500 → `down` + SQLite `last_error`, success clears it, TTL → `stale`, admin list ও `/health.providers` একই snapshot। Regression: `admin-panel-self-contained` 13/13, `custom-provider-n` 30/30, `provider-panel-ops` 17/17। Live restart-এ 10 provider honest (`custom_3` real tool call-এর পর `up`, বাকিরা probe ছাড়া `unknown`), process `healthy:true`।
 
 **Rollback:** `/health`-এর নতুন `providers` block additive, তাই পুরোনো consumer ভাঙে না; শুধু `api.js` revert করলেই আগের state।
 
 ### 10.3 Ordered backlog — এরপর কী, কোন ক্রমে
 
-| # | আইটেম | কাজ | Gate |
-|---:|---|---|---|
-| 1 | **P0-08** | provider health honesty + stale `last_error` | `PROVIDER_HEALTH_OK` |
-| 2 | **N2** | test-spawned gateway `.missionbarisal` pollution বন্ধ (৪টি test বাকি) | `TEST_APP_ROOT_OK` |
-| 3 | **N1** | provider attribution: `bridge` vs `ollama` সত্য ঠিক করা | `ADMIN_CHAT_E2E_OK` |
-| 4 | **N4** | `local-tool-cap`-এর পুরোনো A1/D15 assertion update | `LOCAL_TOOL_CAP_OK` |
-| 5 | **P1-10 + P1-02** | বাকি size budget (`SESSION_MAX_BYTES`, `WEB_UI_MAX_BYTES`, `TOOL_RESULT_MAX_BYTES`) + `request_log` trace column | `CONFIG_TRACE_OK` |
-| 6 | **P1-07** | R2T silent builtin fallback → log + response header | `R2T_TRACE_OK` |
-| 7 | **N5** | safe rebuild+restart এক কমান্ডে (stale dist risk বন্ধ) | `REBUILD_RESTART_OK` |
-| 8 | **P1-09 + P1-08** | `package.json` + installer-এ apt/dnf/pacman/brew | `PACKAGE_INSTALL_OK` |
-| 9 | **P2-02 + P2-03** | log/backup retention + 30-case eval harness | `QUALITY_EVAL_OK` |
-| 10 | **N3** | PLAN/status snapshot drift ঠিক করা | `DOCS_CURRENT_OK` |
-| 11 | **N6** | skill MCP stdio integration (reference project read-only) | `SKILL_MCP_OK` |
+| # | আইটেম | কাজ | Gate | Status |
+|---:|---|---|---|---|
+| 1 | **P0-08** | provider health honesty + stale `last_error` | `PROVIDER_HEALTH_OK` | ✅ DONE (`gc-mwoi9t5a`) |
+| 2 | **N2** | test-spawned gateway `.missionbarisal` pollution বন্ধ | `TEST_APP_ROOT_OK` | ✅ DONE (`gc-mwoipfpp`) |
+| 3 | **N1** | provider attribution: `bridge` vs `ollama` সত্য ঠিক করা | `ADMIN_CHAT_E2E_OK` | ▶ NEXT |
+| 4 | **N4** | `local-tool-cap`-এর পুরোনো A1/D15 assertion update | `LOCAL_TOOL_CAP_OK` | TODO |
+| 5 | **P1-10 + P1-02** | বাকি size budget (`SESSION_MAX_BYTES`, `WEB_UI_MAX_BYTES`, `TOOL_RESULT_MAX_BYTES`) + `request_log` trace column | `CONFIG_TRACE_OK` | TODO |
+| 6 | **P1-07** | R2T silent builtin fallback → log + response header | `R2T_TRACE_OK` | TODO |
+| 7 | **N5** | safe rebuild+restart এক কমান্ডে (stale dist risk বন্ধ) | `REBUILD_RESTART_OK` | TODO |
+| 8 | **P1-09 + P1-08** | `package.json` + installer-এ apt/dnf/pacman/brew | `PACKAGE_INSTALL_OK` | TODO |
+| 9 | **P2-02 + P2-03** | log/backup retention + 30-case eval harness | `QUALITY_EVAL_OK` | TODO |
+| 10 | **N3** | PLAN/status snapshot drift ঠিক করা | `DOCS_CURRENT_OK` | TODO |
+| 11 | **N6** | skill MCP stdio integration (reference project read-only) | `SKILL_MCP_OK` | TODO |
 
 **নীতি:** ১–২ একই দিনে (P0 + live config safety), ৩–৪ test truth, ৫–৬ observability, ৭–৮ release portability, ৯ quality, ১০–১১ docs/feature. প্রতিটি আইটেম আলাদা contract + gate; এক batch-এ দুইটার বেশি নয়।
 
@@ -932,6 +932,7 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 - **Impact:** যেকোনো test run live editor config ভাঙতে পারে; gateway restart না করলে client ভুল socket-এ যায়।
 - **Fix:** চারটি test-এ `APP_ROOT: TMP` (অথবা `MISSIONBARISAL_DIR` override); spawn audit gate।
 - **Gate:** `TEST_APP_ROOT_OK` — প্রতিটি `api.js` spawn-এ `APP_ROOT` থাকা বা explicit isolated config dir; live config hash test-এর আগে/পরে একই।
+- **Done (2026-11-20, `gc-mwoipfpp`):** চারটি test-এ `APP_ROOT: TMP`; নতুন `tests/test-app-root-check.js` সব ১১টি api.js-spawnকারী test scan করে এবং live `.missionbarisal/mcp-config.json` sha256 (`3feb4154…`) চারটি suite parallel চালানোর আগে/পরে অপরিবর্তিত থাকে। `provider-suite` exit 0; `transport-suite`/`cwd-db-repair`/`provider-matrix` আগের অসম্পর্কিত কারণে red (N1/N4 আলাদা), কিন্তু আর কোনো live config pollution নেই।
 
 #### N3 — PLAN ও status snapshot drift
 
