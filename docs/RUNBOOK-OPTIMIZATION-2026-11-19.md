@@ -392,6 +392,8 @@ systemctl --user show-environment >/dev/null 2>&1 && INIT=systemd
 - Bytes limit মানে UTF-8 bytes, `String.length` নয়।
 - Limit ছাড়ালে silent truncate নয় — `BUDGET_EXCEEDED key=... limit=... actual=...` + explicit client error বা documented truncation marker।
 
+**Done (2026-11-20, `gc-mwolit04`):** সব default `lib/env.js`-এ, একমাত্র helper `lib/size-budget.js`; `SESSION_MAX_BYTES`, `WEB_UI_MAX_BYTES`, `TOOL_RESULT_MAX_BYTES` enforce হয়েছে এবং `request_log.upstream_provider` আসল provider result থেকে লেখে। Proof: `node tests/config-trace-check.js` → `RESULT: 35 passed, 0 failed, 0 facts`, `CONFIG_TRACE_OK`, exit 0।
+
 ### 3.6 Provider pipeline — normalizer আগে, adapter পরে
 
 ```
@@ -912,7 +914,7 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 | 7 | **N5** | safe rebuild+restart এক কমান্ডে (stale dist risk বন্ধ) | `REBUILD_RESTART_OK` | ✅ DONE (`gc-mwot2is2`) |
 | 8 | **P1-09 + P1-08** | `package.json` + installer-এ apt/dnf/pacman/brew | `PACKAGE_INSTALL_OK` | ✅ DONE (`gc-mwotctcf`) |
 | 9 | **P2-02 + P2-03** | log/backup retention + 30-case eval harness | `QUALITY_EVAL_OK` | ✅ DONE (`gc-mwotobw2`) |
-| 10 | **N3** | PLAN/status snapshot drift ঠিক করা | `DOCS_CURRENT_OK` | TODO |
+| 10 | **N3** | PLAN/status snapshot drift ঠিক করা | `DOCS_CURRENT_OK` | ✅ DONE (`gc-mwoupmi0`) |
 | 11 | **N6** | skill MCP stdio integration (reference project read-only) | `SKILL_MCP_OK` | TODO |
 
 **নীতি:** ১–২ একই দিনে (P0 + live config safety), ৩–৪ test truth, ৫–৬ observability, ৭–৮ release portability, ৯ quality, ১০–১১ docs/feature. প্রতিটি আইটেম আলাদা contract + gate; এক batch-এ দুইটার বেশি নয়।
@@ -939,8 +941,9 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 
 - **প্রমাণ:** `docs/PLAN-2026-11-20.md:3` — “কাজ শুরু হয়নি”; `:33` — “96 models”; `:34` — “pid 827, dist/start.js”; live এখন `/health` → 97 models, service MainPID `35382`, root `start.js`। `tmp/refactor-2026-11-20/runbook-status.md` — “audited against b805f65”, HEAD এখন `2ba48b4`।
 - **Impact:** plan/status পড়ে ভুল সিদ্ধান্ত; কোনটা solved তা নিয়ে দ্বিতীয় truth তৈরি হয়।
-- **Fix:** PLAN-এর snapshot block live `/health`+PID+HEAD দিয়ে update; status table নতুন HEAD-এ regenerate; freshness check।
-- **Gate:** `DOCS_CURRENT_OK` — PLAN/status-এ HEAD sha ও live models/PID মেলে।
+- **Fix:** PLAN-কে দ্বিতীয় status table নয় — শুধু current snapshot + completed gate + ordered next step। Snapshot live `/health` ও dist sha থেকে; duplicate `tmp/refactor-2026-11-20/runbook-status.md` retire; freshness check।
+- **Gate:** `DOCS_CURRENT_OK` — version (package/identity/PLAN) মেলে; প্রতিটি DONE row-এর প্রমাণ syllabus PASS অথবা runbook Done block (অন্তত ৪টি syllabus PASS); PLAN-এর সব completed gate + row 10 contract + row 11 `TODO`; stale claim নেই; snapshot commit HEAD-এর ancestor; live `/health` version ও model count PLAN-এর সাথে মেলে; `dist/api.js` sha = source sha।
+- **Done (2026-11-20, `gc-mwoupmi0`):** `docs/PLAN-2026-11-20.md` নতুন snapshot (৯/১১ row, version `3.2.1`, live `264` models, ৯ agent, `dist` sha, `QUALITY_EVAL_OK` 30/30, পরের কাজ N6) — পুরোনো "কাজ শুরু হয়নি" / "96 models" / "pid 827" দাবি বাদ। Stale `PLAN_EVIDENCE` diff commit না করে revert; duplicate `tmp/.../runbook-status.md` (b871dfd-এ audited) delete — runbook row + syllabus PASS-ই একমাত্র status। `tests/docs-current-check.js` freshness gate; proof `node tests/docs-current-check.js` → `DOCS_CURRENT_OK`।
 
 #### N4 — `local-tool-cap.test.js`-এ দুটি পুরোনো assertion
 
