@@ -216,7 +216,7 @@ exit=0
 | P1-02 | `request_log`-এ routing প্রমাণ নেই | `PRAGMA table_info(request_log)` | Phase 7 |
 | P1-03 | Tool selection insertion order | `api.js:4946-4951`, `9413`, `10113` | Phase 5 — ✅ SOLVED (2026-11-20): intent rank + deterministic tie-break |
 | P1-04 | `prepare()` cap enforce করে না | `provider/tools.js:122-125` | Phase 5 — ✅ SOLVED (2026-11-20): `capTools()` |
-| P1-05 | Bridge default port দুই জায়গায় | `api.js:1159` (`11435`) vs `local-llm-bridge.js:136` (`11437`) | Phase 3 |
+| P1-05 | Bridge default port দুই জায়গায় | `api.js:1159` (`11435`) vs `local-llm-bridge.js:136` (`11437`) | ✅ SOLVED (2026-11-20): `lib/env.js` DEFAULTS একমালিক; `local-llm-bridge.js`/`api.js`/`provider/defaults.js` সব সেখান থেকেই পড়ে; proof `node tests/agent-provider-ssot-check.js` |
 | P1-06 | Capability query fail-open | `provider/index.js:79/88/95`, `provider/tools.js:106-113` | Phase 6 — ✅ SOLVED (2026-11-20): deny + `CAPABILITY_UNKNOWN` |
 | P1-07 | R2T module না পেলে silent builtin fallback | `api.js:19574-19581` (`builtin-fallback`) | Phase 7 |
 | P1-08 | Edge installer শুধু apt ধরে | `deploy/install-edge.sh:44` | Phase 4 |

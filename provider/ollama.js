@@ -26,6 +26,7 @@
 // Note `arguments` here is an OBJECT, not a JSON string (unlike OpenAI).
 
 const transport = require("./transport");
+const defaults = require("./defaults");
 const { normalize, createStreamNormalizer, asArgObject } = require("../normalizer");
 const openaiAdapter = require("./openai");
 
@@ -54,8 +55,13 @@ function nativeBase(cfg) {
 
 function endpoint(cfg) {
   if (cfg.dialect === "openai") {
-    // Same rule as provider/openai.js: {base}/chat/completions, base as-is.
-    return String(cfg.baseUrl || "").replace(/\/+$/, "") + "/chat/completions";
+    // Same rule as provider/openai.js: {base}/chat/completions. A host-only
+    // OLLAMA_BASE is completed to the documented /v1 surface.
+    const base = defaults.resolveBaseUrl(cfg.id || "ollama", cfg.baseUrl, {
+      env: process.env,
+      dialect: "openai",
+    });
+    return base.replace(/\/+$/, "") + "/chat/completions";
   }
   return nativeBase(cfg) + "/api/chat";
 }

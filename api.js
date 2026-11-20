@@ -182,6 +182,7 @@ const MCP_TABLE = (function () {
 // Everything wire-related — headers, payloads, dialects, response
 // normalization — lives in ./provider and ./normalizer. api.js only routes.
 const providerRegistry = require("./provider");
+const providerDefaults = require("./provider/defaults");
 const providerTransport = require("./provider/transport");
 const providerCapabilities = require("./provider/capabilities");
 const providerSecretStore = require("./lib/secret-store");
@@ -252,7 +253,11 @@ const MAX_BODY_SIZE = parseInt(
 // Unique per-process fingerprint — lets multi-instance tests prove that
 // two `node api.js` runs on one machine really are independent processes.
 const INSTANCE_ID = process.env.INSTANCE_ID || crypto.randomUUID();
-const OPENCODE_BASE = process.env.OPENCODE_BASE || "https://opencode.ai/zen/v1";
+const OPENCODE_BASE = providerDefaults.resolveBaseUrl(
+  "opencode",
+  process.env.OPENCODE_BASE,
+  { env: process.env },
+);
 const MAX_DEBATE_ROUNDS = parseInt(process.env.MAX_DEBATE_ROUNDS || "0", 10);
 // ─── Runtime paths (lib/env.js — the only resolver) ─────────
 // DATA_DIR/LOG_DIR/CACHE_DIR/dbPath come from one place, anchored at
@@ -898,7 +903,9 @@ function parseCustomModelsEnv(str) {
 const PROVIDER_CONFIG = {
   opencode: {
     name: "OpenCode",
-    baseUrl: process.env.OPENCODE_BASE || "https://opencode.ai/zen/v1",
+    baseUrl: providerDefaults.resolveBaseUrl("opencode", process.env.OPENCODE_BASE, {
+      env: process.env,
+    }),
     // A placeholder value ("<YOUR_..._KEY>") is not a credential. Treating it
     // as one sent a literal placeholder upstream and produced confusing 401s
     // instead of the provider simply being unavailable. An empty/placeholder
@@ -918,7 +925,9 @@ const PROVIDER_CONFIG = {
   // When OpenCode fails, Groq serves as fallback.
   groq: {
     name: "Groq",
-    baseUrl: process.env.GROQ_BASE || "https://api.groq.com/openai/v1",
+    baseUrl: providerDefaults.resolveBaseUrl("groq", process.env.GROQ_BASE, {
+      env: process.env,
+    }),
     key: process.env.GROQ_API_KEY || "",
     priority: parseInt(process.env.GROQ_PRIORITY || "999", 10), // NaN-proof: unset → lowest
     type: process.env.GROQ_TYPE || "openai",
@@ -928,9 +937,9 @@ const PROVIDER_CONFIG = {
   // Requires API key — OpenCode -> Groq -> Gemini fallback chain
   gemini: {
     name: "Gemini",
-    baseUrl:
-      process.env.GEMINI_BASE ||
-      "https://generativelanguage.googleapis.com/v1beta",
+    baseUrl: providerDefaults.resolveBaseUrl("gemini", process.env.GEMINI_BASE, {
+      env: process.env,
+    }),
     key: process.env.GEMINI_API_KEY || "",
     priority: parseInt(process.env.GEMINI_PRIORITY || "999", 10), // NaN-proof: unset → lowest
     type: "gemini", // special: Gemini API (NOT OpenAI-compatible)
@@ -947,7 +956,10 @@ const PROVIDER_CONFIG = {
   // yields "cloud if API else local" behaviour automatically.
   ollama: {
     name: "Ollama",
-    baseUrl: process.env.OLLAMA_BASE || "http://localhost:5051",
+    baseUrl: providerDefaults.resolveBaseUrl("ollama", process.env.OLLAMA_BASE, {
+      env: process.env,
+      dialect: process.env.OLLAMA_DIALECT || "",
+    }),
     // Local Ollama uses OLLAMA_API_KEY only. The cloud credential belongs to
     // the separate ollama_cloud provider; a fallback here silently sent the
     // cloud key to a local server and made the two providers indistinguishable.
@@ -992,7 +1004,10 @@ const PROVIDER_CONFIG = {
   // so the model lists (local tags vs cloud catalog) stay independent.
   ollama_cloud: {
     name: "Ollama Cloud",
-    baseUrl: process.env.OLLAMA_CLOUD_BASE || "https://ollama.com",
+    baseUrl: providerDefaults.resolveBaseUrl("ollama_cloud", process.env.OLLAMA_CLOUD_BASE, {
+      env: process.env,
+      dialect: process.env.OLLAMA_CLOUD_DIALECT || "",
+    }),
     key: process.env.OLLAMA_CLOUD_API_KEY || "",
     priority: parseInt(process.env.OLLAMA_CLOUD_PRIORITY || "999", 10),
     type: process.env.OLLAMA_CLOUD_TYPE || "openai",
@@ -1008,9 +1023,9 @@ const PROVIDER_CONFIG = {
   // other providers.
   bridge: {
     name: "Local LLM Bridge",
-    baseUrl:
-      process.env.BRIDGE_BASE ||
-      "http://localhost:" + (process.env.BRIDGE_PORT || "11435") + "/v1",
+    baseUrl: providerDefaults.resolveBaseUrl("bridge", process.env.BRIDGE_BASE, {
+      env: process.env,
+    }),
     key: process.env.BRIDGE_API_KEY || "",
     priority: parseInt(process.env.BRIDGE_PRIORITY || "999", 10),
     type: "openai",
@@ -13454,7 +13469,7 @@ const handleHttpRequest = async (req, res) => {
           port: PORT,
           uds_port: UDS_PORT,
           grpc_port: parseInt(process.env.GRPC_PORT || "5052", 10),
-          bridge_port: parseInt(process.env.BRIDGE_PORT || "11435", 10),
+          bridge_port: parseInt(process.env.BRIDGE_PORT || DEFAULTS.BRIDGE_PORT, 10),
           ollama_base: process.env.OLLAMA_BASE || "",
         },
       });
@@ -17630,6 +17645,12 @@ async function init() {
   // PHASE A: seed agents table from PERSONAS.md on first boot (idempotent),
   // then load DB-first. PERSONAS.md remains as fallback for ids not in DB.
   seedAgentsFromPersonas();
+  // Repair the known persona===expertise corruption before the DB-first load.
+  // Admin-edited personas are left untouched; model/priority/enabled are not
+  // part of this repair.
+  if (MODELS_DB) {
+    agentsModule.syncAgentPersonas(MODELS_DB, loadAgentFiles(), { log });
+  }
   await ensureAgentsRegistry();
   // Project memory: import legacy ctx_*.json once, then every archive goes to
   // the SQLite project_memory table (WAL). JSON session memory is untouched.

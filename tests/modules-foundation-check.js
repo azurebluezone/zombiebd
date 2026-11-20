@@ -247,7 +247,11 @@ check("buildSystemPrompt injects persona, OS, workspace, metadata and stays boun
   assert.ok(prompt.length <= 3000, "prompt budget exceeded: " + prompt.length);
   assert.ok(prompt.includes("DB persona wins for this agent."), "persona missing");
   assert.ok(prompt.includes(session.os.platform), "os.platform missing");
-  assert.ok(prompt.includes(wsRoot), "workspace missing");
+  assert.ok(
+    prompt.includes("workspace: " + path.basename(wsRoot)),
+    "workspace label missing",
+  );
+  assert.ok(!prompt.includes(wsRoot), "absolute workspace path leaked into the prompt");
   assert.ok(prompt.includes("sess-1"), "session id missing");
   assert.ok(prompt.includes("SYSTEM IDENTITY"), "system identity missing");
   assert.ok(prompt.includes("4 tools are available"), "tool note missing");

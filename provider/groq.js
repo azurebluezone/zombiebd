@@ -17,14 +17,14 @@
 // base: Groq's docs describe the same request and response schemas.
 
 const openai = require("./openai");
+const defaults = require("./defaults");
 const { normalize } = require("../normalizer");
 
 const DIALECT = "groq";
-const GROQ_DEFAULT_BASE = "https://api.groq.com/openai/v1";
 
 function cfgOf(cfg) {
   return Object.assign({}, cfg, {
-    baseUrl: cfg.baseUrl || GROQ_DEFAULT_BASE,
+    baseUrl: defaults.resolveBaseUrl("groq", cfg.baseUrl, { env: process.env }),
     headers: Object.assign({ "x-title": "zombiecoder" }, cfg.headers || {}),
   });
 }

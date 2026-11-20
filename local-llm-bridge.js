@@ -7,7 +7,7 @@ const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
 const { resolveBridgeTimeouts } = require("./lib/provider-timeout");
-const { userHomeDir } = require("./lib/env");
+const { userHomeDir, DEFAULTS } = require("./lib/env");
 const { spawn, execSync } = require("child_process");
 
 // ── Config ────────────────────────────────────────────────────
@@ -137,9 +137,15 @@ const CFG = {
     process.env.BRIDGE_UPSTREAM_MODEL || process.env.BRIDGE_MODEL || "",
   ).trim(),
   alias: String(process.env.BRIDGE_MODEL || "local-model").trim() || "local-model",
-  port: parseInt(process.env.BRIDGE_PORT || "11437", 10),
+  // One owner for the defaults: lib/env.js DEFAULTS. The old literals were
+  // inverted — the public bridge surface defaulted to 11437 while the
+  // bundled llama-server tried to bind 11434, the port Ollama owns.
+  port: parseInt(process.env.BRIDGE_PORT || DEFAULTS.BRIDGE_PORT, 10),
   socket: process.env.BRIDGE_SOCKET || "",
-  internalPort: parseInt(process.env.BRIDGE_INTERNAL_PORT || "11434", 10),
+  internalPort: parseInt(
+    process.env.BRIDGE_INTERNAL_PORT || DEFAULTS.BRIDGE_INTERNAL_PORT,
+    10,
+  ),
   explicitUpstreams: parseUpstreamList(process.env.BRIDGE_UPSTREAMS || ""),
   // Legacy single-target knob: honoured, but it no longer decides the only
   // upstream. Ollama, llama.cpp, LM Studio and vLLM can answer together.

@@ -17,14 +17,14 @@
 // error handling, and model listing.
 
 const openai = require("./openai");
+const defaults = require("./defaults");
 const { normalize } = require("../normalizer");
 
 const DIALECT = "openai";
-const OPENCODE_DEFAULT_BASE = "https://opencode.ai/zen/v1";
 
 function cfgOf(cfg) {
   return Object.assign({}, cfg, {
-    baseUrl: cfg.baseUrl || OPENCODE_DEFAULT_BASE,
+    baseUrl: defaults.resolveBaseUrl("opencode", cfg.baseUrl, { env: process.env }),
     headers: Object.assign(
       {
         // OpenCode's API accepts requests that present as its own CLI.

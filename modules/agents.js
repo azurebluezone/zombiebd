@@ -49,6 +49,94 @@ function fileAgent(id, loader) {
 }
 
 /**
+ * Repair the agents table from agent/*.js.
+ *
+ * The known corruption is a row whose `persona` column contains the
+ * `expertise` text (the old seed copied the wrong field). This function
+ * repairs only that deterministic shape, plus an empty persona. It never
+ * overwrites a real admin-edited persona, and it never touches model,
+ * priority or enabled — those are runtime operator choices.
+ *
+ * @param {object} db
+ * @param {Array} fileAgents
+ * @param {{log?: Function}} [opts]
+ * @returns {{ok:boolean, inserted:number, repaired:number, kept:number, error?:string}}
+ */
+function syncAgentPersonas(db, fileAgents, opts) {
+  const o = opts || {};
+  const log = typeof o.log === "function" ? o.log : function () {};
+  const result = { ok: false, inserted: 0, repaired: 0, kept: 0 };
+  if (!db || typeof db.prepare !== "function") {
+    result.error = "sqlite unavailable";
+    return result;
+  }
+  const list = Array.isArray(fileAgents) ? fileAgents : [];
+  try {
+    const select = db.prepare(
+      "SELECT id, persona, expertise FROM agents WHERE id = ? LIMIT 1",
+    );
+    const insert = db.prepare(`
+      INSERT INTO agents
+        (id, name, role, model, expertise, persona, enabled, priority, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+    `);
+    const update = db.prepare(
+      "UPDATE agents SET persona = ?, updated_at = ? WHERE id = ?",
+    );
+    const now = Date.now();
+
+    for (const agent of list) {
+      if (!agent || !agent.id) continue;
+      const persona = clean(agent.persona);
+      if (!persona) continue;
+      const row = select.get(agent.id);
+      if (!row) {
+        insert.run(
+          agent.id,
+          clean(agent.name) || agent.id,
+          clean(agent.role) || "general",
+          clean(agent.model),
+          clean(agent.expertise),
+          persona,
+          Number.isFinite(Number(agent.priority)) ? Number(agent.priority) : 99,
+          now,
+        );
+        result.inserted++;
+        continue;
+      }
+      const dbPersona = clean(row.persona);
+      const expertise = clean(row.expertise);
+      const corrupt = !dbPersona || (expertise && dbPersona === expertise);
+      if (corrupt) {
+        update.run(persona, now, agent.id);
+        result.repaired++;
+        log("INFO", "AGENT_PERSONA_REPAIRED", {
+          id: agent.id,
+          from_chars: dbPersona.length,
+          to_chars: persona.length,
+          reason: dbPersona ? "persona_equals_expertise" : "empty_persona",
+        });
+      } else {
+        result.kept++;
+      }
+    }
+    result.ok = true;
+    if (result.inserted || result.repaired) {
+      log("INFO", "AGENT_PERSONA_SYNC", {
+        inserted: result.inserted,
+        repaired: result.repaired,
+        kept: result.kept,
+      });
+    }
+    return result;
+  } catch (error) {
+    result.error = error && error.message ? error.message : String(error);
+    log("WARN", "AGENT_PERSONA_SYNC_FAIL", { error: result.error });
+    return result;
+  }
+}
+
+/**
  * Resolve one agent definition.
  * @param {string} id
  * @param {{db?: object, fileLoader?: Function}} [opts]
@@ -62,8 +150,14 @@ function resolveAgent(id, opts) {
   const fromFile = fileAgent(agentId, o.fileLoader);
   const row = readAgentRow(o.db, agentId);
 
-  if (row && Number(row.enabled) !== 0) {
-    const persona = clean(row.persona) || clean(fromFile && fromFile.persona);
+  if (row) {
+    if (Number(row.enabled) === 0) {
+      const error = new AgentError(agentId, "This agent is disabled in the database.");
+      error.code = "ZC_AGENT_DISABLED";
+      throw error;
+    }
+    const dbPersona = clean(row.persona);
+    const persona = dbPersona || clean(fromFile && fromFile.persona);
     if (!persona) {
       throw new AgentError(agentId, "The database row and the agent file both have an empty persona.");
     }
@@ -73,6 +167,7 @@ function resolveAgent(id, opts) {
       role: clean(row.role) || clean(fromFile && fromFile.role) || "general",
       model: agentFiles.resolveAgentModel(fromFile || { id: agentId }, clean(row.model)),
       persona,
+      persona_source: dbPersona ? "db" : "agent/*.js",
       expertise: clean(row.expertise) || clean(fromFile && fromFile.expertise),
       priority: Number.isFinite(Number(row.priority)) ? Number(row.priority) : 99,
       enabled: 1,
@@ -151,6 +246,15 @@ function buildAgentSession(agent, opts) {
   };
 }
 
+/** Workspace label for a model prompt: the project name, never the host path. */
+function workspaceLabel(value, opts) {
+  const raw = clean(value);
+  if (!raw) return "(unset)";
+  if (opts && opts.absolutePaths === true) return raw;
+  const parts = raw.replace(/[\\/]+$/, "").split(/[\\/]+/);
+  return parts[parts.length - 1] || raw;
+}
+
 /** Render the compact runtime facts (one line each, no hidden context). */
 function renderRuntimeFacts(session, opts) {
   const s = session || {};
@@ -169,8 +273,12 @@ function renderRuntimeFacts(session, opts) {
       (info.platform || os.platform()),
   );
   if (!compact) {
-    lines.push("host: " + (info.hostname || os.hostname()));
-    lines.push("runtime: node " + (info.node || process.version) + " pid " + (info.pid || process.pid));
+    if (opts && opts.includeHost === true) {
+      // Hostname and pid are host-internal identifiers. They are opt-in so a
+      // provider prompt does not leak the machine identity by default.
+      lines.push("host: " + (info.hostname || os.hostname()));
+      lines.push("runtime: node " + (info.node || process.version) + " pid " + (info.pid || process.pid));
+    }
     const cpuRaw = info.cpu;
     const cpuModel =
       cpuRaw && typeof cpuRaw === "object" ? cpuRaw.model : cpuRaw;
@@ -185,7 +293,7 @@ function renderRuntimeFacts(session, opts) {
     );
     lines.push("memory: " + (memory.free_gb || 0) + "/" + (memory.total_gb || 0) + " GB free");
   }
-  lines.push("workspace: " + (s.workspace || "(unset)"));
+  lines.push("workspace: " + workspaceLabel(s.workspace, opts));
   return lines.join("\n");
 }
 
@@ -210,20 +318,28 @@ function loadAgents(opts) {
     try {
       const rows = db
         .prepare(
-          "SELECT id, name, role, model, expertise, persona, enabled, priority FROM agents WHERE enabled = 1 ORDER BY priority ASC, name ASC",
+          "SELECT id, name, role, model, expertise, persona, enabled, priority FROM agents ORDER BY priority ASC, name ASC",
         )
         .all();
       for (const r of rows) {
         if (!r.id) continue;
         seen.add(r.id);
+        if (Number(r.enabled) === 0) {
+          // A DB-disabled agent must not be resurrected from agent/*.js.
+          log("INFO", "AGENT_DISABLED_DB", { id: r.id });
+          continue;
+        }
+        const fallback = fileAgentById.get(r.id);
+        const dbPersona = clean(r.persona);
         merged.push({
           id: r.id,
           name: r.name || r.id,
-          model: resolveModel(fileAgentById.get(r.id), r.model) || "",
+          model: resolveModel(fallback, r.model) || "",
           role: r.role || "general",
           expertise: r.expertise || "",
           priority: r.priority || 99,
-          persona: r.persona || "",
+          persona: dbPersona || clean(fallback && fallback.persona),
+          persona_source: dbPersona ? "db" : "agent/*.js",
           source: "db",
         });
       }
@@ -238,21 +354,6 @@ function loadAgents(opts) {
     if (!seen.has(a.id)) {
       seen.add(a.id);
       merged.push(a);
-      continue;
-    }
-    if (a.persona) {
-      const existing = merged.find((m) => m.id === a.id);
-      const dbLen = (existing && existing.persona ? existing.persona : "").trim().length;
-      const fileLen = a.persona.trim().length;
-      if (existing && (!dbLen || (fileLen > dbLen && fileLen > 200))) {
-        existing.persona = a.persona;
-        existing.persona_source = "agent/*.js";
-        log("INFO", "PERSONA_BACKFILL_FROM_FILE", {
-          id: a.id,
-          from_chars: dbLen,
-          to_chars: fileLen,
-        });
-      }
     }
   }
   if (fileAgents.length > 0) {
@@ -278,7 +379,14 @@ function loadAgents(opts) {
           const custom = parseCustom(content);
           if (custom && custom.id) {
             if (seen.has(custom.id)) {
+              const existing = merged.find((a) => a.id === custom.id);
               const idx = merged.findIndex((a) => a.id === custom.id);
+              if (existing && existing.source === "db") {
+                // The DB row is the SSOT; a custom markdown file may add a
+                // new agent, never replace a stored persona.
+                log("INFO", "CUSTOM_AGENT_DB_WINS", { id: custom.id, file: f });
+                continue;
+              }
               if (idx >= 0) merged[idx] = custom;
             } else {
               seen.add(custom.id);
@@ -311,6 +419,7 @@ function loadAgents(opts) {
 module.exports = {
   AgentError,
   loadAgents,
+  syncAgentPersonas,
   defaultAgentId,
   resolveAgent,
   buildAgentSession,

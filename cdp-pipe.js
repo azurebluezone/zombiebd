@@ -38,12 +38,55 @@
  * CLI:  node cdp-pipe.js <url> [action] [extraJson]
  */
 
-const { spawn } = require('node:child_process');
+const { spawn, execSync } = require('node:child_process');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 
-const CHROME_BIN = process.env.CHROME_BIN || '/opt/google/chrome/chrome';
-const TMP_ROOT = process.env.CDP_TMP_DIR || '/tmp/opencode';
+// Chrome discovery is portable: an explicit CHROME_BIN wins, then the common
+// command names on PATH, then the standard install location for this OS.
+// Nothing is pinned to one Linux distribution or to /opt.
+function findOnPath(names) {
+  if (process.platform === 'win32') return '';
+  for (const name of names) {
+    try {
+      const found = execSync('command -v ' + name, {
+        stdio: ['ignore', 'pipe', 'ignore'],
+      })
+        .toString()
+        .trim();
+      if (found) return found;
+    } catch (_) {
+      /* try the next name */
+    }
+  }
+  return '';
+}
+
+function platformChrome() {
+  if (process.platform === 'darwin') {
+    return path.join(
+      '/Applications',
+      'Google Chrome.app',
+      'Contents',
+      'MacOS',
+      'Google Chrome',
+    );
+  }
+  if (process.platform === 'win32') {
+    const base = process.env.PROGRAMFILES || process.env['PROGRAMFILES(X86)'] || '';
+    return base ? path.join(base, 'Google', 'Chrome', 'Application', 'chrome.exe') : '';
+  }
+  return '';
+}
+
+const CHROME_BIN =
+  process.env.CHROME_BIN ||
+  findOnPath(['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser']) ||
+  platformChrome();
+// os.tmpdir() is /tmp on Linux, but honours TMPDIR/TEMP on every platform.
+// CDP_TMP_DIR stays as the explicit override.
+const TMP_ROOT = process.env.CDP_TMP_DIR || path.join(os.tmpdir(), 'opencode');
 const SHOT_DIR = path.join(TMP_ROOT, 'cdp-shots');
 const DEFAULT_TIMEOUT = 20000;
 const MAX_EVENTS = 500;

@@ -22,18 +22,20 @@
 // Note the role rename: OpenAI `assistant` ⇄ Gemini `model`.
 
 const transport = require("./transport");
+const defaults = require("./defaults");
 const { normalize, createStreamNormalizer } = require("../normalizer");
 
 const DIALECT = "gemini";
-const GEMINI_DEFAULT_BASE = "https://generativelanguage.googleapis.com/v1beta";
 
 function cfgOf(cfg) {
-  return Object.assign({}, cfg, { baseUrl: cfg.baseUrl || GEMINI_DEFAULT_BASE });
+  return Object.assign({}, cfg, {
+    baseUrl: defaults.resolveBaseUrl("gemini", cfg.baseUrl, { env: process.env }),
+  });
 }
 
 // ─── URL builders ─────────────────────────────────────────────────────
 function chatUrl(cfg, model, streaming) {
-  const base = String(cfg.baseUrl || GEMINI_DEFAULT_BASE).replace(/\/+$/, "");
+  const base = cfgOf(cfg).baseUrl.replace(/\/+$/, "");
   const action = streaming ? "streamGenerateContent" : "generateContent";
   const url = new URL(base + "/models/" + model + ":" + action);
   if (streaming) url.searchParams.set("alt", "sse");
@@ -384,7 +386,7 @@ async function chatStream(cfg, params, onDelta) {
 // ─── Model discovery: GET {base}/models ───────────────────────────────
 async function listModels(cfg) {
   const c = cfgOf(cfg);
-  const base = String(c.baseUrl || GEMINI_DEFAULT_BASE).replace(/\/+$/, "");
+  const base = String(c.baseUrl || "").replace(/\/+$/, "");
   const http = require("http");
   const https = require("https");
   const { URL } = require("url");

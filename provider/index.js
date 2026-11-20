@@ -26,6 +26,7 @@ const gemini = require("./gemini");
 const ollama = require("./ollama");
 const opencode = require("./opencode");
 const llamacpp = require("./llamacpp");
+const defaults = require("./defaults");
 const validator = require("./validator");
 const capabilities = require("./capabilities");
 const zclog = require("../lib/zc-log");
@@ -134,19 +135,8 @@ function resolveConfig(cfg) {
 
 function configForId(id) {
   const env = process.env;
-  const P = {
-    opencode: { baseUrl: env.OPENCODE_BASE, key: env.OPENCODE_API_KEY, type: "opencode" },
-    groq:     { baseUrl: env.GROQ_BASE || "https://api.groq.com/openai/v1",
-                key: env.GROQ_API_KEY, type: "groq" },
-    gemini:   { baseUrl: env.GEMINI_BASE || "https://generativelanguage.googleapis.com/v1beta",
-                key: env.GEMINI_API_KEY, type: "gemini" },
-    ollama:   { baseUrl: env.OLLAMA_BASE, key: env.OLLAMA_API_KEY,
-                type: "openai", dialect: env.OLLAMA_DIALECT || "" },
-    ollama_cloud: { baseUrl: env.OLLAMA_CLOUD_BASE || "https://ollama.com",
-                key: env.OLLAMA_CLOUD_API_KEY, type: "openai",
-                dialect: env.OLLAMA_CLOUD_DIALECT || "" },
-  };
-  if (P[id]) return Object.assign({ id: id }, P[id]);
+  const builtin = defaults.builtinConfig(id, env);
+  if (builtin) return builtin;
 
   // custom_N providers: CUSTOM_PROVIDER_<n>_{URL,KEY,TYPE,...}
   const m = /^custom_(\d+)$/i.exec(id);
