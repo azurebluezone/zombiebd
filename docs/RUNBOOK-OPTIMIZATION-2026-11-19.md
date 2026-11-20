@@ -905,8 +905,8 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 |---:|---|---|---|---|
 | 1 | **P0-08** | provider health honesty + stale `last_error` | `PROVIDER_HEALTH_OK` | ✅ DONE (`gc-mwoi9t5a`) |
 | 2 | **N2** | test-spawned gateway `.missionbarisal` pollution বন্ধ | `TEST_APP_ROOT_OK` | ✅ DONE (`gc-mwoipfpp`) |
-| 3 | **N1** | provider attribution: `bridge` vs `ollama` সত্য ঠিক করা | `ADMIN_CHAT_E2E_OK` | ✅ DONE (`gc-mwoj9ncy`) |
-| 4 | **N4** | `local-tool-cap`-এর পুরোনো A1/D15 assertion update | `LOCAL_TOOL_CAP_OK` | ▶ NEXT |
+| 3 | **N1** | provider attribution: `bridge` vs `ollama` সত্য ঠিক করা | `ADMIN_CHAT_E2E_OK` | ✅ DONE (`gc-mwojol08`) |
+| 4 | **N4** | `local-tool-cap`-এর পুরোনো A1/D15 assertion update | `LOCAL_TOOL_CAP_OK` | ✅ DONE (`gc-mwokuxf5`) |
 | 5 | **P1-10 + P1-02** | বাকি size budget (`SESSION_MAX_BYTES`, `WEB_UI_MAX_BYTES`, `TOOL_RESULT_MAX_BYTES`) + `request_log` trace column | `CONFIG_TRACE_OK` | TODO |
 | 6 | **P1-07** | R2T silent builtin fallback → log + response header | `R2T_TRACE_OK` | TODO |
 | 7 | **N5** | safe rebuild+restart এক কমান্ডে (stale dist risk বন্ধ) | `REBUILD_RESTART_OK` | TODO |
@@ -925,7 +925,7 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 - **Impact:** provider attribution-কে ঘিরে gate মিথ্যা red; কোন layer (bridge transport না upstream ollama) খরচ/error বহন করছে তা log থেকে বোঝা যায় না।
 - **Fix:** আগে সিদ্ধান্ত — `provider` হবে origin (`ollama`) না transport (`bridge`); তারপর P1-02-এর সাথে `upstream_provider`/`fallback_from` column যোগ করে test expectation ঠিক করা। routing বদলানো লাগলে আলাদা contract।
 - **Gate:** `ADMIN_CHAT_E2E_OK` (expectation + DB row একই truth)।
-- **Done (2026-11-20, `gc-mwoj9ncy`):** সিদ্ধান্ত — `provider` = যে transport সত্যিই answer করেছে (`bridge`); origin (`ollama`) P1-02-এ `upstream_provider` হিসেবে আসবে। `executeSingleAgent`/`callModelWithTools` এখন `provider`+`model` return করে; stream, non-stream success ও failure telemetry সেই result থেকে লেখে, `resolveProvider(agent.model)` দিয়ে re-resolve করে না (grep-এ residual নেই)। `tests/admin-chat-e2e-check.js` expected provider live `/api/admin/providers` থেকে derive করে (enabled, confirmed-down নয়, `NEW_MODEL` advertise, lowest priority) এবং self-contained panel-এর stale marker/hiding assertion update করা হয়েছে। Live evidence: `ADMIN_CHAT_E2E_OK`; `request_log` + `model_stats` দুটোই `deepseek-r1:1.5b` on `bridge`; আলাদা stream request-ও `provider=bridge` লগ করেছে।
+- **Done (2026-11-20, `gc-mwojol08`):** সিদ্ধান্ত — `provider` = যে transport সত্যিই answer করেছে (`bridge`); origin (`ollama`) P1-02-এ `upstream_provider` হিসেবে আসবে। `executeSingleAgent`/`callModelWithTools` এখন `provider`+`model` return করে; stream, non-stream success ও failure telemetry সেই result থেকে লেখে, `resolveProvider(agent.model)` দিয়ে re-resolve করে না (grep-এ residual নেই)। Non-stream `/v1/chat/completions` এখন `x-zc-chat-provider` header দেয়, তাই gate attribution স্বাধীনভাবে দেখতে পারে। `tests/admin-chat-e2e-check.js` expected provider live `/api/admin/providers` থেকে derive করে (enabled, confirmed-down নয়, `NEW_MODEL` advertise) এবং header + `request_log` + `model_stats` তিনটেকেই একই provider চায়; `NEW_MODEL=lfm3:1.7b`, fresh `session_id`, একটি ছোট tool schema (৯৯-tool auto-inject বন্ধ) — তাই gate ৮৭s-এ শেষ হয় ১২০s close cap-এর ভিতরে। Live evidence: `ADMIN_CHAT_E2E_OK` (12/12); `request_log` + `model_stats` = `lfm3:1.7b` on `bridge`; bridge `CHAT_OK ms=86236`।
 
 #### N2 — test-spawned gateway live `.missionbarisal` config overwrite করে
 
@@ -944,10 +944,11 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 
 #### N4 — `local-tool-cap.test.js`-এ দুটি পুরোনো assertion
 
-- **প্রমাণ:** `node tests/local-tool-cap.test.js` → `RESULT: 43 passed, 2 failed`; `FAIL A1 api.js uses /^custom_/.test(agentProviderId) [line 0]`; `FAIL D15 agent header has no prose tool list`.
+- **প্রমাণ (আগে):** `node tests/local-tool-cap.test.js` → `RESULT: 42 passed, 3 failed`; `FAIL A1 api.js uses /^custom_/.test(agentProviderId)`; `FAIL A2 CUSTOM_PROVIDER_N_* env creates a custom_N provider`; `FAIL D15 agent header has no prose tool list`.
 - **Impact:** quality gate স্থায়ীভাবে red; নতুন regression আসলেও আলাদা করা কঠিন।
-- **Fix:** A1/D15-কে বর্তমান provider/tool contract-এর সাথে মেলানো, অথবা assertion মুছে নতুন gate-এ নেওয়া; আগে `git log -S` দিয়ে intent যাচাই।
+- **Fix:** `git log -S` intent যাচাই: inline `custom_` tool-gate `36ac2e1`-এ provider registry/tool-budget-এ সরেছে, env seed `provider/custom.js`-এ, header text `modules/system-prompt.js`-এ। assertion তিনটি বর্তমান single-source contract-এ update করা হয়েছে; suite এখন সব pass হলে `LOCAL_TOOL_CAP_OK` ছাপে।
 - **Gate:** `LOCAL_TOOL_CAP_OK` (0 fail)।
+- **Done (2026-11-20, `gc-mwokuxf5`):** `A1` এখন প্রমাণ করে inline `/^custom_/.test(agentProviderId)` নেই এবং caps `lib/tool-budget.js`-এর `providerMaxOf` থেকে আসে (api.js `toolBudget.providerMaxOf` call করে); `A2` প্রমাণ করে env seed `provider/custom.js`-এর `listCustomNumbers`/`fromEnv` দিয়ে হয় এবং `id: "custom_" + n` সেখানেই তৈরি; `D15` প্রমাণ করে dynamic `s.toolsCount` header `modules/system-prompt.js`-এ আছে, api.js `buildSystemPrompt`-এ delegate করে, এবং কোথাও prose `- TOOLS AVAILABLE:` list নেই। Live evidence: `RESULT: 45 passed, 0 failed` + `LOCAL_TOOL_CAP_OK`, exit 0।
 
 #### N5 — rebuild/restart friction: stale dist-এর ঝুঁকি
 

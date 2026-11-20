@@ -33,21 +33,37 @@ function fact(name, detail) { rows.push(["INFO", name, detail || ""]); }
 // PART A — STATIC: prove which line in api.js does what
 // ─────────────────────────────────────────────────────────────
 
-// A1. Is the custom_ regex test actually used in api.js?
-const customRegexLine = lines.findIndex((l) => /\/\^custom_\/\.test\(agentProviderId\)/.test(l));
+// A1. The inline custom_ tool-gating regex was intentionally replaced by
+//   lib/tool-budget.js (git log -S: 36ac2e1). Prove the current single
+//   source instead of the removed line.
+const inlineCustomGate = /\/\^custom_\/\.test\(agentProviderId\)/.test(src);
+const budgetModule = fs.readFileSync(
+  path.resolve(__dirname, "..", "lib", "tool-budget.js"),
+  "utf8",
+);
+const budgetCall = src.includes("toolBudget.providerMaxOf(");
+const budgetDef = /function providerMaxOf\(/.test(budgetModule);
 assert(
-  "A1  api.js uses /^custom_/.test(agentProviderId)",
-  customRegexLine > 0,
-  "line " + (customRegexLine + 1)
+  "A1  tool caps come from lib/tool-budget.js providerMaxOf, not an inline custom_ regex",
+  !inlineCustomGate && budgetCall && budgetDef,
+  "inline=" + inlineCustomGate + ", apiCall=" + budgetCall + ", module=" + budgetDef
 );
 
-// A2. A custom_N provider is really created (loadCustomProviders).
-const customLoaderLine = lines.findIndex((l) => /const providerId = "custom_" \+ num;/.test(l));
+// A2. A custom_N provider is really created. The env seed moved to
+//   provider/custom.js (one resolver); api.js must still call it.
+const customSource = fs.readFileSync(
+  path.resolve(__dirname, "..", "provider", "custom.js"),
+  "utf8",
+);
 const loaderCallLine = lines.findIndex((l) => /^loadCustomProviders\(\);/.test(l));
+const listCall = src.includes("customProviders.listCustomNumbers(process.env)");
+const fromEnvCall = src.includes("customProviders.fromEnv(num, process.env)");
+const idBuild = /id:\s*"custom_"\s*\+\s*n/.test(customSource);
 assert(
-  "A2  CUSTOM_PROVIDER_N_* env creates a custom_N provider",
-  customLoaderLine > 0 && loaderCallLine > customLoaderLine,
-  "loader line " + (customLoaderLine + 1) + " -> call line " + (loaderCallLine + 1)
+  "A2  CUSTOM_PROVIDER_N_* env seeds a custom_<n> provider via provider/custom.js",
+  loaderCallLine > 0 && listCall && fromEnvCall && idBuild,
+  "call line " + (loaderCallLine + 1) + ", list=" + listCall +
+    ", fromEnv=" + fromEnvCall + ", id=" + idBuild
 );
 
 // A3. With exactOnly=true, resolveProvider returns null when the name misses.
@@ -342,16 +358,23 @@ const proxyForwardsTools =
   src.includes('finish_reason: proxyToolCalls.length ? "tool_calls" : "stop"');
 assert("D14 proxy response forwards tool_calls + dynamic finish_reason", proxyForwardsTools);
 
-// D15 — the header TOOLS AVAILABLE list is dynamic (derived from the registry,
-//   not a hardcoded list, so adding a tool updates the header by itself).
+// D15 — the header tool note is dynamic (counted from the registry) and the
+//   prose list is gone. The text lives in modules/system-prompt.js now and
+//   api.js delegates to it (git log -S: ddd09d8 removed the old list).
+const promptModule = fs.readFileSync(
+  path.resolve(__dirname, "..", "modules", "system-prompt.js"),
+  "utf8",
+);
+const moduleNote = /s\.toolsCount\s*\+\s*" tools are available in the function definitions/.test(promptModule);
 const dynamicHeader =
   !src.includes("- TOOLS AVAILABLE:") &&
-  !src.includes("- TOOLS AVAILABLE: read_file, write_file, list_directory") &&
-  src.includes("tools are available in the function definitions");
+  !promptModule.includes("- TOOLS AVAILABLE:") &&
+  moduleNote &&
+  src.includes("buildSystemPrompt");
 assert(
   "D15 agent header has no prose tool list; schemas live only in the tools argument",
   dynamicHeader,
-  "no hardcoded or registry prose list",
+  "module note=" + moduleNote + ", delegate=" + src.includes("buildSystemPrompt"),
 );
 
 // D16 — append_syllabus exists in the tool registry and in dispatch (fixes the
@@ -414,5 +437,7 @@ for (const [st, name, detail] of rows) {
 }
 console.log("────────────────────────────────────────────────────────────");
 console.log("  RESULT: " + pass + " passed, " + fail + " failed, " + rows.filter(r => r[0] === "INFO").length + " facts");
+// Release gate marker: only when every assertion passed.
+if (!fail) console.log("LOCAL_TOOL_CAP_OK");
 console.log("══════════════════════════════════════════════════════════\n");
 process.exit(fail ? 1 : 0);
