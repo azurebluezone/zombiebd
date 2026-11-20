@@ -232,8 +232,8 @@ exit=0
 | ID | Problem | Evidence | Fix |
 |---|---|---|---|
 | P2-01 | Test-এ `/home/sahon` | `tests/agent-transport-e2e.js:24`, `tests/agent-transport-e2e-verify.js:14/40`, `tests/workspace-layout-check.js:38` | ✅ SOLVED (2026-11-20): `E2E_WORK_DIR` or `TEST_DIR` or `os.tmpdir()`; no machine-home literal in tracked source/tests; `tests/portability-check.js` copies the tracked tree, runs the resolver there, and proves its DB/UDS stay inside the copy on `PORT=5599` |
-| P2-02 | Stale artifacts | `dist/`, `.zombiecoder/.state/backups/*`, `logs/` 24MB | retention |
-| P2-03 | কোনো eval harness নেই | manual probe | Phase 9 |
+| P2-02 | Stale artifacts | `dist/`, `.zombiecoder/.state/backups/*`, `logs/` 24MB | ✅ SOLVED (2026-11-20): `modules/retention.js` (log days/bytes, backup days/files, dry-run, active log + `models.db` protected); boot hook in `start.js`; proof `node tests/quality-eval-check.js` |
+| P2-03 | কোনো eval harness নেই | manual probe | ✅ SOLVED (2026-11-20): `tests/quality-eval-check.js` — 30 real cases (intent, chat allowlist, budgets, identity, version, R2T, retention, audio, live health); proof 30/0 `QUALITY_EVAL_OK` |
 | P2-04 | Git worktree dirty | `git status --short` | Phase 0 tag/stash |
 
 ---
@@ -911,7 +911,7 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 | 6 | **P1-07** | R2T silent builtin fallback → log + response header | `R2T_TRACE_OK` | ✅ DONE (`gc-mwoslpev`) |
 | 7 | **N5** | safe rebuild+restart এক কমান্ডে (stale dist risk বন্ধ) | `REBUILD_RESTART_OK` | ✅ DONE (`gc-mwot2is2`) |
 | 8 | **P1-09 + P1-08** | `package.json` + installer-এ apt/dnf/pacman/brew | `PACKAGE_INSTALL_OK` | ✅ DONE (`gc-mwotctcf`) |
-| 9 | **P2-02 + P2-03** | log/backup retention + 30-case eval harness | `QUALITY_EVAL_OK` | TODO |
+| 9 | **P2-02 + P2-03** | log/backup retention + 30-case eval harness | `QUALITY_EVAL_OK` | ✅ DONE (`gc-mwotobw2`) |
 | 10 | **N3** | PLAN/status snapshot drift ঠিক করা | `DOCS_CURRENT_OK` | TODO |
 | 11 | **N6** | skill MCP stdio integration (reference project read-only) | `SKILL_MCP_OK` | TODO |
 
@@ -964,6 +964,14 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 - **Impact:** skills loading-এর কোনো MCP path নেই; future skill feature অর্ধেক।
 - **Fix:** reference project-এর stdio entry (`server/skill_mcp.py` হিসাবে user উল্লেখ করেছেন) verify করে `servers.json`-এ `transport:"stdio"` entry; না হলে skills আলাদা module হিসেবে রাখা।
 - **Gate:** `SKILL_MCP_OK` — initialize/tools/list/tools/call কাজ করে, reference project-এ কোনো write নেই।
+
+#### P2-02 + P2-03 — stale artifacts + no eval harness
+
+- **প্রমাণ:** `logs/` 44MB, `.zombiecoder/.state/backups/` 40MB / 127 files, `dist/` rebuild ছাড়া stale হতে পারে; কোনো deterministic eval suite নেই, শুধু manual probe।
+- **Impact:** diagnostic history unbounded; release-এর আগে "সব ঠিক" দাবির কোনো এক-কমান্ড প্রমাণ নেই।
+- **Fix:** `modules/retention.js` — log days/bytes + backup days/files, dry-run, active log/today's log/`models.db` protected; `start.js` boot hook (`RETENTION_DRY_RUN=1` reports only)। `tests/quality-eval-check.js` — 30 real cases; `scripts/audio-brief.py` — reproducible edge-tts Bengali brief।
+- **Gate:** `QUALITY_EVAL_OK` — 30/30 cases, retention temp-fixture prune + live `/health` 200।
+- **Done (2026-11-20, `gc-mwotobw2`):** `modules/retention.js` defaults `logDays=14`, `logMaxBytes=50MB`, `backupDays=7`, `backupMaxFiles=100`; `start.js` step 1c boot hook; real dry-run found 27 of 127 backups (`41,224,878 → 30,473,764` bytes) and 0 logs (all within 14 days) without deleting anything. `tests/quality-eval-check.js` → 30/0 `QUALITY_EVAL_OK` (intent 7, chat 5, budgets 5, identity 3, version 2, R2T 2, retention 4, audio 1, live health 1)। `scripts/audio-brief.py` — edge-tts 7.3.1, `bn-BD-NabanitaNeural`, 11 sections / 4,086 chars, `--check` → `AUDIO_BRIEF_CHECK_OK`; real output `/home/sahon/Music/mp3/zbd/today/fday/zombiecoder-brief-bn.mp3` = 305.59s, 1,833,552 bytes, ffprobe `mp3` (generator versioned in repo, MP3 outside repo)।
 
 ### 10.5 এই pass-এ যা করব না
 

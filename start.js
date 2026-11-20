@@ -979,6 +979,21 @@ async function startAll() {
   // The policy lives in modules/data-prune.js; boot and report writes share
   // this one helper so no caller keeps its own copy of the rules.
   pruneRuntimeData("boot");
+
+  // 1c. Bounded retention for logs and agent backups. The same policy runs in
+  // tests/quality-eval-check.js; active logs and the current database are
+  // never candidates, and RETENTION_DRY_RUN=1 reports without deleting.
+  try {
+    const retention = require("./modules/retention.js");
+    const summary = retention.pruneRetention({
+      dryRun: process.env.RETENTION_DRY_RUN === "1",
+    });
+    if (summary.dryRun || summary.deleted > 0) {
+      console.log("[RETENTION] " + retention.formatRetentionLine(summary));
+    }
+  } catch (err) {
+    console.warn("[RETENTION] skipped:", err.message);
+  }
   
   // 2. Detect environment
   const envInfo = detectEnvironment();
