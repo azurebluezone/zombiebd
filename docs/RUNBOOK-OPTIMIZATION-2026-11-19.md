@@ -1,7 +1,7 @@
 # RUNBOOK — Single-Truth Optimization (2026-11-19)
 
 **Scope:** `~/zombiebd` এবং এই মেশিনে চলা adjacent stacks।
-**Status:** `IMPLEMENTATION_NOT_STARTED` — PROPOSAL + EXECUTION PLAN; এই ডকুমেন্ট লেখার সময় product code বদলানো হয়নি, কোনো phase এখনো চালানো হয়নি।
+**Status:** `ACTIVE` — ১২/১৪ row DONE; পরের কাজ SURFACE_POLICY।
 **Entry point (আগে এটা পড়ো):** `docs/PLAN-2026-11-20.md` — ১০ phase, gate ও সময়সহ সংক্ষিপ্ত করণীয়; narration `/home/sahon/Music/mp3/zbd/today/zbd-plan-2026-11-20.mp3` (424.1s, 2,544,860 bytes)।
 **Closed contracts:** `gc-mwnurzwx` → `RETIRE_AUDIO_OK` (Monu retire + runbook narration); `gc-mwnvesuc` → `PLAN_AUDIO_OK` (plan doc + narration)।
 **Evidence rule:** প্রতিটি দাবির পাশে `path:line`, command output বা exit code আছে। যা probe করা হয়নি তা `UNVERIFIED`।
@@ -916,10 +916,11 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 | 9 | **P2-02 + P2-03** | log/backup retention + 30-case eval harness | `QUALITY_EVAL_OK` | ✅ DONE (`gc-mwotobw2`) |
 | 10 | **N3** | PLAN/status snapshot drift ঠিক করা | `DOCS_CURRENT_OK` | ✅ DONE (`gc-mwoupmi0`) |
 | 11 | **N6** | local skill SQLite import + Markdown parser + MCP stdio | `SKILL_MCP_OK` | ✅ DONE (`gc-mwov6hty`) |
-| 12 | **SURFACE_POLICY** | surface policy table (web-chat/mission/editor) | `SURFACE_POLICY_OK` | TODO |
-| 13 | **CHAT_UPLOAD** | chat document/photo/audio upload | `CHAT_UPLOAD_OK` | TODO |
+| 12 | **SERVER_INDEPENDENCE** | server-owned `.zombie` state, read-only `.zombiecoder` adapter, bounded prompt context + 12-hex workspace id | `LIVE_SERVER_INDEPENDENT_OK` | ✅ DONE (`gc-mwoxgfl1`) |
+| 13 | **SURFACE_POLICY** | surface policy table (web-chat/mission/editor) | `SURFACE_POLICY_OK` | TODO |
+| 14 | **CHAT_UPLOAD** | chat document/photo/audio upload | `CHAT_UPLOAD_OK` | TODO |
 
-**নীতি:** ১–২ একই দিনে (P0 + live config safety), ৩–৪ test truth, ৫–৬ observability, ৭–৮ release portability, ৯ quality, ১০–১৩ docs/feature. প্রতিটি আইটেম আলাদা contract + gate; এক batch-এ দুইটার বেশি নয়।
+**নীতি:** ১–২ একই দিনে (P0 + live config safety), ৩–৪ test truth, ৫–৬ observability, ৭–৮ release portability, ৯ quality, ১০–১৪ docs/feature. প্রতিটি আইটেম আলাদা contract + gate; এক batch-এ দুইটার বেশি নয়।
 
 ### 10.4 নতুন সমস্যা — N1–N6 (প্রমাণসহ)
 
@@ -970,6 +971,14 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 - **Fix:** `scripts/import-skills-db.js` (`VACUUM INTO`) দিয়ে একবার `skills.db` data import → `skills/skills.db`; `modules/skill-db.js` read-only store/router; `modules/skill-parser.js` Markdown body parser; `external mcp/skill-mcp.js` local Node stdio server; `scripts/skill.js` CLI; `servers.example.json`-এ `skills` entry। কোনো runtime path experiment project-এ যায় না।
 - **Gate:** `SKILL_MCP_OK` — local DB 256 active / 75,358 terms; CLI যেকোনো CWD থেকে route/get; MCP initialize/tools/list/tools/call; runtime files-এ experiment path নেই; DB hash read-only অপরিবর্তিত।
 - **Done (2026-11-20, `gc-mwov6hty`):** `skills/skills.db` imported (8,928,972 bytes, `active=256`, `terms=75,358`) via `node scripts/import-skills-db.js --source /home/sahon/Documents/GGUF/zombiecoder-agent-skills/skills.db` — one-time copy, source path script argument, runtime-এ কোনো reference নয়। `modules/skill-db.js` (`node:sqlite`, `readOnly` + `query_only`) term-frequency router; `modules/skill-parser.js` Markdown section/card parser (secret redaction সহ); `external mcp/skill-mcp.js` Node stdio server (`search_skills`, `get_skill`); `scripts/skill.js` CLI (`stats/list/get/route/doctor`) — `/tmp` থেকে চালিয়েও `cdp-operations`/`sqlite-operations` resolve করে। `servers.example.json` + local `servers.json`-এ `skills` stdio entry; `.gitignore`-এ `!skills/skills.db`. Proof: `node tests/skill-mcp-check.js` → 11/0 `SKILL_MCP_OK local=1 active=256 tools=2 search=cdp-operations card=cdp-operations readonly=1`, exit 0; ৭টি runtime file-এ experiment path নেই; DB sha আগে/পরে একই।
+
+#### SERVER_INDEPENDENCE — gateway প্লাগিন ছাড়াও চলবে
+
+- **প্রমাণ (আগে):** rebuild-এর আগে live MCP initialize probe একটি fresh workspace-এ `.zombiecoder/` বানিয়েছিল এবং `x-zc-workspace-id` header দেয়নি — `node tests/live-server-independence-check.js` baseline: `6 passed, 7 failed`, `LIVE_SERVER_INDEPENDENT_FAIL`। অর্থাৎ server state আর plugin state একই `.zombiecoder/`-এ মিশে যেত, আর transport header-এ full path ছাড়া workspace চেনার উপায় ছিল না।
+- **Impact:** plugin আপডেট/removal server state ভাঙতে পারে; ownership অস্পষ্ট; UDS/gRPC হেডারে পুরো absolute path বহন করতে হয়।
+- **Fix:** `modules/workspace-adapter.js` — `.zombie` server state (SSOT/syllabus/memory/sessions/.state), `.zombiecoder` read-only merge, 12-hex workspace registry; `modules/workspace.js` adapter-এ delegate + legacy migration order (plugin root syllabus থাকলে legacy duplicate, migrate নয়); `modules/syllabus.js` merged read + `.zombie` write; `modules/context.js` `buildPromptContext` (input-matched SSOT/syllabus, fingerprint, last 10 turns, active goal, workspace id); `modules/sessions.js` `.zombie/memory/sessions` + `recentTurns`; `modules/goals.js` `.zombie/.state/goals.jsonl` + `active()`; `api.js` `readSSOT` `.zombie` first/plugin fallback, initialize-এ `x-zc-workspace-id` register করে।
+- **Gate:** `LIVE_SERVER_INDEPENDENT_OK` — live gateway-এ fresh MCP initialize শুধু `.zombie/` বানায় (`.zombiecoder` নয়), 12-hex id দেয়, পরে আসল root restore করে; `SERVER_CONTEXT_OK` 37/0; `WORKSPACE_LAYOUT_OK` 33/0।
+- **Done (2026-11-20, `gc-mwoxgfl1`):** `scripts/rebuild-restart.sh --restart` → `REBUILD_RESTART_OK api_sha=5575c3644015…`; `node tests/live-server-independence-check.js` → 13/0 `LIVE_SERVER_INDEPENDENT_OK dist=1 live=1 zombie_only=1 id=12 restore=1` (probe-এ `.zombie/SSOT.md` আছে, `.zombiecoder` নেই, header id adapter-এর সাথে মেলে, `get_working_dir` → `/home/sahon/zombiebd`); `node tests/server-context-check.js` → 37/0 `SERVER_CONTEXT_OK local=1 plugin_readonly=1 merged=1 prompt=1 turns=10 goal=1 id=12 runtime=clean live=1`; `node tests/workspace-layout-check.js` → 33/0 `WORKSPACE_LAYOUT_OK`; `node tests/modules-foundation-check.js` → `MODULES_FOUNDATION_OK`। Plugin tree sha before/after অপরিবর্তিত (৪ ফাইল)।
 
 #### P2-02 + P2-03 — stale artifacts + no eval harness
 

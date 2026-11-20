@@ -51,7 +51,7 @@ class SessionStore {
   constructor(opts) {
     const o = opts || {};
     this.maxResident = Number.isInteger(o.maxResident) && o.maxResident > 0 ? o.maxResident : 10;
-    this.archiveDir = path.resolve(o.archiveDir || path.join(process.cwd(), ".zombiecoder", "agents", "sessions"));
+    this.archiveDir = path.resolve(o.archiveDir || path.join(process.cwd(), ".zombie", "memory", "sessions"));
     this.ttlMs = Number.isFinite(o.ttlMs) ? o.ttlMs : 24 * 60 * 60 * 1000;
     this.now = typeof o.now === "function" ? o.now : Date.now;
     this.resident = new Map(); // id -> session (Map order == LRU order)
@@ -151,6 +151,20 @@ class SessionStore {
       turns: archived.turns,
       archived: true,
     });
+  }
+
+  /**
+   * Return the last `limit` turns for a prompt. Reading an archived session
+   * does not promote it back into RAM; the 10-slot resident budget stays intact.
+   */
+  recentTurns(id, limit) {
+    const key = String(id || "");
+    if (!key) return [];
+    const max = Number.isInteger(limit) && limit > 0 ? limit : 10;
+    const session = this.resident.get(key);
+    if (session) return session.turns.slice(-max);
+    const archived = this.readArchive(key);
+    return archived.turns.slice(-max);
   }
 
   /**

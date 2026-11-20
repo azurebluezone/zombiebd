@@ -61,7 +61,7 @@ class GoalLedger {
   constructor(opts) {
     const o = opts || {};
     this.dir = path.resolve(o.dir || process.cwd());
-    this.file = path.join(this.dir, ".zombiecoder", ".state", "goals.jsonl");
+    this.file = path.join(this.dir, ".zombie", ".state", "goals.jsonl");
     this.timeoutMs = Number.isFinite(o.timeoutMs) ? o.timeoutMs : 120000;
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
   }
@@ -112,6 +112,13 @@ class GoalLedger {
 
   get(id) {
     return this.list().find((goal) => goal.id === id) || null;
+  }
+
+  /** The newest still-open goal, or null when the ledger has none. */
+  active() {
+    const open = this.list().filter((goal) => goal.status === "open");
+    open.sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")));
+    return open[0] || null;
   }
 
   list() {

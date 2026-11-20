@@ -17,6 +17,7 @@ logs/
 cache/
 locks/
 .zombiecoder/
+.zombie/
 .missionbarisal/
 node_modules/
 # symlinked node_modules (dir pattern misses symlinks — they are files to git)

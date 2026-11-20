@@ -17,6 +17,7 @@ const fs = require("fs");
 const path = require("path");
 
 const { splitByHeadings, tokenize } = require("../tools/context-slimmer");
+const adapter = require("./workspace-adapter");
 const {
   ensureWorkspacePaths,
   readTextCached,
@@ -111,7 +112,11 @@ function sliceContext(spec) {
   const paths = ensureWorkspacePaths(dir);
 
   const ssotRead = readTextCached(paths.ssot);
-  const syllabusRead = readTextCached(paths.syllabus);
+  // The server syllabus is the write target; the plugin syllabus is a
+  // read-only input merged into the view. Never copy the whole plugin file
+  // into the prompt.
+  const mergedSyllabus = adapter.readMergedSyllabus(dir);
+  const syllabusText = mergedSyllabus.text || readTextCached(paths.syllabus).text;
   const fingerprint = workspaceFingerprint(dir);
 
   const ssot = pickEntries(ssotRead.text, input, {
@@ -119,7 +124,7 @@ function sliceContext(spec) {
     maxEntries: 2,
     fallback: "first",
   });
-  const syllabus = pickEntries(syllabusRead.text, input, {
+  const syllabus = pickEntries(syllabusText, input, {
     maxChars: budget.syllabusChars,
     maxEntries: 3,
     fallback: "last",
@@ -128,14 +133,14 @@ function sliceContext(spec) {
   const parts = [];
   if (ssot.body) {
     parts.push(
-      "PROJECT SSOT (input-matched excerpt; full file at .zombiecoder/SSOT.md):\n" +
+      "PROJECT SSOT (input-matched excerpt; full file at .zombie/SSOT.md):\n" +
         ssot.body +
         "\n--- END SSOT EXCERPT ---",
     );
   }
   if (syllabus.body) {
     parts.push(
-      "AGENT SYLLABUS (input-matched excerpt; full file at .zombiecoder/syllabus.md):\n" +
+      "AGENT SYLLABUS (input-matched excerpt; full file at .zombie/syllabus.md; plugin entries merged read-only):\n" +
         syllabus.body +
         "\n--- END SYLLABUS EXCERPT ---",
     );
@@ -178,6 +183,84 @@ function sliceContext(spec) {
       syllabus: paths.syllabus,
     },
   };
+}
+
+/**
+ * Build the full bounded prompt context for one turn:
+ *   input-matched SSOT/syllabus + fingerprint + last N session turns + open goal.
+ *
+ * The session store is the server-owned `SessionStore`; the goal ledger is the
+ * server-owned `GoalLedger`. Both are optional so callers that already have a
+ * bounded turn list can pass it directly.
+ *
+ * @param {{dir: string, input: string, sessionId?: string,
+ *          sessions?: {recentTurns: Function}, turns?: Array,
+ *          goals?: {active: Function}, goal?: object,
+ *          turnLimit?: number, maxChars?: number}} spec
+ */
+function buildPromptContext(spec) {
+  const s = spec || {};
+  const base = sliceContext({ dir: s.dir, input: s.input, budget: s.budget });
+
+  const turnLimit = Number.isInteger(s.turnLimit) && s.turnLimit > 0 ? s.turnLimit : 10;
+  let turns = Array.isArray(s.turns) ? s.turns : [];
+  if (!turns.length && s.sessions && s.sessionId && typeof s.sessions.recentTurns === "function") {
+    turns = s.sessions.recentTurns(s.sessionId, turnLimit) || [];
+  }
+  turns = turns.slice(-turnLimit);
+
+  const goal =
+    s.goal ||
+    (s.goals && typeof s.goals.active === "function" ? s.goals.active() : null) ||
+    null;
+
+  const parts = [base.text];
+  if (turns.length) {
+    const lines = turns.map((turn) => {
+      const role = String((turn && turn.role) || "user");
+      const content = String((turn && turn.content) || "").replace(/\s+/g, " ").trim();
+      return role + ": " + content.slice(0, 400);
+    });
+    parts.push(
+      "SESSION MEMORY (last " +
+        turns.length +
+        " turns, server SessionStore):\n" +
+        lines.join("\n") +
+        "\n--- END SESSION MEMORY ---",
+    );
+  }
+  if (goal) {
+    parts.push(
+      "ACTIVE GOAL (" +
+        String(goal.id || "goal") +
+        "):\n" +
+        String(goal.goal || "") +
+        "\nExpected marker: " +
+        String(goal.expected || "") +
+        "\nCheck: " +
+        String(goal.check || "") +
+        "\n--- END ACTIVE GOAL ---",
+    );
+  }
+  const workspaceId = s.workspaceId || adapter.workspaceId(base.dir);
+  parts.push("Workspace id: " + workspaceId);
+
+  let text = parts.join("\n\n");
+  const maxChars = Number.isFinite(s.maxChars) ? s.maxChars : 6000;
+  let truncated = base.truncated;
+  if (text.length > maxChars) {
+    text = text.slice(0, Math.max(0, maxChars - 18)) + "\n...[context cut]";
+    truncated = true;
+  }
+
+  return Object.assign({}, base, {
+    text,
+    chars: text.length,
+    turns,
+    goal,
+    workspaceId,
+    truncated,
+  });
 }
 
 function listCandidateFiles(dir, maxScan) {
@@ -243,5 +326,6 @@ module.exports = {
   DEFAULT_BUDGET,
   pickEntries,
   sliceContext,
+  buildPromptContext,
   findRelevantFiles,
 };

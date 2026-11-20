@@ -243,22 +243,24 @@ function sessionIdFor(spec) {
 }
 
 /**
- * Resolve the client workspace and create the canonical `.zombiecoder/` layout.
+ * Resolve the client workspace and create the server-owned `.zombie/` layout.
  *
- * Layout creation is opt-in by evidence: only `roots`, the client-directory
- * header or an explicit workspace env key prove which project the request
- * belongs to. A bare `cwd` fallback must not bootstrap a tree — the mutable
- * MCP working directory used to leak into `cwd` and create a full duplicate
- * workspace inside whatever directory a previous request had selected.
+ * Layout creation is opt-in by evidence: only `roots`, the compact workspace
+ * id, the client-directory header or an explicit workspace env key prove which
+ * project the request belongs to. A bare `cwd` fallback must not bootstrap a
+ * tree — the mutable MCP working directory used to leak into `cwd` and create a
+ * full duplicate workspace inside whatever directory a previous request had
+ * selected.
  *
  * Existing SSOT/syllabus files are never overwritten by the layout itself.
- * @param {{roots?: Array, headerDir?: string, env?: object, cwd?: string,
- *          seedSSOT?: Function}} [spec]
+ * @param {{roots?: Array, workspaceId?: string, headerDir?: string,
+ *          env?: object, cwd?: string, seedSSOT?: Function}} [spec]
  */
 function bootstrapWorkspace(spec) {
   const s = spec || {};
   const resolved = resolveWorkspace({
     roots: s.roots,
+    workspaceId: s.workspaceId,
     headerDir: s.headerDir,
     env: s.env,
     cwd: s.cwd,

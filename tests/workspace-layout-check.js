@@ -5,12 +5,14 @@
  * Canonical workspace layout acceptance check.
  *
  * Proves:
- *   1. modules/workspace.js creates exactly one .zombiecoder tree:
- *      SSOT.md, syllabus.md, memory/, .state/ — never agents/ or
- *      agents/sessions/.
- *   2. The canonical syllabus path is .zombiecoder/syllabus.md.
- *   3. A legacy agents/syllabus.md is migrated (content preserved), and a
- *      duplicate is reported but never deleted behind the operator's back.
+ *   1. modules/workspace.js creates exactly one server-owned .zombie tree:
+ *      SSOT.md, syllabus.md, memory/, memory/sessions/, .state/ — never
+ *      agents/ or agents/sessions/. The plugin `.zombiecoder/` tree is never
+ *      created by the server.
+ *   2. The canonical server syllabus path is .zombie/syllabus.md.
+ *   3. A legacy .zombiecoder/agents/syllabus.md is migrated (content
+ *      preserved) only when no plugin root syllabus exists; a duplicate is
+ *      reported but never deleted behind the operator's back.
  *   4. Syllabus appends land in the canonical file and duplicates are skipped.
  *   5. MCP bootstrap from a bare cwd creates nothing; roots create the
  *      canonical layout.
@@ -153,23 +155,24 @@ const mcpProtocol = require(path.join(ROOT, "modules", "mcp-protocol.js"));
 // ── 1. Canonical layout ─────────────────────────────────────
 const ws = fresh("project");
 const layout = workspace.ensureWorkspace(ws);
-const tree = listTree(path.join(ws, ".zombiecoder"));
+const tree = listTree(path.join(ws, ".zombie"));
 check(
-  "ensureWorkspace creates SSOT, syllabus, memory and .state",
+  "ensureWorkspace creates SSOT, syllabus, memory, sessions and .state",
   fs.existsSync(layout.ssot) &&
     fs.existsSync(layout.syllabus) &&
     fs.existsSync(layout.memory) &&
+    fs.existsSync(path.join(layout.memory, "sessions")) &&
     fs.existsSync(layout.state),
   tree.join(", "),
 );
 check(
-  "ensureWorkspace never creates .zombiecoder/agents",
-  !fs.existsSync(path.join(ws, ".zombiecoder", "agents")),
+  "ensureWorkspace never creates the plugin .zombiecoder tree",
+  !fs.existsSync(path.join(ws, ".zombiecoder")),
   tree.join(", "),
 );
 check(
-  "canonical syllabus is .zombiecoder/syllabus.md",
-  path.relative(ws, layout.syllabus) === path.join(".zombiecoder", "syllabus.md"),
+  "canonical syllabus is .zombie/syllabus.md",
+  path.relative(ws, layout.syllabus) === path.join(".zombie", "syllabus.md"),
   layout.syllabus,
 );
 check(
@@ -199,8 +202,9 @@ check(
   migrated.syllabus,
 );
 check(
-  "migration removes the empty legacy agents dir",
-  !fs.existsSync(legacyDir),
+  "migration leaves the plugin-owned agents dir untouched",
+  fs.existsSync(legacyDir) && !fs.existsSync(path.join(legacyDir, "syllabus.md")),
+  legacyDir,
 );
 
 const duplicateWs = fresh("duplicate-project");
@@ -213,7 +217,9 @@ check(
   "duplicate legacy file is reported, not deleted",
   duplicate.legacy.duplicate === true &&
     fs.existsSync(path.join(dupAgents, "syllabus.md")) &&
+    fs.readFileSync(path.join(duplicateWs, ".zombie", "syllabus.md"), "utf8").includes("# Root") &&
     fs.readFileSync(path.join(duplicateWs, ".zombiecoder", "syllabus.md"), "utf8").includes("# Root"),
+  duplicate.legacy.duplicate ? "duplicate" : "not-duplicate",
 );
 
 // ── 3. Syllabus appends ─────────────────────────────────────
@@ -231,7 +237,7 @@ const secondAppend = syllabus.appendSyllabusEntry({
 check("syllabus append writes the canonical file", firstAppend.written === true, firstAppend.path);
 check(
   "syllabus append leaves no second syllabus",
-  fs.existsSync(path.join(appendWs, ".zombiecoder", "syllabus.md")) &&
+  fs.existsSync(path.join(appendWs, ".zombie", "syllabus.md")) &&
     !fs.existsSync(path.join(appendWs, ".zombiecoder", "agents", "syllabus.md")),
 );
 check(
@@ -249,7 +255,7 @@ const learned = syllabus.recordLearning(
 check(
   "recordLearning appends to the canonical syllabus",
   learned === true &&
-    fs.readFileSync(path.join(learningWs, ".zombiecoder", "syllabus.md"), "utf8").includes("### check-run"),
+    fs.readFileSync(path.join(learningWs, ".zombie", "syllabus.md"), "utf8").includes("### check-run"),
 );
 
 // ── 4. MCP bootstrap ────────────────────────────────────────
@@ -259,6 +265,7 @@ check(
   "bootstrapWorkspace from bare cwd creates no workspace tree",
   cwdBoot.source === "cwd" &&
     cwdBoot.created.length === 0 &&
+    !fs.existsSync(path.join(cwdOnly, ".zombie")) &&
     !fs.existsSync(path.join(cwdOnly, ".zombiecoder")),
   cwdBoot.source,
 );
@@ -268,18 +275,19 @@ const rootsBoot = mcpProtocol.bootstrapWorkspace({
   roots: [{ uri: "file://" + rootsWs }],
   cwd: cwdOnly,
 });
-const rootsTree = listTree(path.join(rootsWs, ".zombiecoder"));
+const rootsTree = listTree(path.join(rootsWs, ".zombie"));
 check(
   "bootstrapWorkspace from MCP roots creates the canonical layout",
   rootsBoot.source === "mcp-roots" &&
-    fs.existsSync(path.join(rootsWs, ".zombiecoder", "syllabus.md")) &&
-    fs.existsSync(path.join(rootsWs, ".zombiecoder", "memory")) &&
-    !fs.existsSync(path.join(rootsWs, ".zombiecoder", "agents")),
+    fs.existsSync(path.join(rootsWs, ".zombie", "syllabus.md")) &&
+    fs.existsSync(path.join(rootsWs, ".zombie", "memory")) &&
+    !fs.existsSync(path.join(rootsWs, ".zombie", "agents")) &&
+    !fs.existsSync(path.join(rootsWs, ".zombiecoder")),
   rootsTree.join(", "),
 );
 check(
   "bootstrap paths expose canonical and legacy locations",
-  rootsBoot.paths.syllabus === path.join(rootsWs, ".zombiecoder", "syllabus.md") &&
+  rootsBoot.paths.syllabus === path.join(rootsWs, ".zombie", "syllabus.md") &&
     rootsBoot.paths.legacySyllabus ===
       path.join(rootsWs, ".zombiecoder", "agents", "syllabus.md"),
 );
@@ -311,9 +319,11 @@ check(
 );
 
 // ── 6. Live project state ───────────────────────────────────
-const liveSyllabus = path.join(ROOT, ".zombiecoder", "syllabus.md");
+const liveSyllabus = path.join(ROOT, ".zombie", "syllabus.md");
+const livePluginSyllabus = path.join(ROOT, ".zombiecoder", "syllabus.md");
 const liveLegacySyllabus = path.join(ROOT, ".zombiecoder", "agents", "syllabus.md");
-check("live canonical syllabus exists", fs.existsSync(liveSyllabus));
+check("live server syllabus exists", fs.existsSync(liveSyllabus), liveSyllabus);
+check("live plugin syllabus is read-only input", fs.existsSync(livePluginSyllabus), livePluginSyllabus);
 check(
   "live project has no second syllabus",
   !fs.existsSync(liveLegacySyllabus),
@@ -321,7 +331,7 @@ check(
 );
 check(
   "live project has no gateway agents/sessions tree",
-  !fs.existsSync(path.join(ROOT, ".zombiecoder", "agents", "sessions")),
+  !fs.existsSync(path.join(ROOT, ".zombie", "agents", "sessions")),
 );
 // A workspace is created only inside the root it was given. A sibling or
 // parent .zombiecoder would mean the project root leaked into cwd/home.
@@ -334,8 +344,9 @@ check(
   "workspace state stays inside the requested project root",
   isolationEntries.length === 1 &&
     isolationEntries[0] === "project" &&
+    !fs.existsSync(path.join(isolationParent, ".zombie")) &&
     !fs.existsSync(path.join(isolationParent, ".zombiecoder")) &&
-    fs.existsSync(path.join(isolationProject, ".zombiecoder", "syllabus.md")),
+    fs.existsSync(path.join(isolationProject, ".zombie", "syllabus.md")),
   isolationEntries.join(", "),
 );
 

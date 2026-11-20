@@ -2,37 +2,42 @@
 
 /**
  * modules/workspace.js — the only place that decides which project a request
- * belongs to, and the only place that creates the `.zombiecoder/` layout.
+ * belongs to, and the only place that creates the server-owned workspace
+ * layout.
  *
  * Resolution order (first existing directory wins):
  *   1. MCP client roots      (protocol truth — what the editor opened)
- *   2. X-MCP-Client-Dir      (header fallback used by older clients)
- *   3. workspace env keys    (headless / service deployments)
- *   4. process.cwd()         (last resort, never invented)
+ *   2. workspace id          (12-hex registry lookup, compact header)
+ *   3. X-MCP-Client-Dir      (header fallback used by older clients)
+ *   4. workspace env keys    (headless / service deployments)
+ *   5. process.cwd()         (last resort, never invented)
  *
  * The runtime project and the client workspace are different things. When a
  * workspace resolves, every syllabus/SSOT/session read must use it instead of
  * the gateway's own directory.
  *
- * CANONICAL LAYOUT (matches the OpenCode plugin's spec §3 exactly):
+ * TWO INDEPENDENT MODULES, TWO DIRECTORIES:
  *
- *   <project>/.zombiecoder/
- *     SSOT.md        generated project scan
- *     syllabus.md    one append-only syllabus (plugin + gateway append here)
- *     memory/        plugin conversation archives (ses_*.jsonl)
- *     .state/        internal diagnostics
+ *   <project>/.zombiecoder/   OpenCode plugin spec §3 (plugin-owned, read-only
+ *                             for the server: SSOT.md, syllabus.md, memory/,
+ *                             .state/)
+ *   <project>/.zombie/        gateway-owned (SSOT.md, syllabus.md, memory/,
+ *                             .state/); created by modules/workspace-adapter.js
  *
- * There is no `.zombiecoder/agents/` directory. That path came from an older
- * gateway layout and produced a second syllabus plus an empty sessions
- * directory next to the plugin's files. It is read only for one-time
- * migration (`migrateLegacySyllabus`) and never created again.
+ * The server never creates `.zombiecoder/`. It seeds `.zombie/` from the
+ * plugin files on first use and merges plugin-only syllabus entries on read.
+ * The old gateway copy `.zombiecoder/agents/syllabus.md` is read only for a
+ * one-time migration and never written again.
  */
 
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 
-const MARKER_DIR = ".zombiecoder";
+const adapter = require("./workspace-adapter");
+
+const MARKER_DIR = adapter.SERVER_DIR;
+const PLUGIN_MARKER_DIR = adapter.PLUGIN_DIR;
 const LEGACY_AGENTS_DIR = "agents";
 
 const WORKSPACE_ENV_KEYS = Object.freeze([
@@ -98,7 +103,8 @@ function asExistingDir(candidate) {
 
 /**
  * Pick the workspace root for this request.
- * @param {{roots?: Array, headerDir?: string, env?: object, cwd?: string}} input
+ * @param {{roots?: Array, workspaceId?: string, headerDir?: string,
+ *          env?: object, cwd?: string}} input
  * @returns {{dir: string, source: string}}
  */
 function resolveWorkspace(input) {
@@ -109,6 +115,13 @@ function resolveWorkspace(input) {
     const raw = typeof root === "string" ? root : root && (root.uri || root.path);
     const dir = asExistingDir(fileUriToPath(raw));
     if (dir) return { dir, source: "mcp-roots" };
+  }
+
+  // A compact id is the transport-friendly path: the client sends 12 hex
+  // instead of an absolute directory. The registry is authoritative.
+  if (i.workspaceId) {
+    const dir = adapter.lookupWorkspace(i.workspaceId, { registry: i.registry });
+    if (dir) return { dir, source: "workspace-id" };
   }
 
   const headerDir = asExistingDir(fileUriToPath(i.headerDir));
@@ -144,20 +157,19 @@ function migrateLegacySyllabus(workspaceDir) {
   };
   try {
     if (!fs.existsSync(paths.legacy_syllabus)) return result;
-    if (fs.existsSync(paths.syllabus)) {
+    // The plugin's root `.zombiecoder/syllabus.md` is the canonical read-only
+    // input. A legacy `agents/syllabus.md` beside it is a duplicate, not a
+    // second source of truth, so it is reported and left untouched.
+    const pluginRoot = path.join(paths.root, ".zombiecoder", "syllabus.md");
+    if (fs.existsSync(paths.syllabus) || fs.existsSync(pluginRoot)) {
       result.duplicate = true;
       return result;
     }
+    fs.mkdirSync(path.dirname(paths.syllabus), { recursive: true });
     fs.renameSync(paths.legacy_syllabus, paths.syllabus);
     result.migrated = true;
-    // Remove the old agents/ directory only when nothing else lives there.
-    try {
-      if (fs.readdirSync(paths.legacy_agents).length === 0) {
-        fs.rmdirSync(paths.legacy_agents);
-      }
-    } catch (_) {
-      /* non-empty or already gone — leave it */
-    }
+    // The source lives under the plugin-owned `.zombiecoder/agents/` tree.
+    // Never delete anything there: the plugin owns that directory.
   } catch (_) {
     /* a failed migration must never block the connect */
   }
@@ -165,66 +177,59 @@ function migrateLegacySyllabus(workspaceDir) {
 }
 
 /**
- * Create (idempotently) the canonical `.zombiecoder/` layout inside a
- * workspace. Existing files are never overwritten — the workspace may already
- * hold the plugin's SSOT/syllabus, which is the source of truth.
+ * Create (idempotently) the server-owned `.zombie/` layout inside a workspace.
+ * Existing files are never overwritten. The plugin's `.zombiecoder/` tree is
+ * read-only input and is never created by this function.
  *
- * Only the plugin-spec entries are created: the marker dir, `memory/`,
+ * Only server entries are created: the marker dir, `memory/`, `memory/sessions/`,
  * `.state/`, `SSOT.md` and `syllabus.md`. No `agents/`, no `agents/sessions/`.
  *
  * @returns {{root: string, dir: string, ssot: string, syllabus: string,
- *            memory: string, state: string, legacySyllabus: string,
- *            legacySessions: string, created: string[], legacy: object}}
+ *            memory: string, state: string, sessions: string,
+ *            legacySyllabus: string, legacySessions: string,
+ *            created: string[], legacy: object, fromPlugin: object}}
  */
 function ensureWorkspace(workspaceDir, opts) {
   const o = opts || {};
-  const paths = ensureWorkspacePaths(workspaceDir);
-  const { root, dir, ssot, syllabus, memory, state } = paths;
-  const created = [];
+  // A legacy `.zombiecoder/agents/syllabus.md` must move before the adapter
+  // seeds `.zombie/syllabus.md`; otherwise the seed would win and the legacy
+  // content would be reported as a duplicate instead of preserved.
+  const legacy = migrateLegacySyllabus(workspaceDir);
+  // The adapter is the only place that creates server state. It seeds the
+  // server copy from the plugin's read-only `.zombiecoder/` files on first use
+  // and never writes to the plugin directory.
+  const layout = adapter.ensureServerWorkspace(workspaceDir);
+  const { root, paths, created, fromPlugin } = layout;
+  // Adapter paths are server-only; the legacy plugin locations come from the
+  // canonical resolver so callers always get a real path, not `undefined`.
+  const resolved = ensureWorkspacePaths(root);
 
-  const mk = (target) => {
-    if (fs.existsSync(target)) return;
-    fs.mkdirSync(target, { recursive: true });
-    created.push(target);
-  };
-
-  mk(dir);
-  mk(memory);
-  mk(state);
-
-  const legacy = migrateLegacySyllabus(root);
-
-  const seed = (file, body) => {
-    if (fs.existsSync(file)) return;
-    fs.writeFileSync(file, body, "utf8");
-    created.push(file);
-  };
-  seed(ssot, SEED_SSOT);
-  seed(syllabus, SEED_SYLLABUS);
-
-  const applySeed = (file, producer, suffix) => {
+  const applySeed = (file, producer, suffix, copiedFromPlugin) => {
+    if (copiedFromPlugin) return;
     if (typeof producer !== "function" || !created.includes(file)) return;
     try {
       const body = String(producer(root) || "").trim();
       if (body) fs.writeFileSync(file, suffix ? body + suffix : body, "utf8");
     } catch (_) {
-      /* seed failure keeps the template; never block connect */
+      /* seed failure keeps the adapter template; never block connect */
     }
   };
-  applySeed(ssot, o.seedSSOT, "\n");
-  applySeed(syllabus, o.seedSyllabus, "\n");
+  applySeed(paths.ssot, o.seedSSOT, "\n", fromPlugin.ssot);
+  applySeed(paths.syllabus, o.seedSyllabus, "\n", fromPlugin.syllabus);
 
   return {
     root,
-    dir,
-    ssot,
-    syllabus,
-    memory,
-    state,
-    legacySyllabus: paths.legacy_syllabus,
-    legacySessions: paths.legacy_sessions,
+    dir: paths.dir,
+    ssot: paths.ssot,
+    syllabus: paths.syllabus,
+    memory: paths.memory,
+    state: paths.state,
+    sessions: paths.sessions,
+    legacySyllabus: resolved.legacy_syllabus,
+    legacySessions: resolved.legacy_sessions,
     created,
     legacy,
+    fromPlugin,
   };
 }
 
@@ -276,35 +281,41 @@ function shortHash(text) {
 function workspaceFingerprint(workspaceDir) {
   const paths = ensureWorkspacePaths(workspaceDir);
   const ssot = readTextCached(paths.ssot);
-  const syllabus = readTextCached(paths.syllabus);
+  // The plugin syllabus is read-only input. The fingerprint must change when
+  // either the server copy or the plugin copy changes, so hash the merged view.
+  const merged = adapter.readMergedSyllabus(paths.root);
+  const syllabusText = merged.text || "";
   return {
     dir: paths.root,
     ssot: ssot.text ? shortHash(ssot.text) : "missing",
-    syllabus: syllabus.text ? shortHash(syllabus.text) : "missing",
-    combined: shortHash(ssot.text + "\u0000" + syllabus.text),
+    syllabus: syllabusText ? shortHash(syllabusText) : "missing",
+    combined: shortHash(ssot.text + "\u0000" + syllabusText),
     ssot_chars: ssot.text.length,
-    syllabus_chars: syllabus.text.length,
-    truncated: ssot.truncated || syllabus.truncated,
+    syllabus_chars: syllabusText.length,
+    plugin_syllabus: Boolean(merged.plugin),
+    truncated: ssot.truncated || Boolean(merged.truncated),
   };
 }
 
 function ensureWorkspacePaths(workspaceDir) {
   const root = path.resolve(workspaceDir || process.cwd());
-  const dir = path.join(root, MARKER_DIR);
-  const legacyAgents = path.join(dir, LEGACY_AGENTS_DIR);
+  const paths = adapter.serverPaths(root);
+  const plugin = adapter.pluginPaths(root);
   return {
     root,
-    dir,
-    ssot: path.join(dir, "SSOT.md"),
-    syllabus: path.join(dir, "syllabus.md"),
-    memory: path.join(dir, "memory"),
-    state: path.join(dir, ".state"),
-    // Read-only legacy locations. Never created by this module; kept so the
-    // one-time migration and the importers can find old project state.
-    legacy_agents: legacyAgents,
-    legacy_syllabus: path.join(legacyAgents, "syllabus.md"),
-    legacy_sessions: path.join(legacyAgents, "sessions"),
-    legacy_memory: path.join(legacyAgents, "memory.json"),
+    dir: paths.dir,
+    ssot: paths.ssot,
+    syllabus: paths.syllabus,
+    memory: paths.memory,
+    state: paths.state,
+    sessions: paths.sessions,
+    // Read-only legacy locations under the plugin-owned tree. Never created
+    // by this module; kept so the one-time migration and importers can find
+    // old project state without writing into `.zombiecoder/`.
+    legacy_agents: path.join(plugin.dir, LEGACY_AGENTS_DIR),
+    legacy_syllabus: path.join(plugin.dir, LEGACY_AGENTS_DIR, "syllabus.md"),
+    legacy_sessions: path.join(plugin.dir, LEGACY_AGENTS_DIR, "sessions"),
+    legacy_memory: path.join(plugin.dir, LEGACY_AGENTS_DIR, "memory.json"),
   };
 }
 

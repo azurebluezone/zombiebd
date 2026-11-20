@@ -25,6 +25,7 @@ const fs = require("fs");
 const path = require("path");
 
 const { normalize } = require("./intent");
+const adapter = require("./workspace-adapter");
 const {
   ensureWorkspace,
   ensureWorkspacePaths,
@@ -97,9 +98,15 @@ function atomicWrite(file, content) {
   fs.renameSync(tmp, file);
 }
 
-/** Read the canonical project syllabus. Returns "" when it does not exist. */
+/**
+ * Read the canonical project syllabus. The server file is the write target;
+ * plugin-only entries from the read-only `.zombiecoder/syllabus.md` are merged
+ * into the returned view so the prompt sees both without copying them.
+ */
 function readSyllabus(projectDir) {
   const paths = ensureWorkspacePaths(projectDir);
+  const merged = adapter.readMergedSyllabus(paths.root);
+  if (merged.text) return merged.text;
   return readTextCached(paths.syllabus, SYLLABUS_MAX_BYTES).text.trim();
 }
 
@@ -342,13 +349,16 @@ function appendSyllabusEntry(spec) {
   }
 
   const existing = fs.existsSync(paths.syllabus) ? fs.readFileSync(paths.syllabus, "utf8") : "";
+  // Deduplicate against the merged view: an entry the plugin already wrote
+  // must not be copied into the server file just because the server copy is new.
+  const mergedExisting = adapter.readMergedSyllabus(dir).text || existing;
   const key = entryKey(input);
-  if (existing.includes("zc-entry:" + key)) {
+  if (mergedExisting.includes("zc-entry:" + key)) {
     return { written: false, skipped: true, reason: "duplicate", key, path: paths.syllabus };
   }
 
   const probe = input.slice(0, PLUGIN_PROBE_CHARS);
-  if (probe.length >= 20 && existing.includes(probe)) {
+  if (probe.length >= 20 && mergedExisting.includes(probe)) {
     return { written: false, skipped: true, reason: "plugin-entry", key, path: paths.syllabus };
   }
 

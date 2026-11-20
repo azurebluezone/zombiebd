@@ -138,7 +138,8 @@ const antiDoteSetGoalContract = goalsModule.setGoalContract;
 const antiDoteExecute = goalsModule.executeContract;
 const antiDoteVerifyOutput = verifyModule.verifyContract;
 const mcpProtocol = require("./modules/mcp-protocol.js");
-const { pickEntries } = require("./modules/context.js");
+const contextModule = require("./modules/context.js");
+const { pickEntries } = contextModule;
 const { buildSystemPrompt, fitPrompt, estimateTokens } = require("./modules/system-prompt.js");
 const providerModels = require("./modules/provider-models.js");
 const chatInterpreter = require("./modules/chat-interpreter.js");
@@ -3224,7 +3225,15 @@ if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 // Mission Barisal automatically discovers the project it serves,
 // creates/updates .zombiecoder/SSOT.md, and agents follow it as truth.
 
-const SSOT_DIR = path.resolve(PROJECT_ROOT, process.env.SSOT_DIR || "./.zombiecoder");
+// The server writes `.zombie/SSOT.md`; `.zombiecoder/` belongs to the plugin
+// and is read-only. An old `SSOT_DIR=./.zombiecoder` is treated as the plugin
+// path, not a server write target.
+const SSOT_DIR = path.resolve(
+  PROJECT_ROOT,
+  process.env.SSOT_DIR && path.basename(process.env.SSOT_DIR) !== ".zombiecoder"
+    ? process.env.SSOT_DIR
+    : "./.zombie",
+);
 const SSOT_PATH = path.join(SSOT_DIR, "SSOT.md");
 
 function scanProject(rootDir) {
@@ -3473,8 +3482,9 @@ function autoSSOT(projectDir) {
   log("INFO", "SSOT_SCAN", { dir });
 
   try {
-    const targetDir = path.join(dir, ".zombiecoder");
-    const targetPath = path.join(targetDir, "SSOT.md");
+    const paths = workspaceModule.ensureWorkspacePaths(dir);
+    const targetDir = paths.dir;
+    const targetPath = paths.ssot;
 
     if (!fs.existsSync(targetDir)) {
       fs.mkdirSync(targetDir, { recursive: true });
@@ -3507,52 +3517,35 @@ const _ssotCacheMap = new Map(); // projectDir → { content, mtimeMs }
 function readSSOT(projectDir) {
   try {
     const dir = projectDir || mcpWorkingDir || path.resolve(".");
-    const targetPath = path.join(dir, ".zombiecoder", "SSOT.md");
-    if (fs.existsSync(targetPath)) {
-      const stat = fs.statSync(targetPath);
-      const cached = _ssotCacheMap.get(targetPath);
+    // The server owns `.zombie/SSOT.md`. The plugin's `.zombiecoder/SSOT.md`
+    // is a read-only fallback for a workspace whose server copy is missing.
+    const targetPath = workspaceModule.ensureWorkspacePaths(dir).ssot;
+    const pluginSsot = path.join(dir, ".zombiecoder", "SSOT.md");
+    const candidates = [targetPath, pluginSsot, SSOT_PATH];
+    for (const candidate of candidates) {
+      if (!candidate || !fs.existsSync(candidate)) continue;
+      const stat = fs.statSync(candidate);
+      const cached = _ssotCacheMap.get(candidate);
       if (cached && cached.mtimeMs === stat.mtimeMs && cached.content) {
-        log("INFO", "SSOT_LOADED", {
-          path: targetPath,
+        log("INFO", candidate === targetPath ? "SSOT_LOADED" : "SSOT_FALLBACK", {
+          path: candidate,
           length: cached.content.length,
           cached: true,
         });
         return cached.content;
       }
-      const content = fs.readFileSync(targetPath, "utf8").trim();
+      const content = fs.readFileSync(candidate, "utf8").trim();
       if (content.length > 0) {
-        _ssotCacheMap.set(targetPath, { content, mtimeMs: stat.mtimeMs });
-        log("INFO", "SSOT_LOADED", {
-          path: targetPath,
+        _ssotCacheMap.set(candidate, { content, mtimeMs: stat.mtimeMs });
+        log("INFO", candidate === targetPath ? "SSOT_LOADED" : "SSOT_FALLBACK", {
+          path: candidate,
           length: content.length,
           cached: false,
         });
         return content;
       }
     }
-    // Fallback: try server's own SSOT
-    if (fs.existsSync(SSOT_PATH)) {
-      const stat = fs.statSync(SSOT_PATH);
-      const cached = _ssotCacheMap.get(SSOT_PATH);
-      if (cached && cached.mtimeMs === stat.mtimeMs && cached.content) {
-        log("INFO", "SSOT_FALLBACK", {
-          path: SSOT_PATH,
-          length: cached.content.length,
-          cached: true,
-        });
-        return cached.content;
-      }
-      const content = fs.readFileSync(SSOT_PATH, "utf8").trim();
-      if (content.length > 0) {
-        _ssotCacheMap.set(SSOT_PATH, { content, mtimeMs: stat.mtimeMs });
-        log("INFO", "SSOT_FALLBACK", {
-          path: SSOT_PATH,
-          length: content.length,
-        });
-        return content;
-      }
-    }
-    log("WARN", "SSOT_NOT_FOUND", { checked: [targetPath, SSOT_PATH] });
+    log("WARN", "SSOT_NOT_FOUND", { checked: candidates });
     return "";
   } catch (e) {
     log("WARN", "SSOT_READ_FAIL", { error: e.message });
@@ -3566,32 +3559,36 @@ function refreshSSOT(newDir) {
   return autoSSOT(newDir);
 }
 
-// MCP handshake bootstrap: guarantee the server's own .zombiecoder/
-// exists and the working dir is set. Called on every initialize (HTTP
-// and UDS) so a fresh checkout or wiped workspace self-heals instantly.
+// MCP handshake bootstrap: guarantee the server-owned `.zombie/` workspace
+// exists and the working dir is set. The plugin-owned `.zombiecoder/` tree is
+// read-only input; this function never creates or writes it.
 function ensureZombiecoderDir(baseDir) {
   const dir = path.resolve(baseDir || mcpWorkingDir || path.resolve("."));
   try {
-    const zz = path.join(dir, ".zombiecoder");
-    let created = false;
-    if (!fs.existsSync(zz)) {
-      fs.mkdirSync(zz, { recursive: true });
-      created = true;
-      log("INFO", "ZOMBIECODER_DIR_CREATED", { dir: zz });
-    }
-    const ssot = path.join(zz, "SSOT.md");
-    if (!fs.existsSync(ssot)) {
-      autoSSOT(dir);
-    }
+    const layout = workspaceModule.ensureWorkspace(dir, {
+      seedSSOT: (root) => {
+        try {
+          return generateSSOT(root, scanProject(root));
+        } catch (_) {
+          return "";
+        }
+      },
+    });
     if (!mcpWorkingDir) mcpWorkingDir = dir;
     log("INFO", "MCP_HANDSHAKE_DIR", {
-      dir: zz,
+      dir: layout.dir,
       working_dir: mcpWorkingDir,
-      created,
+      created: layout.created.length > 0,
+      plugin_ssot: Boolean(layout.fromPlugin && layout.fromPlugin.ssot),
+      plugin_syllabus: Boolean(layout.fromPlugin && layout.fromPlugin.syllabus),
     });
-    return { dir: zz, working_dir: mcpWorkingDir, created };
+    return {
+      dir: layout.dir,
+      working_dir: mcpWorkingDir,
+      created: layout.created.length > 0,
+    };
   } catch (e) {
-    log("WARN", "ZOMBIECODER_DIR_FAIL", { dir, error: e.message });
+    log("WARN", "ZOMBIE_DIR_FAIL", { dir, error: e.message });
     return { dir: "", working_dir: mcpWorkingDir || dir, created: false };
   }
 }
@@ -3603,6 +3600,7 @@ function ensureZombiecoderDir(baseDir) {
  */
 const syllabusModule = require("./modules/syllabus.js");
 const workspaceModule = require("./modules/workspace.js");
+const workspaceAdapter = require("./modules/workspace-adapter.js");
 
 /** Legacy `.zombiecoder/agents/` path — read-only fallback for old state. */
 function getAgentsPath(projectDir) {
@@ -3610,7 +3608,7 @@ function getAgentsPath(projectDir) {
   return path.join(dir, ".zombiecoder", "agents");
 }
 
-/** Canonical syllabus location: `.zombiecoder/syllabus.md`. */
+/** Canonical server syllabus location: `.zombie/syllabus.md`. */
 function getSyllabusPath(projectDir) {
   return workspaceModule.ensureWorkspacePaths(projectDir || mcpWorkingDir || path.resolve(".")).syllabus;
 }
@@ -9643,7 +9641,7 @@ function buildSSOTExcerpt(sessionId, userInput) {
     });
     if (!picked.body) return "";
     return (
-      "\n\nPROJECT SSOT (bounded excerpt; full blueprint at .zombiecoder/SSOT.md):\n" +
+      "\n\nPROJECT SSOT (bounded excerpt; full blueprint at .zombie/SSOT.md):\n" +
       stripInvisible(picked.body) +
       "\n--- END SSOT EXCERPT ---\n"
     );
@@ -9670,7 +9668,7 @@ function buildSyllabusExcerpt(sessionId, userInput) {
     });
     if (!picked.body) return "";
     return (
-      "\n\nAGENT SYLLABUS (bounded excerpt; full file at .zombiecoder/syllabus.md):\n" +
+      "\n\nAGENT SYLLABUS (bounded excerpt; full file at .zombie/syllabus.md; plugin entries merged read-only):\n" +
       stripInvisible(picked.body) +
       "\n--- END SYLLABUS ---\n"
     );
@@ -9704,15 +9702,23 @@ function buildAgentSystemPrompt(agent, opts) {
       contextParts.push("PROJECT CONTEXT (client-supplied, bounded):\n" + project);
       sections.project = project.length;
     } else {
-      const ssot = buildSSOTExcerpt(o.sessionId, o.userInput);
-      const syllabus = buildSyllabusExcerpt(o.sessionId, o.userInput);
-      if (ssot) {
-        contextParts.push(ssot);
-        sections.ssot = ssot.length;
-      }
-      if (syllabus) {
-        contextParts.push(syllabus);
-        sections.syllabus = syllabus.length;
+      // The prompt engine owns the bounded SSOT/syllabus selection, the
+      // fingerprint and the workspace id. The old two-excerpt path is kept
+      // below for callers that explicitly need one section.
+      const dir = getEffectiveDir(o.sessionId) || mcpWorkingDir || path.resolve(".");
+      const promptContext = contextModule.buildPromptContext({
+        dir,
+        input: o.userInput || "",
+        sessionId: o.sessionId,
+        turns: Array.isArray(o.turns) ? o.turns : undefined,
+        goal: o.goal || undefined,
+      });
+      if (promptContext.text) {
+        contextParts.push(promptContext.text);
+        sections.ssot = promptContext.sections.ssot;
+        sections.syllabus = promptContext.sections.syllabus;
+        sections.workspace_id = promptContext.workspaceId;
+        sections.fingerprint = promptContext.fingerprint;
       }
     }
   }
@@ -11259,8 +11265,8 @@ async function executeMcpTool(tool, args) {
             "Dynamic ALLOWED_DIRS modification blocked for security. Use env ALLOWED_DIRS instead.",
         });
       }
-      // Check if .zombiecoder/SSOT.md exists, if not — auto-generate
-      const ssotPath = path.join(newDir, ".zombiecoder", "SSOT.md");
+      // Check if the server-owned .zombie/SSOT.md exists, if not — auto-generate
+      const ssotPath = workspaceModule.ensureWorkspacePaths(newDir).ssot;
       const exists = fs.existsSync(ssotPath);
       refreshSSOT(newDir);
       const reloaded = readSSOT(newDir);
@@ -11950,6 +11956,7 @@ function matchGlob(relPath, pattern) {
 function handleMCP(req, res) {
   const startTime = Date.now();
   const clientNameFromHeader = req.headers["x-mcp-client-name"] || "";
+  const workspaceIdFromHeader = req.headers["x-zc-workspace-id"] || "";
   let clientDirFromHeader = req.headers["x-mcp-client-dir"] || "";
   // Handle unexpanded ${workspaceFolder} — can't auto-detect, skip
   if (
@@ -12056,6 +12063,7 @@ function handleMCP(req, res) {
       const rawRoots = params?.roots;
       const boot = mcpProtocol.bootstrapWorkspace({
         roots: rawRoots,
+        workspaceId: workspaceIdFromHeader,
         headerDir: clientDirFromHeader,
         env: process.env,
         // A bare cwd must be the stable project root, never the mutable
@@ -12084,6 +12092,14 @@ function handleMCP(req, res) {
           dir: boot.dir,
           source: boot.source,
         });
+      }
+
+      // A compact 12-hex id is the transport-safe workspace handle: UDS/gRPC
+      // headers carry this instead of the full directory path.
+      if (detectedDir) {
+        const workspaceId = workspaceAdapter.registerWorkspace(detectedDir);
+        res.setHeader("x-zc-workspace-id", workspaceId);
+        log("INFO", "WORKSPACE_ID", { id: workspaceId, dir: detectedDir });
       }
 
       // Seed a real scan only when the SSOT did not exist before this connect;
@@ -12158,7 +12174,7 @@ function handleMCP(req, res) {
           ssotInfo =
             "CLIENT SSOT: " +
             detectedDir +
-            "/.zombiecoder/SSOT.md (" +
+            "/.zombie/SSOT.md (" +
             clientSSOT.length +
             " bytes) for project: " +
             path.basename(detectedDir);
@@ -12173,7 +12189,7 @@ function handleMCP(req, res) {
           : " (not found)";
         ssotInfo =
           "No client roots detected. Server SSOT at " +
-          path.resolve(".", ".zombiecoder", "SSOT.md") +
+          path.resolve(".", ".zombie", "SSOT.md") +
           serverInfo +
           ". Send roots in initialize or header X-MCP-Client-Dir to auto-generate client SSOT.";
       }
@@ -15251,7 +15267,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
           project_root: path.resolve(mcpWorkingDir || "."),
           ssot_path: path.join(
             mcpWorkingDir || path.resolve("."),
-            ".zombiecoder",
+            ".zombie",
             "SSOT.md",
           ),
           length: ssotContent.length,
@@ -17227,7 +17243,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
         jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN required" });
         return;
       }
-      const ssotPath = path.resolve(".zombiecoder/SSOT.md");
+      const ssotPath = path.resolve(".zombie/SSOT.md");
       const ssotExists = fs.existsSync(ssotPath);
       let ssotInfo = { exists: false, path: ssotPath };
       if (ssotExists) {
@@ -18594,7 +18610,7 @@ async function init() {
     if (ssotResult)
       console.log(
         "  SSOT: " +
-        path.resolve(".", ".zombiecoder", "SSOT.md") +
+        path.resolve(".", ".zombie", "SSOT.md") +
         " (internal)",
       );
     console.log("--- --- --- --- --- --- --- --- ---");
