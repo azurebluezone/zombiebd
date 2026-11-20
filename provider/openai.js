@@ -105,6 +105,8 @@ async function chat(cfg, params) {
     ok: true,
     statusCode: res.statusCode,
     raw: parsed,
+    // P1-02: a transport may name the origin it proxied (bridge → ollama).
+    upstream: res.headers["x-zc-upstream-provider"] || null,
     normalized: normalize(parsed, { dialect: DIALECT, provider: cfg.id }),
   };
 }
@@ -214,6 +216,7 @@ async function chatStream(cfg, params, onDelta) {
     tool_calls: calls.length ? calls : null,
     finish_reason: finish,
     raw: res.text,
+    upstream: res.headers["x-zc-upstream-provider"] || null,
   };
 }
 

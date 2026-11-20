@@ -23,6 +23,7 @@ const http = require("http");
 const https = require("https");
 const http2 = require("http2");
 const { resolveProviderTimeouts } = require("../lib/provider-timeout");
+const sizeBudget = require("../lib/size-budget");
 
 // cfg.timeout / cfg.streamTimeout always win; when a caller omits them the
 // single resolver supplies the same deadline for JSON and stream. No numeric
@@ -36,11 +37,8 @@ function fallbackTimeouts() {
 // and a single SSE/NDJSON frame (stream) may not exceed this many bytes.
 // Overflow destroys the request and rejects with FRAME_TOO_LARGE so the
 // fallback chain runs instead of the process ballooning in memory.
-// Ops can override: MAX_FRAME_BYTES=<bytes>.
-const MAX_FRAME_BYTES = parseInt(
-  process.env.MAX_FRAME_BYTES || "8388608",
-  10,
-);
+// The default lives in lib/env.js; MAX_FRAME_BYTES overrides it.
+const MAX_FRAME_BYTES = sizeBudget.limit("MAX_FRAME_BYTES");
 const FRAME_TOO_LARGE = "provider frame exceeds MAX_FRAME_BYTES";
 
 // ─── Single JSON request ──────────────────────────────────────────────

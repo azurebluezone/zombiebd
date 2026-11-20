@@ -217,7 +217,7 @@ exit=0
 | ID | Problem | Evidence | Fix |
 |---|---|---|---|
 | P1-01 | Bridge timeout upstream-এর চেয়ে কম | `provider/transport.js:26`, `.env:212` | ✅ SOLVED (2026-11-20): `lib/provider-timeout.js` bridge = `BRIDGE_TIMEOUT_MS` + grace; `provider/transport.js` has no literal default; proof `node tests/bridge-timeout-check.js` |
-| P1-02 | `request_log`-এ routing প্রমাণ নেই | `PRAGMA table_info(request_log)` | Phase 7 |
+| P1-02 | `request_log`-এ routing প্রমাণ নেই | `PRAGMA table_info(request_log)` | ✅ SOLVED (2026-11-20): `upstream_provider` আসে আসল provider result থেকে; bridge `x-zc-upstream-provider: ollama` পাঠায়; proof `node tests/config-trace-check.js` |
 | P1-03 | Tool selection insertion order | `api.js:4946-4951`, `9413`, `10113` | Phase 5 — ✅ SOLVED (2026-11-20): intent rank + deterministic tie-break |
 | P1-04 | `prepare()` cap enforce করে না | `provider/tools.js:122-125` | Phase 5 — ✅ SOLVED (2026-11-20): `capTools()` |
 | P1-05 | Bridge default port দুই জায়গায় | `api.js:1159` (`11435`) vs `local-llm-bridge.js:136` (`11437`) | ✅ SOLVED (2026-11-20): `lib/env.js` DEFAULTS একমালিক; `local-llm-bridge.js`/`api.js`/`provider/defaults.js` সব সেখান থেকেই পড়ে; proof `node tests/agent-provider-ssot-check.js` |
@@ -225,7 +225,7 @@ exit=0
 | P1-07 | R2T module না পেলে silent builtin fallback | `api.js:19574-19581` (`builtin-fallback`) | Phase 7 |
 | P1-08 | Edge installer শুধু apt ধরে | `deploy/install-edge.sh:44` | Phase 4 |
 | P1-09 | `package.json` নেই | `ls package.json` → No such file | Phase 4 |
-| P1-10 | Size limit ছড়িয়ে আছে | `api.js:235` (10MB), `provider/transport.js:34` (8MB), `api.js:251` (10 msg) | Phase 3 |
+| P1-10 | Size limit ছড়িয়ে আছে | `api.js:235` (10MB), `provider/transport.js:34` (8MB), `api.js:251` (10 msg) | ✅ SOLVED (2026-11-20): সব default `lib/env.js`-এ, একমাত্র helper `lib/size-budget.js`; overflow `BUDGET_EXCEEDED` log করে; proof `node tests/config-trace-check.js` |
 
 ### 2.3 P2 — portability/hygiene
 
@@ -907,7 +907,7 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 | 2 | **N2** | test-spawned gateway `.missionbarisal` pollution বন্ধ | `TEST_APP_ROOT_OK` | ✅ DONE (`gc-mwoipfpp`) |
 | 3 | **N1** | provider attribution: `bridge` vs `ollama` সত্য ঠিক করা | `ADMIN_CHAT_E2E_OK` | ✅ DONE (`gc-mwojol08`) |
 | 4 | **N4** | `local-tool-cap`-এর পুরোনো A1/D15 assertion update | `LOCAL_TOOL_CAP_OK` | ✅ DONE (`gc-mwokuxf5`) |
-| 5 | **P1-10 + P1-02** | বাকি size budget (`SESSION_MAX_BYTES`, `WEB_UI_MAX_BYTES`, `TOOL_RESULT_MAX_BYTES`) + `request_log` trace column | `CONFIG_TRACE_OK` | TODO |
+| 5 | **P1-10 + P1-02** | বাকি size budget (`SESSION_MAX_BYTES`, `WEB_UI_MAX_BYTES`, `TOOL_RESULT_MAX_BYTES`) + `request_log` trace column | `CONFIG_TRACE_OK` | ✅ DONE (`gc-mwolit04`) |
 | 6 | **P1-07** | R2T silent builtin fallback → log + response header | `R2T_TRACE_OK` | TODO |
 | 7 | **N5** | safe rebuild+restart এক কমান্ডে (stale dist risk বন্ধ) | `REBUILD_RESTART_OK` | TODO |
 | 8 | **P1-09 + P1-08** | `package.json` + installer-এ apt/dnf/pacman/brew | `PACKAGE_INSTALL_OK` | TODO |

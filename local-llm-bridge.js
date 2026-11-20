@@ -932,6 +932,8 @@ async function chatStream(body, req, res, transport) {
         "Content-Type": "text/event-stream; charset=utf-8",
         "Cache-Control": "no-cache",
         Connection: "keep-alive",
+        // P1-02: the gateway records the origin behind this transport.
+        "x-zc-upstream-provider": CFG.backend,
       });
 
       const filter = makeThinkFilter();
@@ -1116,7 +1118,11 @@ async function handler(req, res) {
         return;
       }
       cors(req, res);
-      res.writeHead(200, { "Content-Type": "application/json" });
+      res.writeHead(200, {
+        "Content-Type": "application/json",
+        // P1-02: the gateway records the origin behind this transport.
+        "x-zc-upstream-provider": CFG.backend,
+      });
       res.end(JSON.stringify(resData.response));
     }
     return;

@@ -427,6 +427,7 @@ async function chatStreamImpl(opts, onDelta) {
     stream_error: !!res.stream_error || boundaryRejected,
     boundary_dropped: invalidFrames,
     provider: providerId,
+    upstream: res.upstream || null,
     dialect: adapter.dialect,
     model: opts.model,
   };

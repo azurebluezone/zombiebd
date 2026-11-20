@@ -166,6 +166,7 @@ const adminApi = require("./lib/admin-routes");
 const adminPanel = require("./lib/admin-panel.js");
 const toolRegister = require("./provider/tools");
 const toolBudget = require("./lib/tool-budget.js");
+const sizeBudget = require("./lib/size-budget.js");
 
 // The DB mutation routes get the live helpers through one context object.
 // Getters keep the DB handle and agent list current without this module
@@ -224,10 +225,7 @@ if (_envLoad.loaded) {
 
 // ─── Config ──────────────────────────────────────────────────
 const PORT = parseInt(process.env.PORT || DEFAULTS.PORT, 10);
-const MAX_BODY_SIZE = parseInt(
-  process.env.MAX_BODY_SIZE || String(10 * 1024 * 1024),
-  10
-); // body-size guard — readBody cap + pre-flight Content-Length 413
+const MAX_BODY_SIZE = sizeBudget.limit("MAX_BODY_SIZE");
 // Unique per-process fingerprint — lets multi-instance tests prove that
 // two `node api.js` runs on one machine really are independent processes.
 const INSTANCE_ID = process.env.INSTANCE_ID || crypto.randomUUID();
@@ -249,7 +247,7 @@ const PERSONAS_FILE = path.resolve(
   process.env.PERSONAS_FILE || "./PERSONAS.md",
 );
 const SESSION_TTL_MS = parseInt(process.env.SESSION_TTL || "86400000", 10);
-const MAX_HISTORY = parseInt(process.env.MAX_HISTORY || "10", 10); // reduced from 20→10: 50k+ token history overwhelms free tier models
+const MAX_HISTORY = parseInt(process.env.MAX_HISTORY || DEFAULTS.MAX_HISTORY, 10); // reduced from 20→10: 50k+ token history overwhelms free tier models
 const GIT_PERSONAS_URL = process.env.GIT_PERSONAS_URL || "";
 
 // ─── User-Agent Constant ────────────────────────────────────
@@ -1326,6 +1324,7 @@ function initModelsDb(attempt) {
         agent TEXT,
         model TEXT,
         provider TEXT,
+        upstream_provider TEXT,
         status INTEGER,
         ok INTEGER DEFAULT 1,
         elapsed_ms INTEGER DEFAULT 0,
@@ -1378,6 +1377,13 @@ function initModelsDb(attempt) {
         enabled INTEGER DEFAULT 1
       );
     `);
+    // P1-02 migration: existing DBs get the routing trace column too.
+    {
+      const rcols = MODELS_DB.prepare("PRAGMA table_info(request_log)").all().map((c) => c.name);
+      if (!rcols.includes("upstream_provider")) {
+        MODELS_DB.prepare("ALTER TABLE request_log ADD COLUMN upstream_provider TEXT").run();
+      }
+    }
     log("INFO", "SQLITE_READY", { path: MODELS_DB_PATH });
     log("INFO", "DB_OK", {
       path: MODELS_DB_PATH,
@@ -4982,7 +4988,7 @@ function mcpGate(req, toolName, trusted) {
 // Budget guards. Tool results and history are the two places a prompt grows
 // without bound; both are capped before every model call.
 const MAX_TOOL_RESULT_CHARS = parseInt(process.env.MAX_TOOL_RESULT_CHARS || "3000", 10);
-const MAX_HISTORY_CHARS = parseInt(process.env.MAX_HISTORY_CHARS || "6000", 10);
+const MAX_HISTORY_CHARS = parseInt(process.env.MAX_HISTORY_CHARS || DEFAULTS.MAX_HISTORY_CHARS, 10);
 const PROMPT_MAX_TOKENS = parseInt(process.env.PROMPT_MAX_TOKENS || "0", 10);
 
 function promptBudgetFor(model) {
@@ -6968,6 +6974,7 @@ function callModelStream(
           ...(reasoningFull ? { reasoning_content: reasoningFull } : {}),
           model,
           provider: providerId,
+          upstream_provider: r.upstream || null,
         });
       })
       .catch(function (err) {
@@ -7309,6 +7316,9 @@ function callModel(
           normalized: normalized,
           model,
           provider: providerId,
+          // P1-02: origin behind the transport (bridge → ollama), when the
+          // provider reports one. Never guessed here.
+          upstream_provider: r.upstream || null,
         });
       })
       .catch(function (err) {
@@ -7459,10 +7469,19 @@ async function callModelWithTools(
         };
       }
       const text = result.content?.[0]?.text || JSON.stringify(result);
+      const capped = sizeBudget.capText(text, "TOOL_RESULT_MAX_BYTES");
+      if (capped.truncated) {
+        log("WARN", "BUDGET_EXCEEDED", {
+          key: "TOOL_RESULT_MAX_BYTES",
+          limit: capped.limit,
+          actual: capped.bytes,
+          tool: tc.function.name,
+        });
+      }
       messages.push({
         role: "tool",
         tool_call_id: tc.id,
-        content: text.slice(0, MAX_TOOL_RESULT_CHARS),
+        content: capped.text,
       });
     }
   }
@@ -7609,10 +7628,19 @@ async function callModelStreamWithTools(
       } catch (err) {
         text = "Tool error: " + err.message;
       }
+      const capped = sizeBudget.capText(text, "TOOL_RESULT_MAX_BYTES");
+      if (capped.truncated) {
+        log("WARN", "BUDGET_EXCEEDED", {
+          key: "TOOL_RESULT_MAX_BYTES",
+          limit: capped.limit,
+          actual: capped.bytes,
+          tool: tc.function.name,
+        });
+      }
       messages.push({
         role: "tool",
         tool_call_id: tc.id,
-        content: text.slice(0, MAX_TOOL_RESULT_CHARS),
+        content: capped.text,
       });
     }
     log("INFO", "STREAM_TOOL_ROUND", {
@@ -7650,6 +7678,7 @@ async function callModelStreamWithTools(
     rounds: MAX_ROUNDS + 1,
     model,
     provider: (final && final.provider) || lastProvider,
+    upstream_provider: (final && final.upstream_provider) || null,
     error: final && final.error,
   };
 }
@@ -9844,7 +9873,7 @@ async function executeSingleAgent(
         }),
       };
 
-  const augmentedMessages = [sysMsg, ...conversation];
+  let augmentedMessages = [sysMsg, ...conversation];
 
   if (promptBudget) {
     log("INFO", "PROMPT_BUDGET_APPLIED", {
@@ -9915,6 +9944,22 @@ async function executeSingleAgent(
     }
   }
 
+  // P1-10: one session budget for every provider call. Oldest history goes
+  // first; the system prompt and the newest turn always stay.
+  const singleBudget = sizeBudget.trimMessages(
+    augmentedMessages,
+    "SESSION_MAX_BYTES",
+  );
+  if (singleBudget.dropped > 0) {
+    log("WARN", "BUDGET_EXCEEDED", {
+      key: "SESSION_MAX_BYTES",
+      limit: singleBudget.limit,
+      actual: singleBudget.bytes,
+      dropped: singleBudget.dropped,
+    });
+  }
+  augmentedMessages = singleBudget.messages;
+
   // Auto-inject MCP tools when no tools provided.
   // lib/tool-budget.js applies the single count/byte/prefill budget in
   // callModel; a budgeted provider simply sends fewer schemas, never zero.
@@ -9979,6 +10024,7 @@ async function executeSingleAgent(
       agent: { id: agent.id, name: agent.name, role: agent.role },
       // Attribution comes from the call that answered, not a fresh resolve.
       provider: safeResult.provider || null,
+      upstream_provider: safeResult.upstream_provider || null,
       model: agentModel,
     };
   }
@@ -10113,6 +10159,7 @@ async function executeSingleAgent(
     // The provider that actually answered (callModel/callModelWithTools
     // returns it). Telemetry records this, never a fresh resolve.
     provider: response.provider || null,
+    upstream_provider: response.upstream_provider || null,
     model: agentModel,
     goalVerified: singleGoalCheck.passed,
     goalReason: singleGoalCheck.reason,
@@ -13069,6 +13116,35 @@ function jsonResponse(res, status, data) {
   res.end(body);
 }
 
+/**
+ * One SSE event for the web UI, bounded by WEB_UI_MAX_BYTES. An oversized
+ * event is never written silently: the client gets an explicit error frame
+ * naming the budget, and the caller can stop the stream.
+ */
+function writeWebChunk(res, chunk) {
+  const frame = sizeBudget.ssePayload(chunk, "WEB_UI_MAX_BYTES");
+  if (frame.tooLarge) {
+    log("WARN", "BUDGET_EXCEEDED", {
+      key: "WEB_UI_MAX_BYTES",
+      limit: frame.limit,
+      actual: frame.bytes,
+    });
+    const error = {
+      error: {
+        message: "WEB_UI_MAX_BYTES exceeded",
+        code: "BUDGET_EXCEEDED",
+        key: "WEB_UI_MAX_BYTES",
+        limit: frame.limit,
+        actual: frame.bytes,
+      },
+    };
+    res.write("data: " + JSON.stringify(error) + "\n\n");
+    return false;
+  }
+  res.write(frame.payload);
+  return true;
+}
+
 // SECURITY FIX (S5): Rate limiter for API endpoints
 const _rateLimitMap = new Map();
 function checkRateLimit(ip) {
@@ -13324,8 +13400,8 @@ function recordRequestLog(row) {
   try {
     const now = Date.now();
     MODELS_DB.prepare(
-      `INSERT INTO request_log (ts, path, session_id, editor, agent, model, provider, status, ok, elapsed_ms, swap_count, domain)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO request_log (ts, path, session_id, editor, agent, model, provider, upstream_provider, status, ok, elapsed_ms, swap_count, domain)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       now,
       row.path || null,
@@ -13334,6 +13410,7 @@ function recordRequestLog(row) {
       row.agent || null,
       row.model || null,
       row.provider || null,
+      row.upstream_provider || null,
       row.status || 200,
       row.ok === false ? 0 : 1,
       Math.round(row.elapsed_ms || 0),
@@ -15620,7 +15697,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
             session_id: sessionId,
             conversation_id: currentSession?.conversation_id || sessionId,
           };
-          res.write("data: " + JSON.stringify(initialChunk) + "\n\n");
+          writeWebChunk(res, initialChunk);
 
           // CLOUDFLARE 524 PREVENTION: Send periodic SSE keep-alive comments
           // Cloudflare times out after 100s if no data sent. SSE comments (":\n\n")
@@ -15655,7 +15732,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
               ],
             };
             if (chunk.choices[0].delta.content)
-              res.write("data: " + JSON.stringify(chunk) + "\n\n");
+              writeWebChunk(res, chunk);
             await originalPushLog(type, message);
           };
           pushAgentStatus = async (agentId, status) => {
@@ -15674,7 +15751,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
                 { index: 0, delta: { content: msg }, finish_reason: null },
               ],
             };
-            res.write("data: " + JSON.stringify(chunk) + "\n\n");
+            writeWebChunk(res, chunk);
             await originalPushOutput(output);
           };
           pushDone = async (stats) => {
@@ -15772,7 +15849,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
             model: "mission",
             editor: parsed.editor || "mission",
           });
-          res.write("data: " + JSON.stringify(finalChunk) + "\n\n");
+          writeWebChunk(res, finalChunk);
           res.write("data: [DONE]\n\n");
           res.end();
           return;
@@ -16285,6 +16362,22 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
           }
         }
 
+        // P1-10: one session budget for every provider call. Oldest history
+        // goes first; the system prompt and the newest turn always stay.
+        const streamBudget = sizeBudget.trimMessages(
+          augmentedMessages,
+          "SESSION_MAX_BYTES",
+        );
+        if (streamBudget.dropped > 0) {
+          log("WARN", "BUDGET_EXCEEDED", {
+            key: "SESSION_MAX_BYTES",
+            limit: streamBudget.limit,
+            actual: streamBudget.bytes,
+            dropped: streamBudget.dropped,
+          });
+        }
+        augmentedMessages = streamBudget.messages;
+
         // Build the catalog; callModelStream applies the single tool budget
         // once the provider is resolved (count + bytes + prefill).
         let toolsForStream =
@@ -16325,7 +16418,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
             const finishReason = parsed.choices?.[0]?.finish_reason || null;
             if (finishReason) chunk.choices[0].finish_reason = finishReason;
 
-            res.write("data: " + JSON.stringify(chunk) + "\n\n");
+            writeWebChunk(res, chunk);
         };
 
         // Streaming tool loop: execute every requested tool, then continue
@@ -16425,6 +16518,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
         // (callModelStreamWithTools reports it after any fallback).
         const _finMs = Date.now() - startTime;
         const _finProv = (streamResult && streamResult.provider) || null;
+        const _finUpstream = (streamResult && streamResult.upstream_provider) || null;
         const _finModel = (streamResult && streamResult.model) || agentModel;
         trackAgentUsage(agent.id, !fullContent, _finModel, _finProv);
         recordModelStat(_finModel, _finProv, !!fullContent);
@@ -16435,6 +16529,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
           agent: agent.id,
           model: _finModel,
           provider: _finProv,
+          upstream_provider: _finUpstream,
           status: 200,
           ok: !!fullContent,
           elapsed_ms: _finMs,
@@ -16487,6 +16582,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
           agent: agentId,
           model: _model,
           provider: _prov,
+          upstream_provider: singleResult.upstream_provider || null,
           status: 502,
           ok: false,
           elapsed_ms: Date.now() - startTime,
@@ -16524,6 +16620,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
           agent: agentId,
           model: _model,
           provider: _prov,
+          upstream_provider: singleResult.upstream_provider || null,
           status: 200,
           ok: true,
           elapsed_ms: Date.now() - startTime,
