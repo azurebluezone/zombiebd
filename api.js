@@ -1912,12 +1912,10 @@ function providerSummary(id, p) {
   const st = getProviderStat(id);
   const reqs = st ? st.requests : 0;
   const errs = st ? st.errors : 0;
-  let healthy = true;
-  try {
-    healthy = isProviderHealthy(id);
-  } catch (_) {
-    /* keep the optimistic default only when the health probe itself dies */
-  }
+  // Status comes from the same snapshot /health.providers uses, so the admin
+  // list and the public health block can never disagree. Unknown is never
+  // promoted to "up" just because no request has failed yet.
+  const snap = providerHealthSnapshot(id);
   const keyState = providerKeyState(id, p);
   return {
     id,
@@ -1937,7 +1935,10 @@ function providerSummary(id, p) {
       return name === apiModel ? name : name + "=>" + apiModel;
     }),
     modelStates: providerModelStates(id, p),
-    status: healthy ? "up" : "down",
+    status: snap.status,
+    lastProbeAt: snap.lastProbeAt,
+    lastSuccessAt: snap.lastSuccessAt,
+    lastFailureAt: snap.lastFailureAt,
     source: p.source || "env",
     hasKey: !!keyState.key,
     keySource: keyState.source,
@@ -1949,7 +1950,7 @@ function providerSummary(id, p) {
     last_used:
       st && st.last_used ? new Date(st.last_used).toISOString() : null,
     last_error: st && st.last_error ? st.last_error : null,
-    healthy,
+    healthy: snap.healthy,
   };
 }
 
@@ -12817,15 +12818,30 @@ const HEALTH_CONFIG = {
   MAX_CONSECUTIVE_FAILURES: 3,
   RECOVERY_COOLDOWN_MS: 60000,
   SUCCESS_RESET_THRESHOLD: 1,
+  DEFAULT_TTL_MS: 60000,
 };
+
+function providerHealthTtlMs() {
+  const n = parseInt(process.env.PROVIDER_HEALTH_TTL_MS || "", 10);
+  return Number.isFinite(n) && n > 0 ? n : HEALTH_CONFIG.DEFAULT_TTL_MS;
+}
+
+function providerHealthCooldownMs() {
+  const n = parseInt(process.env.PROVIDER_HEALTH_COOLDOWN_MS || "", 10);
+  return Number.isFinite(n) && n > 0 ? n : HEALTH_CONFIG.RECOVERY_COOLDOWN_MS;
+}
 
 function getProviderHealth(providerId) {
   if (!PROVIDER_HEALTH[providerId]) {
+    // No probe and no served request yet. `null` is deliberate: it means
+    // "unknown", never "healthy". Routing may still try it, but every status
+    // surface must say unknown until something real happens.
     PROVIDER_HEALTH[providerId] = {
-      healthy: true,
+      healthy: null,
       consecutiveFailures: 0,
       lastFailureAt: null,
       lastSuccessAt: null,
+      lastProbeAt: null,
       lastError: null,
       failureReasons: [],
     };
@@ -12833,10 +12849,56 @@ function getProviderHealth(providerId) {
   return PROVIDER_HEALTH[providerId];
 }
 
+// One snapshot for every status surface (/health.providers and the admin
+// provider list). TTL expiry turns a previously good provider stale — never
+// back into an optimistic "healthy" — and cooldown expiry is only a probe
+// opportunity, not proof of recovery.
+function providerHealthSnapshot(providerId) {
+  const health = getProviderHealth(providerId);
+  const now = Date.now();
+  const ttlMs = providerHealthTtlMs();
+  let status;
+  if (health.healthy === false) {
+    const elapsed = health.lastFailureAt ? now - health.lastFailureAt : null;
+    status =
+      elapsed !== null && elapsed >= providerHealthCooldownMs()
+        ? "stale"
+        : "down";
+  } else if (health.consecutiveFailures > 0) {
+    status = "degraded";
+  } else if (health.healthy === true) {
+    const age = health.lastSuccessAt ? now - health.lastSuccessAt : null;
+    status = age !== null && age <= ttlMs ? "up" : "stale";
+  } else if (health.lastProbeAt || health.lastSuccessAt || health.lastFailureAt) {
+    status = "stale";
+  } else {
+    status = "unknown";
+  }
+  return {
+    id: providerId,
+    status,
+    healthy: status === "up",
+    lastProbeAt: health.lastProbeAt
+      ? new Date(health.lastProbeAt).toISOString()
+      : null,
+    lastSuccessAt: health.lastSuccessAt
+      ? new Date(health.lastSuccessAt).toISOString()
+      : null,
+    lastFailureAt: health.lastFailureAt
+      ? new Date(health.lastFailureAt).toISOString()
+      : null,
+    lastError: health.lastError || null,
+    consecutiveFailures: health.consecutiveFailures,
+    ttlMs,
+  };
+}
+
 function markProviderSuccess(providerId) {
   const health = getProviderHealth(providerId);
+  const now = Date.now();
   health.consecutiveFailures = 0;
-  health.lastSuccessAt = Date.now();
+  health.lastProbeAt = now;
+  health.lastSuccessAt = now;
   health.healthy = true;
   health.lastError = null;
   // authentic-response ledger: provider_stats (real served traffic)
@@ -12846,8 +12908,10 @@ function markProviderSuccess(providerId) {
 
 function markProviderFailure(providerId, errorMsg) {
   const health = getProviderHealth(providerId);
+  const now = Date.now();
   health.consecutiveFailures++;
-  health.lastFailureAt = Date.now();
+  health.lastProbeAt = now;
+  health.lastFailureAt = now;
   health.lastError = errorMsg || "Unknown error";
   // authentic-response ledger: failures recorded too
   trackProviderUsage(providerId, true); // memory mirror
@@ -12867,27 +12931,34 @@ function markProviderFailure(providerId, errorMsg) {
       provider: providerId,
       consecutiveFailures: health.consecutiveFailures,
       lastError: errorMsg,
-      cooldownMs: HEALTH_CONFIG.RECOVERY_COOLDOWN_MS,
+      cooldownMs: providerHealthCooldownMs(),
     });
   }
 }
 
+// Routing predicate, not a status reporter. Unknown is a candidate (the first
+// request must be allowed to discover the truth); only confirmed-down inside
+// the cooldown is skipped. Admin/health surfaces use providerHealthSnapshot().
 function isProviderHealthy(providerId, model) {
   const health = getProviderHealth(providerId);
-  if (!health.healthy) {
+  if (health.healthy === false) {
     if (health.lastFailureAt) {
       const elapsed = Date.now() - health.lastFailureAt;
-      if (elapsed >= HEALTH_CONFIG.RECOVERY_COOLDOWN_MS) {
-        health.healthy = true;
+      if (elapsed >= providerHealthCooldownMs()) {
+        // Cooldown is over: allow one probe, but keep the status honest.
+        // A success marks it up; another failure marks it down again.
+        health.healthy = null;
         health.consecutiveFailures = 0;
-        log("INFO", "PROVIDER_RECOVERED", {
+        log("INFO", "PROVIDER_RECOVERY_PROBE", {
           provider: providerId,
           downTimeMs: elapsed,
         });
-        return true;
+      } else {
+        return false;
       }
+    } else {
+      return false;
     }
-    return false;
   }
   if (isRateLimited(providerId, model)) return false;
   return true;
@@ -12896,15 +12967,18 @@ function isProviderHealthy(providerId, model) {
 function getUnhealthyProviders() {
   const result = [];
   for (const [id, health] of Object.entries(PROVIDER_HEALTH)) {
-    if (!health.healthy) {
+    // Only confirmed-down counts as unhealthy. `healthy === null` is unknown
+    // (never probed) and must not be reported as a dead provider.
+    if (health.healthy === false) {
       result.push({
         providerId: id,
+        status: providerHealthSnapshot(id).status,
         consecutiveFailures: health.consecutiveFailures,
         lastError: health.lastError,
         remainingCooldownMs: health.lastFailureAt
           ? Math.max(
             0,
-            HEALTH_CONFIG.RECOVERY_COOLDOWN_MS -
+            providerHealthCooldownMs() -
             (Date.now() - health.lastFailureAt),
           )
           : 0,
@@ -12912,6 +12986,33 @@ function getUnhealthyProviders() {
     }
   }
   return result;
+}
+
+// Public snapshot of every provider the process knows about, for /health.
+// Distinct from `healthy` (the process): a gateway can be perfectly alive
+// while one provider is down or stale.
+function providerHealthReport() {
+  const out = {};
+  const ids = new Set([
+    ...Object.keys(PROVIDER_CONFIG),
+    ...Object.keys(PROVIDER_HEALTH),
+  ]);
+  for (const id of ids) {
+    const p = PROVIDER_CONFIG[id];
+    const snap = providerHealthSnapshot(id);
+    out[id] = {
+      status: snap.status,
+      healthy: snap.healthy,
+      enabled: p ? p.enabled !== false : false,
+      lastProbeAt: snap.lastProbeAt,
+      lastSuccessAt: snap.lastSuccessAt,
+      lastFailureAt: snap.lastFailureAt,
+      lastError: snap.lastError,
+      consecutiveFailures: snap.consecutiveFailures,
+      ttlMs: snap.ttlMs,
+    };
+  }
+  return out;
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -13111,8 +13212,14 @@ function recordProviderStat(provider, ok, errMsg) {
        requests = requests + 1,
        errors = errors + excluded.errors,
        last_used = excluded.last_used,
-       last_error = COALESCE(excluded.last_error, last_error),
-       last_error_at = COALESCE(excluded.last_error_at, last_error_at)`,
+       -- A served request that succeeded clears the stale error. Keeping it
+       -- via COALESCE made a recovered provider look broken forever.
+       last_error = CASE WHEN excluded.errors = 0
+                         THEN NULL
+                         ELSE COALESCE(excluded.last_error, last_error) END,
+       last_error_at = CASE WHEN excluded.errors = 0
+                            THEN NULL
+                            ELSE COALESCE(excluded.last_error_at, last_error_at) END`,
     [
       provider,
       ok ? 0 : 1,
@@ -13759,6 +13866,10 @@ const handleHttpRequest = async (req, res) => {
         maxRateLimit: DOMAIN_CFG.maxRateLimitPerServer,
         uptime: Math.floor((Date.now() - STATS.startTime) / 1000),
         session_count: cleanExpired().length,
+        // Additive provider block: the process can be healthy while a specific
+        // provider is unknown/down/stale. Each entry is the exact snapshot the
+        // admin provider list reads, so the two surfaces always agree.
+        providers: providerHealthReport(),
         system: systemInfo.compactSystemInfo(),
         rate_limit: rateLimit.limited
           ? {
