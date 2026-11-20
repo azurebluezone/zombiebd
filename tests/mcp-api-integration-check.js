@@ -133,17 +133,19 @@ async function main() {
     assert.ok(badAccept.errors.some((error) => error.code === "ZC_MCP_ACCEPT"));
   });
 
-  await check("workspace bootstrap creates .zombiecoder from roots and is idempotent", () => {
+  await check("workspace bootstrap creates .zombie from roots and is idempotent", () => {
     const first = mcp.bootstrapWorkspace({
       roots: [{ uri: "file://" + ws }],
       cwd: tmp,
     });
     assert.strictEqual(first.dir, ws);
     assert.strictEqual(first.source, "mcp-roots");
-    assert.ok(fs.existsSync(path.join(ws, ".zombiecoder", "SSOT.md")));
-    assert.ok(fs.existsSync(path.join(ws, ".zombiecoder", "syllabus.md")));
-    assert.ok(fs.existsSync(path.join(ws, ".zombiecoder", "memory")));
-    assert.ok(!fs.existsSync(path.join(ws, ".zombiecoder", "agents")));
+    assert.ok(fs.existsSync(path.join(ws, ".zombie", "SSOT.md")));
+    assert.ok(fs.existsSync(path.join(ws, ".zombie", "syllabus.md")));
+    assert.ok(fs.existsSync(path.join(ws, ".zombie", "memory")));
+    assert.ok(fs.existsSync(path.join(ws, ".zombie", "memory", "sessions")));
+    assert.ok(!fs.existsSync(path.join(ws, ".zombie", "agents")));
+    assert.ok(!fs.existsSync(path.join(ws, ".zombiecoder")), "server must never create the plugin tree");
     assert.ok(first.created.length > 0, "first connect must create the layout");
     assert.match(first.fingerprint, /^[a-f0-9]{16}$/);
 
@@ -182,7 +184,9 @@ async function main() {
     assert.deepStrictEqual(result.capabilities, { tools: {} });
     assert.strictEqual(result.serverInfo.name, "mission-barisal");
     assert.strictEqual(result.serverInfo.working_dir, ws);
-    assert.strictEqual(result.serverInfo.zombiecoder_dir, path.join(ws, ".zombiecoder"));
+    // The key is kept for wire compatibility; its value is the server-owned
+    // `.zombie/` directory, never the read-only plugin tree.
+    assert.strictEqual(result.serverInfo.zombiecoder_dir, path.join(ws, ".zombie"));
     assert.strictEqual(result.serverInfo.editor, "cursor");
     assert.strictEqual(result.serverInfo.roots_detected, true);
     assert.strictEqual(result._meta.requestedProtocolVersion, "2024-11-05");
