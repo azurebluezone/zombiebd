@@ -15648,6 +15648,19 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
         const r2tResult = await executeR2tRequest(model, messages, {
           stream,
         });
+        // Observable routing: which engine really answered, and why the
+        // builtin fallback was used. ASCII-only so proxies never choke.
+        const r2tHeader = (value) =>
+          String(value == null ? "" : value).replace(/[^ -~]/g, "");
+        if (r2tResult && r2tResult.r2tEngine) {
+          res.setHeader("x-zc-r2t-engine", r2tHeader(r2tResult.r2tEngine));
+        }
+        if (r2tResult && r2tResult.r2tFallbackReason) {
+          res.setHeader(
+            "x-zc-r2t-fallback",
+            r2tHeader(r2tResult.r2tFallbackReason),
+          );
+        }
         if (stream && r2tResult.sse) {
           jsonResponse(res, 200, r2tResult.payload);
         } else {
@@ -19466,30 +19479,43 @@ init();
 // ══════════════════════════════════════════════════════════════════
 async function executeR2tRequest(requestModel, messages, opts = {}) {
   const startedAt = Date.now();
+  // Trace state: which engine really answered, and why the builtin was used.
+  let r2tEngine = "unknown";
+  let r2tFallbackReason = "";
+  const withTrace = (normalized) => {
+    if (normalized && typeof normalized === "object") {
+      normalized.r2tEngine = r2tEngine;
+      if (r2tFallbackReason) normalized.r2tFallbackReason = r2tFallbackReason;
+    }
+    return normalized;
+  };
   const safeSend = (note) =>
-    normalizeResponse(
-      {
-        id: "r2t-" + Date.now(),
-        created: Math.floor(Date.now() / 1000),
-        model: requestModel,
-        choices: [
-          {
-            index: 0,
-            message: {
-              role: "assistant",
-              content: note,
+    withTrace(
+      normalizeResponse(
+        {
+          id: "r2t-" + Date.now(),
+          created: Math.floor(Date.now() / 1000),
+          model: requestModel,
+          choices: [
+            {
+              index: 0,
+              message: {
+                role: "assistant",
+                content: note,
+              },
+              finish_reason: "stop",
             },
-            finish_reason: "stop",
-          },
-        ],
-        usage: {},
-      },
-      requestModel,
+          ],
+          usage: {},
+        },
+        requestModel,
+      ),
     );
 
   // 1) Env gate — cPanel-safe switch.
   const enabled = String(process.env.R2T_ENABLED || "true") !== "false";
   if (!enabled) {
+    r2tEngine = "disabled";
     log("INFO", "R2T_DISABLED", { env: "R2T_ENABLED=false" });
     return safeSend(
       '[r2t] R2T_ENABLED=false — r2t virtual model is off on this environment.'
@@ -19506,6 +19532,7 @@ async function executeR2tRequest(requestModel, messages, opts = {}) {
       .join("\n");
   }
   if (!userInput || !userInput.trim()) {
+    r2tEngine = "no-input";
     return safeSend("[r2t] no user message content provided");
   }
 
@@ -19524,9 +19551,22 @@ async function executeR2tRequest(requestModel, messages, opts = {}) {
     try {
       mod = await import(pathToFileURL(modulePath).href + "?v=" + Date.now());
     } catch (e) {
+      r2tEngine = "builtin-fallback";
+      r2tFallbackReason = "module-load-failed";
       log("WARN", "R2T_MODULE_LOAD_FAILED", { error: String(e.message || e) });
+      log("WARN", "R2T_BUILTIN_FALLBACK", {
+        reason: r2tFallbackReason,
+        module: modulePath,
+      });
       mod = null;
     }
+  } else {
+    r2tEngine = "builtin-fallback";
+    r2tFallbackReason = "module-missing";
+    log("WARN", "R2T_BUILTIN_FALLBACK", {
+      reason: r2tFallbackReason,
+      module: modulePath,
+    });
   }
 
   // 5) Execute markers via the module; degrade to a basic executor when
@@ -19535,9 +19575,18 @@ async function executeR2tRequest(requestModel, messages, opts = {}) {
   try {
     if (mod && typeof mod.convertResponse === "function") {
       result = await mod.convertResponse(userInput);
+      r2tEngine = "external-module";
       result.r2tEngine = "external-module";
       result.module = modulePath;
     } else {
+      if (!r2tFallbackReason) {
+        r2tEngine = "builtin-fallback";
+        r2tFallbackReason = "no-convert-response";
+        log("WARN", "R2T_BUILTIN_FALLBACK", {
+          reason: r2tFallbackReason,
+          module: modulePath,
+        });
+      }
       result = await basicR2tExecutor(userInput);
       result.r2tEngine = "builtin-fallback";
     }
@@ -19550,7 +19599,7 @@ async function executeR2tRequest(requestModel, messages, opts = {}) {
 
   // 6) Wrap into OpenAI shape and pass through Haq Mawla normalizer.
   result.elapsedMs = Date.now() - startedAt;
-  return normalizeResponse(
+  const normalized = normalizeResponse(
     {
       id: "r2t-" + Date.now(),
       created: Math.floor(Date.now() / 1000),
@@ -19570,6 +19619,7 @@ async function executeR2tRequest(requestModel, messages, opts = {}) {
     },
     requestModel,
   );
+  return withTrace(normalized);
 }
 
 // ── Built-in minimal marker executor (dependency-free fallback) ─────
