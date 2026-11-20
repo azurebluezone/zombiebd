@@ -64,7 +64,7 @@ OPENCODE_ENABLED=false
 | **T3** | একটাই path resolver | `api.js:244-245` vs `start.js:28-35`; MCP-তে `os.homedir()` | production-এ homedir/`\"/tmp/\"` → ০ |
 | **T4** | DB required | missing DB → `MODELS_DB=null` → env-only (`api.js:1551-1555`) | DB সরিয়ে boot → exit 78 |
 | **T5** | required env নেই → fatal | `catch (_) {}` silent | `.env` সরিয়ে boot → `CONFIG_FATAL` |
-| **T6** | hidden loopback নেই | `DEFAULT_PROBE_PORTS` scan (`local-llm-bridge.js:107`); broken self-check (`:209`) | port list grep → ০ |
+| **T6** | hidden loopback নেই | ~~`DEFAULT_PROBE_PORTS` scan; broken self-check~~ → SOLVED 2026-11-20: explicit-only candidates + `lib/net.js` | `node tests/bridge-discovery-check.js` → `BRIDGE_DISCOVERY_OK` |
 | **T7** | health truth = DB + probe | optimistic `healthy=true`, 60s auto-recover | provider down → UI down |
 | **T8** | timeout per-provider | transport `60s`, ollama `1200s`, bridge provider-এ timeout নেই | `PROVIDER_TIMEOUT` log |
 | **T9** | fallback explicit + traced | `request_log`-এ attempt/fallback নেই | `PROVIDER_ATTEMPT` rows |
@@ -792,18 +792,22 @@ PROVIDER_ATTEMPT attempt=2 provider=bridge  status=ok      elapsed_ms=18432
 `lib/net.js`:
 
 ```js
-const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
-function isLoopbackHost(host) { return LOOPBACK_HOSTS.has(String(host).toLowerCase()); }
+const LOOPBACK_HOSTS = new Set([
+  "localhost", "127.0.0.1", "::1", "[::1]", "0:0:0:0:0:0:0:1",
+]);
+function isLoopbackHost(host) {
+  return LOOPBACK_HOSTS.has(String(host).trim().toLowerCase());
+}
 ```
 
-- `DEFAULT_PROBE_PORTS` delete; `BRIDGE_PROBE_DEFAULTS=0` default।
-- `BRIDGE_UPSTREAMS` explicit required; self host/port → `BRIDGE_SELF_REFERENCE` fatal।
-- `local-llm-bridge.js:209` bug (`localhost` twice) ঠিক হবে `isLoopbackHost()` দিয়ে।
+- `DEFAULT_PROBE_PORTS` deleted; the `BRIDGE_PROBE_DEFAULTS` scan is gone and `.env.example` no longer advertises it.
+- `BRIDGE_UPSTREAMS` and `BRIDGE_OLLAMA_URL` are the explicit sources; `BRIDGE_BACKEND=llama` adds only the server this process spawns.
+- A self host/port is rejected before probing and reported as `BRIDGE_SELF_REFERENCE` (log + `/health.self_references`), never silently proxied.
+- `local-llm-bridge.js` uses `isLoopbackHost()` / `isSelfReference()`; `localhost`, `127.0.0.1` and `[::1]` aliases on the same port/path dedupe to one upstream.
 
 ```bash
 ! grep -q 'DEFAULT_PROBE_PORTS' local-llm-bridge.js || exit 1
-node -e "const {isLoopbackHost}=require('./lib/net.js');if(!isLoopbackHost('127.0.0.1')||!isLoopbackHost('::1'))process.exit(1);console.log('LOOPBACK_OK')"
-echo MCP_REGISTRY_OK
+node tests/bridge-discovery-check.js   # BRIDGE_DISCOVERY_OK
 ```
 
 ---
