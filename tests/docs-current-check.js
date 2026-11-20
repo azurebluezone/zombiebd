@@ -154,18 +154,17 @@ function runbookRows(text) {
     return required.length + " gates";
   });
 
-  await check("PLAN: next item is N6 and marked TODO", () => {
-    const next = table.find((row) => row.num === 11);
-    assert(next, "runbook row 11 missing");
-    assert(next.gate === "SKILL_MCP_OK", "row 11 gate=" + next.gate);
-    assert(!next.done, "row 11 must stay TODO until N6 passes");
-    assert(plan.includes("N6"), "PLAN does not mention N6");
-    const planRow = plan
-      .split(/\r?\n/)
-      .find((line) => /^\|\s*11\s*\|/.test(line)) || "";
-    assert(planRow.includes("SKILL_MCP_OK"), "PLAN row 11 missing gate");
-    assert(/TODO/.test(planRow), "PLAN row 11 is not TODO: " + planRow.trim());
-    return "row 11 = N6 / SKILL_MCP_OK";
+  await check("PLAN: next TODO row matches the runbook", () => {
+    const next = table.find((row) => !row.done);
+    assert(next, "runbook has no TODO row left");
+    assert(plan.includes(next.gate), "PLAN does not mention " + next.gate);
+    const planRow =
+      plan
+        .split(/\r?\n/)
+        .find((line) => new RegExp("^\\|\\s*" + next.num + "\\s*\\|").test(line)) || "";
+    assert(planRow.includes(next.gate), "PLAN row " + next.num + " missing gate " + next.gate);
+    assert(/TODO/.test(planRow), "PLAN row " + next.num + " is not TODO: " + planRow.trim());
+    return "row " + next.num + " = " + next.gate;
   });
 
   await check("PLAN: row 10 contract matches the runbook", () => {
