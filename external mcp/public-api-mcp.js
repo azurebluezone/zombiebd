@@ -18,6 +18,7 @@
 // =============================================================================
 
 const http = require("http");
+const { serveStdio, wantsStdio } = require("./stdio-transport.js");
 // Dedicated env var ONLY — the generic process.env.PORT is deliberately NOT
 // used: this server is spawned as a CHILD of start.js (which sets PORT=3000
 // for the main server in .env), so inheriting PORT would make us try to bind
@@ -922,6 +923,13 @@ function handleJSONRPC(body) {
     default:
       return { jsonrpc: "2.0", id, error: { code: -32601, message: `Method not found: ${method}` } };
   }
+}
+
+// ─── stdio Transport (gateway child) ───────────────────────────────────────
+// The same JSON-RPC handler serves both transports; stdio needs no port.
+if (wantsStdio()) {
+  serveStdio(handleJSONRPC, "PUBLIC-API-MCP");
+  return;
 }
 
 // ─── HTTP Server ───────────────────────────────────────────────────────────

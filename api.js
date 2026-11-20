@@ -151,33 +151,8 @@ const {
   identityHeaders,
 } = require("./modules/system-identity.js");
 
-// ─── MCP gateway route table (deny-by-default) ─────────────────────────
-// The local tool servers (ocr / screen-recorder / tts) are child processes
-// spawned by start.js; they bind loopback ports 3100-3102. This table
-// publishes them ALL on the main server port so clients need exactly one
-// URL: POST http://<host>:<port>/mcp/<name>. Only servers listed in
-// "external mcp/servers.json" (local:true, enabled) are routable — there is
-// NO arbitrary port forwarding.
-const MCP_TABLE = (function () {
-  const table = [];
-  try {
-    const raw = JSON.parse(
-      fs.readFileSync(path.join(__dirname, "external mcp", "servers.json"), "utf8"),
-    );
-    for (const s of raw.servers || []) {
-      if (!(s && s.local === true && s.enabled !== false && s.url)) continue;
-      const url = expandEnv(s.url);
-      let u;
-      try { u = new URL(url); } catch (e) { continue; }
-      if (u.protocol !== "http:" && u.protocol !== "https:") continue;
-      table.push({ name: String(s.name), url });
-    }
-  } catch (e) {
-    /* table stays empty — the gateway simply 404s */
-  }
-  return table;
-})();
-
+// Local MCP servers are stdio children spawned by external-mcp.js. There is
+// no per-server port and no /mcp/<name> port-forwarding table.
 // ─── Provider layer (official-doc adapters + normalizer) ─────
 // Everything wire-related — headers, payloads, dialects, response
 // normalization — lives in ./provider and ./normalizer. api.js only routes.
@@ -186,13 +161,13 @@ const providerDefaults = require("./provider/defaults");
 const providerTransport = require("./provider/transport");
 const providerCapabilities = require("./provider/capabilities");
 const providerSecretStore = require("./lib/secret-store");
-const adminApi = require("./admin-api");
+const adminApi = require("./lib/admin-routes");
 const toolRegister = require("./provider/tools");
 const toolBudget = require("./lib/tool-budget.js");
 
-// The admin routing module gets the live helpers through one context object.
+// The DB mutation routes get the live helpers through one context object.
 // Getters keep the DB handle and agent list current without this module
-// owning either of them.
+// owning either of them. No admin UI file is read or required here.
 function adminApiContext() {
   return {
     adminAuthorized,
@@ -224,13 +199,12 @@ const {
   DOMAIN_CONFIGS,
 } = require("./domain-config");
 
-// Project root = this file's directory. Every project-owned path (.env,
-// data/, logs/, models.db) is anchored here so the gateway behaves the same
-// when a user launches it from /tmp or any other working directory.
-const PROJECT_ROOT = __dirname;
+// Source root = this file's directory. In dist this is dist/, so .env is read
+// from the built tree. Runtime paths are anchored at APP_ROOT below.
+const SOURCE_ROOT = __dirname;
 
 // ─── .env Loader (lib/env.js — the only loader) ─────────────
-const _envLoad = loadProcessEnv({ root: PROJECT_ROOT });
+const _envLoad = loadProcessEnv({ root: SOURCE_ROOT });
 if (_envLoad.error) {
   console.error("[ENV] FATAL", _envLoad.file, _envLoad.error);
   process.exit(78);
@@ -260,9 +234,10 @@ const OPENCODE_BASE = providerDefaults.resolveBaseUrl(
 );
 const MAX_DEBATE_ROUNDS = parseInt(process.env.MAX_DEBATE_ROUNDS || "0", 10);
 // ─── Runtime paths (lib/env.js — the only resolver) ─────────
-// DATA_DIR/LOG_DIR/CACHE_DIR/dbPath come from one place, anchored at
-// APP_ROOT; a shell cwd outside the project can no longer change them.
+// DATA_DIR/LOG_DIR/CACHE_DIR/dbPath resolve once, anchored at APP_ROOT.
 const RUNTIME_PATHS = resolveRuntimePaths(process.env);
+// Project-owned paths (UDS, generated editor config) use APP_ROOT, never dist/.
+const PROJECT_ROOT = RUNTIME_PATHS.appRoot;
 const LOG_DIR = RUNTIME_PATHS.logDir;
 const DATA_DIR = RUNTIME_PATHS.dataDir;
 const PERSONAS_FILE = path.resolve(
@@ -10292,23 +10267,86 @@ MCP_TOOLS.remote_mcp_call = {
 
 const mcpRemoteClients = new Map(); // name -> { url, name, tools:[], status, lastSync, error }
 
+const REMOTE_MCP_SETTING_KEY = "remote_mcp_servers";
+
+function deriveRemoteName(url) {
+  try {
+    return new URL(url).hostname.replace(/[^a-z0-9]/gi, "-");
+  } catch (_) {
+    return "remote-mcp";
+  }
+}
+
+function loadPersistedRemoteMcpServers() {
+  if (!MODELS_DB) return [];
+  try {
+    const row = MODELS_DB.prepare(
+      "SELECT value FROM settings WHERE key = ?",
+    ).get(REMOTE_MCP_SETTING_KEY);
+    if (!row || !row.value) return [];
+    const rows = JSON.parse(row.value);
+    if (!Array.isArray(rows)) return [];
+    return rows
+      .filter((s) => s && typeof s.url === "string" && s.url.trim())
+      .map((s) => ({
+        name: String(s.name || "").trim() || deriveRemoteName(s.url),
+        url: String(s.url).trim(),
+        token: providerSecretStore.decryptSecret(s.token || ""),
+      }));
+  } catch (e) {
+    log("WARN", "REMOTE_MCP_CONFIG_LOAD_FAIL", { error: e.message });
+    return [];
+  }
+}
+
+function persistRemoteMcpServers() {
+  if (!MODELS_DB) return;
+  try {
+    const rows = Array.from(mcpRemoteClients.values())
+      .filter((s) => s && s.url)
+      .map((s) => ({
+        name: s.name,
+        url: s.url,
+        token: providerSecretStore.encryptSecret(s.token || ""),
+      }));
+    MODELS_DB.prepare(
+      "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) " +
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+    ).run(REMOTE_MCP_SETTING_KEY, JSON.stringify(rows), Date.now());
+  } catch (e) {
+    log("WARN", "REMOTE_MCP_CONFIG_SAVE_FAIL", { error: e.message });
+  }
+}
+
 function parseRemoteMcpServers() {
   const raw = process.env.REMOTE_MCP_SERVERS || "";
-  if (!raw) return [];
+  const envServers = [];
   const trimmed = raw.trim();
   if (trimmed.startsWith("[")) {
     try {
       const arr = JSON.parse(trimmed);
-      return arr.filter((s) => s && s.url);
+      for (const s of arr) {
+        if (s && s.url) envServers.push(s);
+      }
     } catch (e) {
       log("WARN", "REMOTE_MCP_PARSE_FAIL", { error: e.message });
-      return [];
+    }
+  } else if (trimmed) {
+    for (const url of trimmed.split(",")) {
+      if (url.trim()) envServers.push({ url: url.trim() });
     }
   }
-  return trimmed.split(",").filter(Boolean).map((url) => ({ url: url.trim() }));
+
+  // DB entries are the admin/curl-added HTTP MCPs; env entries stay additive.
+  const merged = new Map();
+  for (const server of [...loadPersistedRemoteMcpServers(), ...envServers]) {
+    const name = String(server.name || "").trim() || deriveRemoteName(server.url);
+    merged.set(name, { ...server, name });
+  }
+  return [...merged.values()];
 }
 
-function mcpRemoteRequest(url, method, params, timeoutMs = 15000) {
+function mcpRemoteRequest(url, method, params, timeoutMs = 15000, token = "") {
   return new Promise((resolve) => {
     let lib;
     try {
@@ -10330,17 +10368,19 @@ function mcpRemoteRequest(url, method, params, timeoutMs = 15000) {
       resolve({ error: "invalid url: " + url });
       return;
     }
+    const headers = {
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(payload),
+      "User-Agent": "MissionBarisal-OutboundMCP/3.2.1",
+    };
+    if (token) headers.Authorization = "Bearer " + token;
     const req = lib.request(
       {
         hostname: parsed.hostname,
         port: parsed.port || (parsed.protocol === "https:" ? 443 : 80),
         path: parsed.pathname || "/",
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Content-Length": Buffer.byteLength(payload),
-          "User-Agent": "MissionBarisal-OutboundMCP/3.2.1",
-        },
+        headers,
         timeout: timeoutMs,
       },
       (res) => {
@@ -10367,7 +10407,7 @@ function mcpRemoteRequest(url, method, params, timeoutMs = 15000) {
 }
 
 async function discoverRemoteMCP(server) {
-  const { url, name } = server;
+  const { url, name, token } = server;
   let host = url;
   try {
     host = new URL(url).hostname;
@@ -10377,6 +10417,7 @@ async function discoverRemoteMCP(server) {
   const entry = {
     url,
     name: name || host,
+    token: token || "",
     tools: [],
     status: "connecting",
     lastSync: 0,
@@ -10385,17 +10426,23 @@ async function discoverRemoteMCP(server) {
   };
   mcpRemoteClients.set(entry.name, entry);
   try {
-    const init = await mcpRemoteRequest(url, "initialize", {
-      protocolVersion: mcpProtocol.PROTOCOL_VERSION,
-      capabilities: {},
-      clientInfo: { name: "mission-barisal-gateway", version: "3.2.1" },
-    });
+    const init = await mcpRemoteRequest(
+      url,
+      "initialize",
+      {
+        protocolVersion: mcpProtocol.PROTOCOL_VERSION,
+        capabilities: {},
+        clientInfo: { name: "mission-barisal-gateway", version: "3.2.1" },
+      },
+      15000,
+      entry.token,
+    );
     if (init.error) {
       entry.status = "error";
       entry.error = init.error;
       return entry;
     }
-    const list = await mcpRemoteRequest(url, "tools/list", {});
+    const list = await mcpRemoteRequest(url, "tools/list", {}, 15000, entry.token);
     if (list.error) {
       entry.status = "error";
       entry.error = list.error;
@@ -10484,10 +10531,16 @@ async function executeRemoteMcpTool(server, tool, args) {
       ],
     };
   }
-  const res = await mcpRemoteRequest(client.url, "tools/call", {
-    name: tool,
-    arguments: args || {},
-  });
+  const res = await mcpRemoteRequest(
+    client.url,
+    "tools/call",
+    {
+      name: tool,
+      arguments: args || {},
+    },
+    15000,
+    client.token,
+  );
   if (res.error) {
     return {
       content: [{ type: "text", text: "Remote tool error: " + res.error }],
@@ -13579,60 +13632,6 @@ const handleHttpRequest = async (req, res) => {
       return;
     }
 
-    // ─── MCP gateway — every tool on the main port ───────────────────
-    // One URL for every local MCP tool server. The children keep their own
-    // loopback bindings; this route forwards JSON-RPC to them and pipes the
-    // response back, so clients only need http://<host>:<port>/mcp/<name>.
-    // Deny-by-default: only names from external mcp/servers.json are
-    // routable (see MCP_TABLE) — no arbitrary port forwarding.
-    if (url === "/api/mcp" && method === "GET") {
-      jsonResponse(res, 200, {
-        port: PORT,
-        servers: MCP_TABLE.map((m) => ({ name: m.name, url: m.url })),
-        note: "POST /mcp/<name> publishes every tool on this port",
-      });
-      return;
-    }
-    const mcpMatch = /^\/mcp\/([A-Za-z0-9_-]+)(\/.*)?$/.exec(url);
-    if (mcpMatch && method === "POST") {
-      const mcpName = mcpMatch[1];
-      const mcpRest = mcpMatch[2] || "";
-      const mcpTarget = MCP_TABLE.find((m) => m.name === mcpName);
-      if (!mcpTarget) {
-        jsonResponse(res, 404, { error: "Unknown MCP server: " + mcpName });
-        return;
-      }
-      const mcpBody = await readBody(req);
-      const up = new URL(mcpTarget.url + mcpRest);
-      const mcpProto = up.protocol === "https:" ? https : http;
-      const mcpReq = mcpProto.request(
-        {
-          hostname: up.hostname,
-          port: up.port || (up.protocol === "https:" ? 443 : 80),
-          path: up.pathname + up.search,
-          method: "POST",
-          timeout: 180000,
-          headers: {
-            "Content-Type": req.headers["content-type"] || "application/json",
-            "Accept": req.headers["accept"] || "application/json, text/event-stream",
-          },
-        },
-        function (mcpRes) {
-          res.writeHead(mcpRes.statusCode || 200, mcpRes.headers);
-          mcpRes.pipe(res);
-        },
-      );
-      mcpReq.on("error", function (e) {
-        if (!res.headersSent) {
-          jsonResponse(res, 502, { error: "MCP upstream error: " + e.message });
-        } else {
-          try { res.end(); } catch (err) { /* already closed */ }
-        }
-      });
-      mcpReq.end(mcpBody);
-      return;
-    }
-
     // ─── GET /identity ───────────────────────────────────────
     if (url === "/identity" && method === "GET") {
       const requestConfig = getDomainConfig(requestDomain);
@@ -13943,9 +13942,10 @@ const handleHttpRequest = async (req, res) => {
       return;
     }
 
-    // ─── Admin routing API (providers, models, agents) ─────────
-    // SECURITY: adminAuthorized() is module scope; admin-api.js receives it
-    // via ctx and checks every route before touching the DB.
+    // ─── DB mutation API (providers, models, agents) ───────────
+    // SECURITY: adminAuthorized() is module scope; lib/admin-routes.js
+    // receives it via ctx and checks every route before touching the DB.
+    // The admin page is only a client; no UI file is required to boot.
     if (await adminApi.handle(adminApiContext(), req, res, url, method)) return;
 
     // ─── GET /admin/:file — Admin Panel static files ─
@@ -14561,7 +14561,8 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
       jsonResponse(res, 200, {
         ok: true,
         env: process.env.REMOTE_MCP_SERVERS || "",
-        servers: Array.from(mcpRemoteClients.values()),
+        // Never expose persisted bearer tokens through a read endpoint.
+        servers: Array.from(mcpRemoteClients.values()).map(({ token, ...rest }) => rest),
         mergedTools: Object.keys(MCP_TOOLS).filter((k) =>
           k.startsWith("remote__"),
         ).length,
@@ -14625,9 +14626,15 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
         jsonResponse(res, 400, { error: "url required" });
         return;
       }
-      const entry = await discoverRemoteMCP({ url: p.url, name: p.name || "" });
+      const entry = await discoverRemoteMCP({
+        url: p.url,
+        name: p.name || "",
+        token: typeof p.token === "string" ? p.token : "",
+      });
+      persistRemoteMcpServers();
       const merged = mergeRemoteMcpTools();
-      jsonResponse(res, 200, { ok: true, server: entry, merged });
+      const { token, ...safeEntry } = entry;
+      jsonResponse(res, 200, { ok: true, server: safeEntry, merged });
       return;
     }
 
@@ -14656,6 +14663,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
       for (const k of Object.keys(MCP_TOOLS)) {
         if (k.startsWith("remote__" + p.name + "__")) delete MCP_TOOLS[k];
       }
+      persistRemoteMcpServers();
       jsonResponse(res, 200, { ok: true, removed });
       return;
     }

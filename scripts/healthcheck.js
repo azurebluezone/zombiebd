@@ -9,14 +9,14 @@
  * WHAT IS CHECKED
  *   1. systemd user unit (supervisor for the whole stack)   [if available]
  *   2. main MCP server        MAIN_SERVER_MCP (default http://localhost:5050/mcp)
- *   3. every local server in "external mcp/servers.json"    (port + tools/list)
- *   4. adapter over HTTPS      with certificate verification ON
+ *   3. every local server in "external mcp/servers.json"    (stdio status + tools)
+ *   4. optional standalone adapter over HTTPS (only when ADAPTER_HTTPS_URL is set)
  *   5. unified log file writable (logs/zc.jsonl)
  *
  * WHAT --fix DOES (least invasive first)
  *   • unit failed / inactive      → systemctl --user reset-failed + start
  *   • unit active but main server dead → systemctl --user restart <unit>
- *   • a servers.json entry is dead    → spawn it detached, log → logs/
+ *   • a stdio server is missing   → restart the unit so api.js respawns it
  *   Then it RE-CHECKS and reports. Every repair is logged to zc.jsonl.
  *
  * PORTABILITY — no hardcoded machine paths:
@@ -33,17 +33,16 @@
 "use strict";
 
 const fs = require("fs");
-const net = require("net");
 const path = require("path");
 const os = require("os");
-const { spawnSync, spawn } = require("child_process");
+const { spawnSync } = require("child_process");
 
 const ROOT = process.env.ZC_ROOT || path.resolve(__dirname, "..");
 const zclog = require(path.join(ROOT, "lib", "zc-log.js"));
 // Load .env before any module-level env read below: without this the
 // standalone healthcheck ignored .env entirely (only shell-exported vars
 // counted) and servers.json ${VAR} ports would expand empty.
-const { expandEnv, ensureEnv } = require(path.join(ROOT, "lib", "expand-env.js"));
+const { ensureEnv } = require(path.join(ROOT, "lib", "expand-env.js"));
 ensureEnv();
 
 const FIX = process.argv.includes("--fix");
@@ -52,7 +51,6 @@ const MAIN_URL = process.env.MAIN_SERVER_MCP || "http://localhost:5050/mcp";
 const CERT = process.env.UNIVERSAL_ADAPTER_CA ||
   path.join(os.homedir(), ".zombiecoder", "certs", "adapter-cert.pem");
 const SERVERS_JSON = path.join(ROOT, "external mcp", "servers.json");
-const READY_WAIT_MS = Number(process.env.HC_READY_WAIT_MS || 15000);
 
 const results = []; // { name, ok, detail, fixed? }
 
@@ -60,19 +58,15 @@ function record(name, ok, detail, fixed) {
   results.push({ name, ok, detail, fixed });
 }
 
-/** TCP probe: resolves true if something accepts on host:port. */
-function tcpUp(host, port, timeoutMs = 1500) {
-  return new Promise((resolve) => {
-    const sock = net.connect({ host, port });
-    const done = (v) => {
-      sock.removeAllListeners();
-      sock.destroy();
-      resolve(v);
-    };
-    sock.once("connect", () => done(true));
-    sock.once("error", () => done(false));
-    sock.setTimeout(timeoutMs, () => done(false));
-  });
+/** GET a JSON endpoint; returns null on any failure. */
+async function httpGetJson(url, timeout = 5000) {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(timeout) });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (_) {
+    return null;
+  }
 }
 
 /** POST a JSON-RPC body; returns parsed JSON or null. */
@@ -150,53 +144,22 @@ function loadEntries() {
     const raw = JSON.parse(fs.readFileSync(SERVERS_JSON, "utf8"));
     return (Array.isArray(raw.servers) ? raw.servers : [])
       .filter((s) => s && s.local === true && s.enabled !== false && s.script)
-      .map((s) => {
-        let port = 0;
-        let mcpPath = "/";
-        try {
-          const u = new URL(expandEnv(s.url));
-          port = Number(u.port) || 0;
-          const p = u.pathname.replace(/\/+$/, "");
-          if (p) mcpPath = p;
-        } catch (_) { /* bad url → port 0 → reported below */ }
-        return {
-          name: String(s.name),
-          script: path.resolve(ROOT, s.script),
-          port,
-          mcpPath,
-          portEnv:
-            ({ ocr: "OCR_MCP_PORT", "screen-recorder": "SCREEN_MCP_PORT", tts: "TTS_MCP_PORT", "universal-adapter": "ADAPTER_HTTP_PORT" })[s.name] ||
-            String(s.name).toUpperCase().replace(/-/g, "_") + "_MCP_PORT",
-        };
-      });
+      .map((s) => ({
+        name: String(s.name),
+        transport: String(s.transport || (s.url ? "http" : "stdio")).toLowerCase(),
+        script: path.resolve(ROOT, s.script),
+      }));
   } catch (e) {
     record("servers.json", false, "unreadable: " + e.message);
     return [];
   }
 }
 
-/** Detached respawn of a dead local server (never duplicates a live one). */
-function spawnDetached(entry) {
-  if (!fs.existsSync(entry.script)) return false;
-  fs.mkdirSync(path.join(ROOT, "logs"), { recursive: true });
-  const logPath = path.join(ROOT, "logs", "local-mcp-" + entry.name + ".log");
-  const out = fs.openSync(logPath, "a");
-  const child = spawn(process.execPath, [entry.script], {
-    cwd: ROOT,
-    env: { ...process.env, [entry.portEnv]: String(entry.port) },
-    detached: true,
-    stdio: ["ignore", out, out],
-  });
-  child.unref();
-  return true;
-}
-
-async function waitForPort(port, deadlineMs) {
-  while (Date.now() < deadlineMs) {
-    if (await tcpUp("localhost", port, 400)) return true;
-    await new Promise((r) => setTimeout(r, 300));
-  }
-  return false;
+/** Read the gateway's live external-MCP report (stdio and HTTP). */
+async function externalMcpStatus() {
+  const base = MAIN_URL.replace(/\/mcp\/?$/, "");
+  const data = await httpGetJson(base + "/api/mcp-external");
+  return (data && Array.isArray(data.servers)) ? data.servers : null;
 }
 
 async function main() {
@@ -241,50 +204,49 @@ async function main() {
     record("main server", mainOk, MAIN_URL + (mainOk ? " → up" : " → UNREACHABLE"));
   }
 
-  // ── 3. every local server from servers.json ────────────────────────────
+  // ── 3. every local server from servers.json (stdio children) ───────────
   const entries = loadEntries();
+  const external = await externalMcpStatus();
+  if (!external) {
+    record("external mcp report", false, "GET /api/mcp-external failed");
+  }
+  const byName = new Map((external || []).map((s) => [s.name, s]));
   const dead = [];
   for (const e of entries) {
-    if (!e.port) {
-      record(e.name, false, "bad url (no port) in servers.json");
+    const row = byName.get(e.name);
+    if (!row) {
+      dead.push(e);
+      record(e.name, false, "not reported by /api/mcp-external");
       continue;
     }
-    const up = await tcpUp("localhost", e.port, 800);
-    if (up) {
-      const reply = await rpc(`http://localhost:${e.port}${e.mcpPath}`, {
-        jsonrpc: "2.0", id: 1, method: "tools/list", params: {},
-      });
-      const n = toolsCount(reply);
-      record(e.name, n > 0, `localhost:${e.port}${e.mcpPath} → ${n} tools`);
-    } else {
-      dead.push(e);
-      record(e.name, false, `localhost:${e.port} not listening`);
-    }
+    const ok = row.status === "connected" && Number(row.tools) > 0;
+    record(
+      e.name,
+      ok,
+      `${row.transport || e.transport} → ${row.tools || 0} tools` +
+        (ok ? "" : " (" + (row.error || row.status) + ")"),
+    );
+    if (!ok) dead.push(e);
   }
 
-  if (FIX && dead.length) {
+  if (FIX && dead.length && unitState && unitState.out === "active") {
+    console.log(`  repairing: systemctl --user restart ${UNIT} (respawns stdio children) …`);
+    systemctl(["restart", UNIT]);
+    await new Promise((r) => setTimeout(r, 6000));
+    const after = await externalMcpStatus();
+    const afterByName = new Map((after || []).map((s) => [s.name, s]));
     for (const e of dead) {
-      console.log(`  repairing: spawning ${e.name} (detached) …`);
-      if (!spawnDetached(e)) {
-        record(e.name, false, "script missing: " + e.script, true);
-        continue;
-      }
-      const ok = await waitForPort(e.port, Date.now() + READY_WAIT_MS);
-      // tools/list may take a moment longer than the TCP accept
-      let n = 0;
-      if (ok) {
-        await new Promise((r) => setTimeout(r, 500));
-        n = toolsCount(await rpc(`http://localhost:${e.port}${e.mcpPath}`, {
-          jsonrpc: "2.0", id: 1, method: "tools/list", params: {},
-        }));
-      }
-      record(e.name, ok && n > 0, `respawned → ${ok ? n + " tools" : "never bound"}`, true);
+      const row = afterByName.get(e.name);
+      const ok = row && row.status === "connected" && Number(row.tools) > 0;
+      record(e.name + " (after restart)", !!ok, ok ? `${row.tools} tools` : "still missing", true);
     }
   }
 
-  // ── 4. adapter over HTTPS with verification ON ─────────────────────────
-  const httpsUrl = process.env.ADAPTER_HTTPS_URL || "https://localhost:5443/mcp";
-  if (!fs.existsSync(CERT)) {
+  // ── 4. optional standalone adapter over HTTPS ──────────────────────────
+  const httpsUrl = process.env.ADAPTER_HTTPS_URL || "";
+  if (!httpsUrl) {
+    record("adapter https", true, "not configured (gateway uses stdio) — skipped");
+  } else if (!fs.existsSync(CERT)) {
     record("adapter https", true, "cert not found (" + CERT + ") — skipped; generate with: node universal-adapter/tls.js");
   } else {
     const u = new URL(httpsUrl);

@@ -28,7 +28,6 @@ const TMP = path.join(TMP_ROOT, "broker-free-" + process.pid);
 const RUNTIME_PATHS = [
   "api.js",
   "start.js",
-  "start-local-mcp.js",
   "external-mcp.js",
   "lib",
   "scripts",
@@ -252,6 +251,7 @@ async function main() {
       GRPC: "0",
       HTTPS_CERT_PATH: "",
       HTTPS_KEY_PATH: "",
+      APP_ROOT: TMP,
       DATA_DIR: path.join(TMP, "data"),
       LOG_DIR: path.join(TMP, "logs"),
       CACHE_DIR: path.join(TMP, "cache"),

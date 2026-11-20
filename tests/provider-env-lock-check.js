@@ -195,7 +195,7 @@ expect("DB cache keeps env rows first and appends cached rows", () => {
 
 // ── 2. Source wiring ────────────────────────────────────────
 const apiSource = fs.readFileSync(path.join(ROOT, "api.js"), "utf8");
-const adminSource = fs.readFileSync(path.join(ROOT, "admin-api.js"), "utf8");
+const adminSource = fs.readFileSync(path.join(ROOT, "lib", "admin-routes.js"), "utf8");
 
 expect("api.js wires the deterministic merge module", () => {
   assert.ok(
@@ -216,7 +216,7 @@ expect("api.js wires the deterministic merge module", () => {
   );
 });
 
-expect("admin-api.js refuses to reopen an env-disabled provider", () => {
+expect("lib/admin-routes.js refuses to reopen an env-disabled provider", () => {
   assert.ok(
     adminSource.includes("provider.envDisabled === true"),
     "envDisabled guard missing",
@@ -225,8 +225,8 @@ expect("admin-api.js refuses to reopen an env-disabled provider", () => {
 });
 
 // ── 3. Real parser check ────────────────────────────────────
-expect("api.js, admin-api.js and every module parse", () => {
-  const files = ["api.js", "admin-api.js"];
+expect("api.js, lib/admin-routes.js and every module parse", () => {
+  const files = ["api.js", path.join("lib", "admin-routes.js")];
   for (const name of fs.readdirSync(path.join(ROOT, "modules"))) {
     if (name.endsWith(".js")) files.push(path.join("modules", name));
   }
@@ -270,7 +270,7 @@ expect("dist is a fresh build of the current source", () => {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
   const builtAt = Date.parse(manifest.builtAt);
   assert.ok(Number.isFinite(builtAt), "manifest.builtAt invalid");
-  for (const file of ["api.js", "admin-api.js", "modules/provider-models.js"]) {
+  for (const file of ["api.js", path.join("lib", "admin-routes.js"), "modules/provider-models.js"]) {
     const sourceMtime = fs.statSync(path.join(ROOT, file)).mtimeMs;
     assert.ok(
       builtAt + 1000 >= sourceMtime,

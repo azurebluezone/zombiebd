@@ -1,14 +1,12 @@
 {
   "name": "mission-barisal-external-mcp",
   "version": "1.0.0",
-  "description": "Zero-dependency local MCP tool servers for Mission Barisal: OCR, screen recorder, TTS, Facebook Ads, Public APIs and the combined gateway.",
-  "main": "combined.js",
+  "description": "Zero-dependency local MCP tool servers for Mission Barisal: OCR, screen recorder, TTS, Facebook Ads and Public APIs. Local servers speak stdio; HTTP mode stays available for standalone use.",
   "private": true,
   "scripts": {
     "ocr": "node ocr-mcp.js",
     "screen": "node screen-recorder-mcp.js",
     "tts": "node tts-mcp.js",
-    "combined": "node combined.js",
     "ads": "node facebook-ads-mcp.js",
     "public": "node public-api-mcp.js"
   },

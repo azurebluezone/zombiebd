@@ -16,6 +16,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const { serveStdio, wantsStdio } = require("./stdio-transport.js");
 
 // Dedicated env var ONLY — the generic process.env.PORT is deliberately NOT
 // used: this server is spawned as a CHILD of start.js (which sets PORT=3000
@@ -314,6 +315,13 @@ function clr(){localStorage.removeItem('fb_mcp_token');document.getElementById('
 (function(){const s=localStorage.getItem('fb_mcp_token');if(s){const d=JSON.parse(s);if(new Date(d.expiresAt)>new Date()){document.getElementById('svd').classList.add('show');document.getElementById('exp').textContent='Expires: '+new Date(d.expiresAt).toLocaleString()}else localStorage.removeItem('fb_mcp_token')}})();
 </script>
 </body></html>`;
+}
+
+// ─── stdio Transport (gateway child) ───────────────────────────────────────
+// The same JSON-RPC handler serves both transports; stdio needs no port.
+if (wantsStdio()) {
+  serveStdio(handleJSONRPC, "FACEBOOK-ADS-MCP");
+  return;
 }
 
 // ─── HTTP Server ───────────────────────────────────────────────────────────

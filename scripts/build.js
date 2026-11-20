@@ -122,8 +122,6 @@ const COPY_DIRS = [
 // every run, so a stale dist can never become a second entry point.
 const COPY_FILES = [
   "api.js",
-  "admin-api.js",
-  "start-local-mcp.js",
   "cdp-pipe.js",
   "domain-config.js",
   "external-mcp.js",

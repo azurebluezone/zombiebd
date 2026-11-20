@@ -39,6 +39,10 @@ function configPath() {
 const DIST_DIR = path.resolve(__dirname, process.env.ZC_DIST_DIR || "dist");
 const DIST_ENTRY = path.join(DIST_DIR, "api.js");
 
+// The launcher owns the runtime root. APP_ROOT keeps data/, logs/, the DB and
+// the UDS socket under the checkout even when start.js is invoked from /tmp.
+process.env.APP_ROOT = process.env.APP_ROOT || __dirname;
+
 // A copied dist/start.js is an obsolete second entry: it cannot rebuild the
 // tree it is currently executing from. Refuse instead of running stale code.
 if (path.basename(__dirname) === "dist") {
@@ -1060,18 +1064,9 @@ async function startAll() {
   // 7. Boot the server
   console.log("[START ALL] Booting Mission Barisal v" + VERSION + " ...");
   
-  // 8. Start local MCP servers (OCR, Screen Recorder, TTS)
-  try {
-    const { startLocalServers } = require(path.join(DIST_DIR, "start-local-mcp.js"));
-    const mcpResults = await startLocalServers();
-    const readyCount = mcpResults.filter(r => r.status === "ready").length;
-    if (mcpResults.length > 0) {
-      console.log("[START ALL] Local MCP servers: " + readyCount + "/" + mcpResults.length + " ready");
-    }
-  } catch (e) {
-    console.warn("[START ALL] Local MCP startup warning:", e.message);
-  }
-  
+  // 8. Local MCP servers are spawned as stdio children by api.js through
+  // external-mcp.js. No port launcher runs here.
+
   // 8. Start server and run health checks
   const port = Number(process.env.PORT);
   const host = "localhost";
