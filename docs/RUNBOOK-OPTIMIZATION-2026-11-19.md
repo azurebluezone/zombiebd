@@ -915,9 +915,11 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 | 8 | **P1-09 + P1-08** | `package.json` + installer-এ apt/dnf/pacman/brew | `PACKAGE_INSTALL_OK` | ✅ DONE (`gc-mwotctcf`) |
 | 9 | **P2-02 + P2-03** | log/backup retention + 30-case eval harness | `QUALITY_EVAL_OK` | ✅ DONE (`gc-mwotobw2`) |
 | 10 | **N3** | PLAN/status snapshot drift ঠিক করা | `DOCS_CURRENT_OK` | ✅ DONE (`gc-mwoupmi0`) |
-| 11 | **N6** | skill MCP stdio integration (reference project read-only) | `SKILL_MCP_OK` | TODO |
+| 11 | **N6** | local skill SQLite import + Markdown parser + MCP stdio | `SKILL_MCP_OK` | ✅ DONE (`gc-mwov6hty`) |
+| 12 | **SURFACE_POLICY** | surface policy table (web-chat/mission/editor) | `SURFACE_POLICY_OK` | TODO |
+| 13 | **CHAT_UPLOAD** | chat document/photo/audio upload | `CHAT_UPLOAD_OK` | TODO |
 
-**নীতি:** ১–২ একই দিনে (P0 + live config safety), ৩–৪ test truth, ৫–৬ observability, ৭–৮ release portability, ৯ quality, ১০–১১ docs/feature. প্রতিটি আইটেম আলাদা contract + gate; এক batch-এ দুইটার বেশি নয়।
+**নীতি:** ১–২ একই দিনে (P0 + live config safety), ৩–৪ test truth, ৫–৬ observability, ৭–৮ release portability, ৯ quality, ১০–১৩ docs/feature. প্রতিটি আইটেম আলাদা contract + gate; এক batch-এ দুইটার বেশি নয়।
 
 ### 10.4 নতুন সমস্যা — N1–N6 (প্রমাণসহ)
 
@@ -963,10 +965,11 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 
 #### N6 — skill MCP gap (removal-এর পর নতুন surface নেই)
 
-- **প্রমাণ:** `external mcp/skill-mcp-tool.js` `2ba48b4`-এ delete; repo-র `skills/`-এ শুধু `404__Not_Found.md` আর `_instructions.md`; কোনো stdio skill server repo-তে নেই। User-provided reference `/home/sahon/Documents/GGUF/zombiecoder-agent-skills/` এই pass-এ read-only এবং verify করা হয়নি।
+- **প্রমাণ:** `external mcp/skill-mcp-tool.js` `2ba48b4`-এ delete; repo-র `skills/`-এ শুধু `404__Not_Found.md` আর `_instructions.md`; কোনো stdio skill server repo-তে নেই। User-provided reference `/home/sahon/Documents/GGUF/zombiecoder-agent-skills/` read-only verify করা হয়েছে; **user decision (2026-11-20): experiment project main project-এর সাথে সংযুক্ত নয় — শুধু তার SQLite data import হবে।**
 - **Impact:** skills loading-এর কোনো MCP path নেই; future skill feature অর্ধেক।
-- **Fix:** reference project-এর stdio entry (`server/skill_mcp.py` হিসাবে user উল্লেখ করেছেন) verify করে `servers.json`-এ `transport:"stdio"` entry; না হলে skills আলাদা module হিসেবে রাখা।
-- **Gate:** `SKILL_MCP_OK` — initialize/tools/list/tools/call কাজ করে, reference project-এ কোনো write নেই।
+- **Fix:** `scripts/import-skills-db.js` (`VACUUM INTO`) দিয়ে একবার `skills.db` data import → `skills/skills.db`; `modules/skill-db.js` read-only store/router; `modules/skill-parser.js` Markdown body parser; `external mcp/skill-mcp.js` local Node stdio server; `scripts/skill.js` CLI; `servers.example.json`-এ `skills` entry। কোনো runtime path experiment project-এ যায় না।
+- **Gate:** `SKILL_MCP_OK` — local DB 256 active / 75,358 terms; CLI যেকোনো CWD থেকে route/get; MCP initialize/tools/list/tools/call; runtime files-এ experiment path নেই; DB hash read-only অপরিবর্তিত।
+- **Done (2026-11-20, `gc-mwov6hty`):** `skills/skills.db` imported (8,928,972 bytes, `active=256`, `terms=75,358`) via `node scripts/import-skills-db.js --source /home/sahon/Documents/GGUF/zombiecoder-agent-skills/skills.db` — one-time copy, source path script argument, runtime-এ কোনো reference নয়। `modules/skill-db.js` (`node:sqlite`, `readOnly` + `query_only`) term-frequency router; `modules/skill-parser.js` Markdown section/card parser (secret redaction সহ); `external mcp/skill-mcp.js` Node stdio server (`search_skills`, `get_skill`); `scripts/skill.js` CLI (`stats/list/get/route/doctor`) — `/tmp` থেকে চালিয়েও `cdp-operations`/`sqlite-operations` resolve করে। `servers.example.json` + local `servers.json`-এ `skills` stdio entry; `.gitignore`-এ `!skills/skills.db`. Proof: `node tests/skill-mcp-check.js` → 11/0 `SKILL_MCP_OK local=1 active=256 tools=2 search=cdp-operations card=cdp-operations readonly=1`, exit 0; ৭টি runtime file-এ experiment path নেই; DB sha আগে/পরে একই।
 
 #### P2-02 + P2-03 — stale artifacts + no eval harness
 

@@ -36,6 +36,7 @@ external mcp/servers.json
 .DS_Store
 *.swp
 !registry.db
+!skills/skills.db
 
 # ── অপ্রয়োজনীয় ফাইল আশ্রয় (কখনও ট্র্যাক/পুশ হবে না) ──
 tests/Unnecessary/
