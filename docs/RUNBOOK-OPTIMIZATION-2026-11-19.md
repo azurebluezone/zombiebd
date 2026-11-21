@@ -1009,6 +1009,11 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 - **Gate:** `QUALITY_EVAL_OK` — 30/30 cases, retention temp-fixture prune + live `/health` 200।
 - **Done (2026-11-20, `gc-mwotobw2`):** `modules/retention.js` defaults `logDays=14`, `logMaxBytes=50MB`, `backupDays=7`, `backupMaxFiles=100`; `start.js` step 1c boot hook; real dry-run found 27 of 127 backups (`41,224,878 → 30,473,764` bytes) and 0 logs (all within 14 days) without deleting anything. `tests/quality-eval-check.js` → 30/0 `QUALITY_EVAL_OK` (intent 7, chat 5, budgets 5, identity 3, version 2, R2T 2, retention 4, audio 1, live health 1)। `scripts/audio-brief.py` — edge-tts 7.3.1, `bn-BD-NabanitaNeural`, 11 sections / 4,086 chars, `--check` → `AUDIO_BRIEF_CHECK_OK`; real output `/home/sahon/Music/mp3/zbd/today/fday/zombiecoder-brief-bn.mp3` = 305.59s, 1,833,552 bytes, ffprobe `mp3` (generator versioned in repo, MP3 outside repo)।
 
+#### P1-07 + P1-09/P1-08 — re-verified Done evidence (2026-11-22)
+
+- **Done (2026-11-22, `gc-mwoslpev`):** `node tests/r2t-trace-check.js` → `RESULT: 15 passed, 0 failed`, `R2T_TRACE_OK`, exit 0। Isolated module-এ HTTP 200, `x-zc-r2t-engine=external-module`, real module-এ fallback header অনুপস্থিত, body-তে `r2tEngine=external-module`; `api.js` `R2T_BUILTIN_FALLBACK` log করে এবং `x-zc-r2t-engine`/`x-zc-r2t-fallback` header দেয়।
+- **Done (2026-11-22, `gc-mwotctcf`):** `node tests/package-install-check.js` → `RESULT: 37 passed, 0 failed`, `PACKAGE_INSTALL_OK`, exit 0। apt/dnf/pacman/brew চার manager-এর `--plan` output ও `CADDY_INSTALL` command যাচাই; unknown manager এবং `--pm` without `--plan` reject।
+
 ### 10.5 এই pass-এ যা করব না
 
 - P0-05/P0-09-এর solved কাজ আবার খোলা নয়; শুধু regression gate চালু থাকবে।

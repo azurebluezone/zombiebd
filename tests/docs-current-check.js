@@ -92,7 +92,13 @@ function runbookRows(text) {
 (async () => {
   const runbook = read(RUNBOOK);
   const plan = read(PLAN);
-  const syllabus = read(".zombiecoder/syllabus.md");
+  // Server-owned state lives in .zombie/ (see SERVER_INDEPENDENCE); the plugin
+  // tree keeps a read-only adapter. Merge both ledgers so an older PASS record
+  // is never invisible just because the plugin syllabus was reset.
+  const syllabus = [".zombie/syllabus.md", ".zombiecoder/syllabus.md"]
+    .filter((rel) => fs.existsSync(path.join(ROOT, rel)))
+    .map(read)
+    .join("\n");
   const pkg = JSON.parse(read("package.json"));
   const identity = JSON.parse(read("identity.json"));
 
