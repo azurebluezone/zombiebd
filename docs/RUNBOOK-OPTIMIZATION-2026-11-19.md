@@ -1146,6 +1146,38 @@ Browser CDP screenshot, VS Code/opencode client, ৭ vhost, ৫ red suite, relea
 **পরের কাজ:** Phase B `CLIENT_E2E_OK` — Chromium CDP screenshot + upload/chat, VS Code/opencode MCP client-এ ছোট real task; তারপর C/D।
 <!-- /REAL_USAGE_DIR_2026_11_21 -->
 
+<!-- NEXT_SESSION_HANDOVER_2026_11_21 -->
+### 12.7 Next-session handover — 2026-11-21 (stream root-cause debug)
+
+**State:** contract `gc-mwpwlgyv` is CLOSED as FAIL (2026-11-21; check `node tests/stream-rootcause-check.js` missing → exit 1 `MODULE_NOT_FOUND`). No PASS claim; goal unverified, not disproven.
+
+**What is proven (read-only):**
+- OpenCode DB latest matching error: `2026-11-21T04:13:08Z`, session `ses_e0a1adbf1ffeAcULAu4nVc4aqU`, provider `opencode`, model `deepseek-v4.1-flash-free`, status `200`, raw body 537B with `"deltdata: {` (truncated `delta` + concatenated `data:`), invalid JSON.
+- DB has 222 `provider.invalid-output` messages; all `opencode/*` (`deepseek-v4.1-flash-free`, `big-pickle`), none `zombie-local/*`.
+- Gateway `/v1/models`: 10 models; failing model absent; `code-guru` present.
+- Gateway SSE: 23 events, `invalid=0`, `toolFrames=1`, `badArgs=0`; `code-guru` non-stream `200 STREAM_GATEWAY_OK`.
+- VS Code HAR `/home/sahon/Downloads/vsc/vscode-app.har`: 769,709 bytes, 22 entries, no gateway/OpenCode/`chat/completions` traffic. VS Code's separate errors: Copilot BYOK `400 The requested model is not supported`; MCP `zombie-gateway` at `https://127.0.0.1:5011/mcp` failed.
+
+**Design correction (agent vs model):**
+- `agent/code-guru.js:7` `id: "code-guru"`; `:15` real model `nvidia/nemotron-3.5-bolt-e4b`.
+- `api.js:14457` `/v1/models` uses `id: a.id`; `api.js:17081` response `model: maskedModel`; `api.js:16844` stream `model: agent.id`.
+- So masking makes the public model name the agent ID; the real model is hidden. Do not put agent IDs in the provider `models` map; keep real model IDs there and agent routing in a separate `agents` map/registry. `agent → model` is one-way; multiple agents can share a model.
+
+**Next session — one file, one behavior:**
+1. `gc-mwpwlgyv` is already CLOSED as FAIL — do not reopen it; open a fresh contract instead.
+2. Open a new contract: expected `STREAM_ROOT_CAUSE_OK`, check `node tests/stream-rootcause-check.js`.
+3. Write `tests/stream-rootcause-check.js`:
+   - Read `~/.local/share/opencode/opencode.db` read-only; find the latest `session_message` with `provider.invalid-output` and a non-empty `error.response.body`.
+   - Assert `error.status === 200`, body is not valid JSON, and the body has a concatenated `data:` segment whose prefix is invalid JSON; assert provider `opencode`.
+   - Fetch `http://127.0.0.1:5050/v1/models`; assert the failing model is absent and `code-guru` is present.
+   - POST `/v1/chat/completions` with `model: "code-guru"`, `stream: true`, `max_tokens: 64`, `temperature: 0`, message `Reply with exactly: STREAM_GATEWAY_OK`; assert every `data:` payload is valid JSON and the marker is present.
+   - Write `docs/evidence/stream-debug-2026-11-21/root-cause.json`; print `STREAM_ROOT_CAUSE_OK` only when all assertions pass.
+4. Run the check, update PLAN/runbook, close the contract, commit/push.
+
+**Do not claim:** the gateway is the cause; the contract is PASS; the VS Code HAR contains the failing stream. All three are disproven or absent.
+
+<!-- /NEXT_SESSION_HANDOVER_2026_11_21 -->
+
 <!-- /ROADMAP_2026_11_21 -->
 
 ## Appendix A — Evidence table
