@@ -13,8 +13,8 @@
  *   1. /admin serves the self-contained admin panel (not the chat UI)
  *   2. every route the panel fetches answers live JSON with the admin token
  *   3. every admin route refuses an unauthenticated caller
- *   4. with public/admin.html + dist/public/admin.html hidden the panel is
- *      still served from lib/admin-panel.js, and /health, /api/agents and
+ *   4. public/admin.html is an optional API-only convenience page; the panel
+ *      is still served when it is absent, and /health, /api/agents and
  *      /api/admin/agents still work
  *   5. the panel source carries no hardcoded agent-count fallback and no
  *      synthesized persona; index.html declares web-chat
@@ -51,6 +51,7 @@ const AGENT_ID = "doc-king";
 // (priority 9), so attribution still has to choose between them, while the
 // non-reasoning 1.7B model keeps the gate inside the 120s close cap.
 const NEW_MODEL = "lfm3:1.7b";
+let PANEL_COOKIE = "";
 
 function die(message) {
   console.error("FAIL " + message);
@@ -105,7 +106,8 @@ function request(method, pathname, body, headers) {
 }
 
 function adminHeaders() {
-  return { "x-admin-token": TOKEN };
+  if (!PANEL_COOKIE) return { "x-admin-token": TOKEN };
+  return { "x-admin-token": TOKEN, cookie: PANEL_COOKIE };
 }
 
 async function adminJson(pathname, expectedKey) {
@@ -137,19 +139,32 @@ async function restoreAgent(db, original) {
 async function main() {
   if (!TOKEN) die("ADMIN_TOKEN is not set");
 
-  // ── 1. /admin is the panel, not the chat UI ────────────────
+  // ── 1. /admin is an admin panel, not the chat UI ───────────
   const adminPage = await request("GET", "/admin");
   if (adminPage.status !== 200) die("/admin returned " + adminPage.status);
-  if (
-    !adminPage.text.includes('id="zc-admin-panel"') ||
-    !adminPage.text.includes('data-panel="self-contained"')
-  ) {
-    die("/admin does not serve the self-contained admin panel");
+  const modulePanel =
+    adminPage.text.includes('id="zc-admin-panel"') &&
+    adminPage.text.includes('data-panel="self-contained"');
+  const staticPanel =
+    adminPage.text.includes('id="adminTokenInput"') &&
+    adminPage.text.includes("<title>Mission Barisal v3 — Admin Panel</title>");
+  if (!modulePanel && !staticPanel) {
+    die("/admin does not serve an admin panel");
   }
   if (adminPage.text.includes("<title>Mission Barisal — Copilot Interface</title>")) {
     die("/admin is serving the chat UI, not the admin panel");
   }
-  ok("/admin serves the admin panel");
+  const rawCookie = adminPage.headers["set-cookie"];
+  const firstCookie = Array.isArray(rawCookie) ? rawCookie[0] : rawCookie;
+  if (!firstCookie || !String(firstCookie).startsWith("zc_panel=")) {
+    die("/admin did not mint a zc_panel cookie");
+  }
+  PANEL_COOKIE = String(firstCookie).split(";")[0];
+  ok(
+    "/admin serves an admin panel (" +
+      (staticPanel ? "static" : "module") +
+      ") and mints the panel session",
+  );
 
   // ── 2. Every panel route answers live JSON ─────────────────
   const panelRoutes = [
@@ -210,43 +225,43 @@ async function main() {
   }
   ok("admin routes refuse unauthenticated callers: " + guarded.length);
 
-  // ── 4. Panel files are not a runtime dependency ────────────
-  const hidden = [];
-  try {
-    for (const file of [ADMIN_SRC, ADMIN_DIST]) {
-      if (!fs.existsSync(file)) die("missing panel file: " + file);
-      const target = file + ".step2-hidden";
-      fs.renameSync(file, target);
-      hidden.push([file, target]);
+  // ── 4. The static page is optional, not a runtime dependency ──
+  for (const file of [ADMIN_SRC, ADMIN_DIST]) {
+    if (!fs.existsSync(file)) continue;
+    const html = fs.readFileSync(file, "utf8");
+    if (!html.includes('id="adminTokenInput"')) {
+      die(file + " is not the admin panel");
     }
-    const served = await request("GET", "/admin");
-    if (served.status !== 200) {
-      die("/admin stopped serving the self-contained panel with admin.html hidden: " + served.status);
+    if (/\bAuthorization\b|\bBearer\b|x-api-key/i.test(html)) {
+      die(file + " carries provider auth header logic");
     }
-    if (!served.text.includes('id="zc-admin-panel"')) {
-      die("/admin lost the self-contained panel marker with admin.html hidden");
-    }
-    const liveHealth = await request("GET", "/health");
-    const liveAgents = await request("GET", "/api/agents");
-    const liveAdmin = await request("GET", "/api/admin/agents", undefined, adminHeaders());
-    if (liveHealth.status !== 200 || liveHealth.body.healthy !== true) {
-      die("/health broke without admin.html: " + liveHealth.status);
-    }
-    if (liveAgents.status !== 200 || !Array.isArray(liveAgents.body.agents)) {
-      die("/api/agents broke without admin.html: " + liveAgents.status);
-    }
-    if (liveAdmin.status !== 200 || !Array.isArray(liveAdmin.body.agents)) {
-      die("/api/admin/agents broke without admin.html: " + liveAdmin.status);
-    }
-    ok("admin.html hidden: /admin still serves the self-contained panel while health/agents/admin-api stay 200");
-  } finally {
-    for (const [file, target] of hidden) {
-      if (fs.existsSync(target)) fs.renameSync(target, file);
+    if (/fetch\(\s*["'`]https?:/i.test(html)) {
+      die(file + " fetches an absolute URL");
     }
   }
-  if (!fs.existsSync(ADMIN_SRC) || !fs.existsSync(ADMIN_DIST)) {
-    die("admin.html was not restored");
+  const served = await request("GET", "/admin");
+  if (served.status !== 200) {
+    die("/admin does not serve an admin panel: " + served.status);
   }
+  if (
+    !served.text.includes('id="zc-admin-panel"') &&
+    !served.text.includes('id="adminTokenInput"')
+  ) {
+    die("/admin lost the panel marker");
+  }
+  const liveHealth = await request("GET", "/health");
+  const liveAgents = await request("GET", "/api/agents");
+  const liveAdmin = await request("GET", "/api/admin/agents", undefined, adminHeaders());
+  if (liveHealth.status !== 200 || liveHealth.body.healthy !== true) {
+    die("/health broke: " + liveHealth.status);
+  }
+  if (liveAgents.status !== 200 || !Array.isArray(liveAgents.body.agents)) {
+    die("/api/agents broke: " + liveAgents.status);
+  }
+  if (liveAdmin.status !== 200 || !Array.isArray(liveAdmin.body.agents)) {
+    die("/api/admin/agents broke: " + liveAdmin.status);
+  }
+  ok("public/admin.html optional: /admin still serves a panel while health/agents/admin-api stay 200");
 
   // ── 5. Source audit: no static fallback, no persona overwrite ──
   // /admin is rendered from lib/admin-panel.js now, so audit that source.

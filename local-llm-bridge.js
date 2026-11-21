@@ -1171,7 +1171,7 @@ async function main() {
   if (CFG.backend === "llama") spawnLlamaServer();
 
   const tcpServer = http.createServer(handler);
-  tcpServer.listen(CFG.port, "localhost", () => {
+  tcpServer.listen(CFG.port, process.env.BRIDGE_HOST || "127.0.0.1", () => {
     log("INFO", "TCP_SERVER_LISTENING", { host: "localhost", port: CFG.port });
   });
 

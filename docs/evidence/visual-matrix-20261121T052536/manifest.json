@@ -1,0 +1,142 @@
+{
+  "run_id": "20261121T052536",
+  "generated_at": "2026-11-21T05:26:24.442Z",
+  "gateway": "http://127.0.0.1:5050",
+  "pass_standard": "screen marker + gateway 200 with matching provider attribution + replay",
+  "providers": [
+    {
+      "provider": "groq",
+      "model": "openai/gpt-oss-20b",
+      "status": 200,
+      "attribution": "groq",
+      "elapsed_ms": 724,
+      "attempts": 1,
+      "marker": "HALAL-GROQ-20261121T052536",
+      "answer": "HALAL-GROQ-20261121T052536",
+      "verdict": "PASS",
+      "reason": ""
+    },
+    {
+      "provider": "gemini",
+      "model": "gemini-3.5-flash",
+      "status": 200,
+      "attribution": "gemini",
+      "elapsed_ms": 18286,
+      "attempts": 1,
+      "marker": "HALAL-GEMINI-20261121T052536",
+      "answer": "HALAL-GEMINI-20261121T052536",
+      "verdict": "PASS",
+      "reason": ""
+    },
+    {
+      "provider": "custom_3",
+      "model": "Qwen/Qwen3.8-Flash",
+      "status": 200,
+      "attribution": "custom_3",
+      "elapsed_ms": 3203,
+      "attempts": 1,
+      "marker": "HALAL-CUSTOM_3-20261121T052536",
+      "answer": "HALAL-CUSTOM_3-20261121T052536",
+      "verdict": "PASS",
+      "reason": ""
+    },
+    {
+      "provider": "custom_4",
+      "model": "hy4-flash:free",
+      "status": 200,
+      "attribution": "custom_4",
+      "elapsed_ms": 2395,
+      "attempts": 1,
+      "marker": "HALAL-CUSTOM_4-20261121T052536",
+      "answer": "HALAL-CUSTOM_4-20261121T052536",
+      "verdict": "PASS",
+      "reason": ""
+    },
+    {
+      "provider": "bridge",
+      "model": "qwen2.5:1.5b",
+      "status": 200,
+      "attribution": "bridge",
+      "elapsed_ms": 2704,
+      "attempts": 1,
+      "marker": "HALAL-BRIDGE-20261121T052536",
+      "answer": "HALAL-BRIDGE-20261121T052536",
+      "verdict": "PASS",
+      "reason": ""
+    },
+    {
+      "provider": "ollama",
+      "model": "lfm3:1.7b",
+      "status": 0,
+      "attribution": null,
+      "elapsed_ms": 8011,
+      "attempts": 1,
+      "marker": "HALAL-OLLAMA-20261121T052536",
+      "answer": "",
+      "verdict": "FAIL",
+      "reason": "HTTP 0: timeout after 8000ms"
+    },
+    {
+      "provider": "custom_1",
+      "model": "google/gemma-4-31b-it",
+      "status": 0,
+      "attribution": null,
+      "elapsed_ms": 8005,
+      "attempts": 1,
+      "marker": "HALAL-CUSTOM_1-20261121T052536",
+      "answer": "",
+      "verdict": "FAIL",
+      "reason": "HTTP 0: timeout after 8000ms"
+    },
+    {
+      "provider": "custom_2",
+      "model": "Qwen2.5-Coder-7B-Instruct-Q4_K_M",
+      "status": 502,
+      "attribution": null,
+      "elapsed_ms": 245,
+      "attempts": 1,
+      "marker": "HALAL-CUSTOM_2-20261121T052536",
+      "answer": "",
+      "verdict": "FAIL",
+      "reason": "HTTP 502: HTTP 530"
+    },
+    {
+      "provider": "ollama_cloud",
+      "model": "gpt-oss:120b",
+      "status": 502,
+      "attribution": null,
+      "elapsed_ms": 579,
+      "attempts": 1,
+      "marker": "HALAL-OLLAMA_CLOUD-20261121T052536",
+      "answer": "",
+      "verdict": "FAIL",
+      "reason": "HTTP 502: Add usage credits or subscribe and save up to 66%: https://ollama.com/plans (ref"
+    }
+  ],
+  "agent": {
+    "agent": "bug-hunter",
+    "tool": "list_directory",
+    "status": 200,
+    "provider": null,
+    "model": "bug-hunter",
+    "finish_reason": "stop",
+    "dangling_tool_calls": 0,
+    "entry_name": "api.js",
+    "entry_real": true,
+    "marker": "HALAL-AGENT-20261121T052536",
+    "answer": "HALAL-AGENT-20261121T052536  \nএকটি সত্যিকারের এন্ট্রি: `api.js`",
+    "verdict": "PASS",
+    "reason": ""
+  },
+  "screen": {
+    "path": "/home/sahon/zombiebd/docs/evidence/visual-matrix-20261121T052536/screen.png",
+    "rpc_ok": true,
+    "bytes": 99694,
+    "size_kb": 97,
+    "png": true,
+    "ok": true,
+    "error": ""
+  },
+  "provider_pass_count": 5,
+  "min_provider_passes": 5
+}

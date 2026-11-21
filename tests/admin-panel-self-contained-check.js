@@ -4,20 +4,21 @@
 /**
  * tests/admin-panel-self-contained-check.js
  *
- * Proves the admin panel no longer depends on public/admin.html and that its
- * one-file render is a working client of the plain admin routes:
+ * Proves the admin panel is optional and API-only:
  *
- *   1. lib/admin-panel.js owns the document, CSS and client JS.
- *   2. api.js serves /admin and /admin/ from renderAdminPanel().
- *   3. The rendered page verifies the token once, optionally checks a
- *      session_id via /api/verify-session, then polls with x-admin-token on a
- *      setInterval; 401/403 stops the poll.
- *   4. The page adds provider rows and uses the same GET/POST/DELETE routes
- *      curl uses.
- *   5. A real gateway with an empty ADMIN_DIR still serves the panel, and the
- *      panel's POST persists custom_9 in SQLite; DELETE removes it.
+ *   1. lib/admin-panel.js owns the built-in document, CSS and client JS.
+ *   2. public/admin.html, when present, is a convenience page that only calls
+ *      this gateway's same-origin /api/* routes: no provider auth header, no
+ *      absolute fetch, no proxy and no scraping code.
+ *   3. api.js serves /admin/zombie from public/admin.html when ADMIN_DIR has
+ *      it, and falls back to renderAdminPanel() when the file is absent.
+ *   4. Both paths mint the zc_panel cookie; admin methods require that cookie
+ *      plus the admin token.
+ *   5. A real gateway with an empty ADMIN_DIR serves the built-in panel; a
+ *      second gateway with a static page serves that page. The panel's POST
+ *      persists custom_9 in SQLite; DELETE removes it.
  *
- * Prints ADMIN_PANEL_SELF_CONTAINED_OK only when every check passes.
+ * Prints ADMIN_PAGE_OPTIONAL_OK only when every check passes.
  */
 
 const assert = require("assert");
@@ -151,7 +152,6 @@ const panelPath = path.join(ROOT, "lib", "admin-panel.js");
 assert.ok(fs.existsSync(panelPath), "lib/admin-panel.js missing");
 const panelSource = fs.readFileSync(panelPath, "utf8");
 const apiSource = fs.readFileSync(path.join(ROOT, "api.js"), "utf8");
-const oldAdmin = fs.readFileSync(path.join(ROOT, "public", "admin.html"), "utf8");
 
 const panel = require(panelPath);
 const rendered = panel.renderAdminPanel({ domain: "localhost", version: "3.2.1" });
@@ -188,22 +188,55 @@ expect("the inline client JS parses", () => {
   for (const script of scripts) new Function(script);
 });
 
-expect("api.js serves /admin from the module, not admin.html", () => {
+expect("api.js resolves the optional page and the module fallback", () => {
   assert.ok(apiSource.includes('require("./lib/admin-panel.js")'), "require missing");
-  assert.ok(apiSource.includes("adminPanel.renderAdminPanel"), "render call missing");
-  const start = apiSource.indexOf("// ─── GET /admin — self-contained panel");
-  const end = apiSource.indexOf("// ─── GET /admin/:file", start);
+  assert.ok(apiSource.includes("function loadAdminPanel"), "panel loader missing");
+  assert.ok(apiSource.includes("function loadAdminPage"), "page loader missing");
+  assert.ok(apiSource.includes("adminPageFile"), "static page path missing");
+  assert.ok(
+    !/^const adminPanel = require/m.test(apiSource),
+    "panel is still required at boot",
+  );
+  assert.ok(apiSource.includes("renderAdminPanel(options)"), "render call missing");
+  assert.ok(apiSource.includes("adminSession.create()"), "panel session mint missing");
+  assert.ok(apiSource.includes("adminRouteAuthorized"), "panel gate missing");
+  const start = apiSource.indexOf("// ─── GET /admin/zombie — optional admin page");
+  const end = apiSource.indexOf("// ─── GET /api/admin — redirect", start);
   assert.ok(start > 0 && end > start, "admin route block missing");
   const block = apiSource.slice(start, end);
-  assert.ok(block.includes("renderAdminPanel"), "panel route does not render the module");
-  assert.ok(!block.includes("readFileSync"), "panel route still reads a file");
-  assert.ok(!block.includes('"/admin.html"'), "panel route still targets admin.html");
+  assert.ok(block.includes("loadAdminPage"), "route does not use the page loader");
+  assert.ok(block.includes("Set-Cookie"), "panel route does not set the session cookie");
+  assert.ok(!block.includes("http.request"), "panel route proxies over HTTP");
+  assert.ok(!block.includes("fetch("), "panel route fetches upstream");
 });
 
-expect("the rendered page is not the legacy admin.html", () => {
-  assert.ok(oldAdmin.includes('id="adminTokenInput"'), "legacy marker missing (test stale)");
-  assert.ok(!rendered.includes('id="adminTokenInput"'), "legacy admin markup leaked in");
-  assert.ok(rendered.includes('id="tokenInput"'), "new token input missing");
+expect("public/admin.html is an optional API-only convenience page", () => {
+  const staticPath = path.join(ROOT, "public", "admin.html");
+  if (fs.existsSync(staticPath)) {
+    const html = fs.readFileSync(staticPath, "utf8");
+    assert.ok(html.includes('id="adminTokenInput"'), "admin token input missing");
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+    assert.ok(scripts.length > 0, "client script missing");
+    for (const script of scripts) new Function(script);
+    const code = scripts
+      .join("\n")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\/\/[^\n]*/g, "");
+    assert.ok(!/fetch\(\s*["'`]https?:/i.test(code), "absolute fetch target");
+    assert.ok(!/\bAuthorization\b|\bBearer\b|x-api-key/i.test(code), "provider auth header");
+    assert.ok(
+      !/\bproxy_pass\b|http-proxy|ProxyAgent|createProxy|\bscrap(e|ing|er)\b|cheerio|puppeteer|playwright/i.test(code),
+      "proxy or scraping code",
+    );
+    assert.ok(/const API = ['"]{2}/.test(code), "API base is not same-origin");
+    assert.ok(/X-Admin-Token/i.test(code), "admin token header missing");
+  }
+  assert.ok(
+    !apiSource.includes("// ─── GET /admin/:file"),
+    "legacy /admin/:file route still exists",
+  );
+  assert.ok(!rendered.includes('id="adminTokenInput"'), "legacy admin markup leaked into the module");
+  assert.ok(rendered.includes('id="tokenInput"'), "module token input missing");
 });
 
 expect("api.js and the panel module parse", () => {
@@ -216,15 +249,16 @@ expect("api.js and the panel module parse", () => {
   }
 });
 
-// ── 2. Live gateway with an empty ADMIN_DIR ───────────────────
-async function liveCheck() {
-  fs.mkdirSync(TMP, { recursive: true });
-  const dataDir = path.join(TMP, "data");
-  const logDir = path.join(TMP, "logs");
-  const emptyAdminDir = path.join(TMP, "empty-admin");
+// ── 2. Live gateways: module fallback and static page ─────────
+async function liveCheck(options) {
+  const mode = options.mode;
+  const adminDir = options.adminDir;
+  const runTmp = path.join(TMP, mode);
+  const dataDir = path.join(runTmp, "data");
+  const logDir = path.join(runTmp, "logs");
   fs.mkdirSync(dataDir, { recursive: true });
   fs.mkdirSync(logDir, { recursive: true });
-  fs.mkdirSync(emptyAdminDir, { recursive: true });
+  fs.mkdirSync(adminDir, { recursive: true });
   const dbPath = path.join(dataDir, "models.db");
 
   const port = await freePort();
@@ -243,15 +277,15 @@ async function liveCheck() {
     GRPC_PORT: String(grpcPort),
     HTTPS_PORT: String(httpsPort),
     UDS_PORT: String(udsPort),
-    APP_ROOT: TMP,
+    APP_ROOT: runTmp,
     DATA_DIR: dataDir,
     LOG_DIR: logDir,
     DB_SQLITE_PATH: dbPath,
     DB_BOOTSTRAP: "1",
-    UDS: path.join(TMP, "mcp.sock"),
+    UDS: path.join(runTmp, "mcp.sock"),
     UDS_OPENAI: "0",
-    ADMIN_DIR: emptyAdminDir,
-    INSTANCE_ID: "admin-panel-" + Date.now(),
+    ADMIN_DIR: adminDir,
+    INSTANCE_ID: "admin-panel-" + mode + "-" + Date.now(),
     ADMIN_TOKEN,
     ADMIN_ALLOW_UNAUTHENTICATED: "false",
     OPENCODE_ENABLED: "false",
@@ -279,31 +313,77 @@ async function liveCheck() {
     }
     pass("isolated gateway healthy");
 
-    await expectAsync("GET /admin works with an empty ADMIN_DIR", async () => {
+    const panelMarker =
+      mode === "file" ? 'id="adminTokenInput"' : 'data-panel="self-contained"';
+    const otherMarker =
+      mode === "file" ? 'data-panel="self-contained"' : 'id="adminTokenInput"';
+    const modeLabel = mode === "file" ? "static page" : "module fallback";
+
+    await expectAsync("[" + mode + "] GET /admin serves the " + modeLabel, async () => {
       const res = await httpText(port, "/admin", "GET", null, 10000);
       assert.strictEqual(res.status, 200, "status=" + res.status + " body=" + res.text.slice(0, 200));
       assert.ok(/text\/html/.test(String(res.headers["content-type"] || "")), "wrong content-type");
-      assert.ok(res.text.includes('data-panel="self-contained"'), "panel marker missing");
-      assert.ok(res.text.includes("zc-admin-panel"), "panel id missing");
-      assert.ok(!res.text.includes('id="adminTokenInput"'), "legacy admin served");
+      assert.ok(res.text.includes(panelMarker), modeLabel + " marker missing");
+      assert.ok(!res.text.includes(otherMarker), "wrong page served");
     });
 
-    await expectAsync("GET /admin/ is the same rendered panel", async () => {
+    await expectAsync("[" + mode + "] GET /admin/ serves the same page", async () => {
       const res = await httpText(port, "/admin/", "GET", null, 10000);
       assert.strictEqual(res.status, 200, "status=" + res.status);
-      assert.ok(res.text.includes('data-panel="self-contained"'));
+      assert.ok(res.text.includes(panelMarker), modeLabel + " marker missing");
     });
 
-    await expectAsync("the panel routes require the admin token", async () => {
-      const noToken = await httpJson(port, "/api/admin/providers", "GET", null, 10000);
-      assert.strictEqual(noToken.status, 401, "status=" + noToken.status);
-      const withToken = await httpJson(port, "/api/admin/providers", "GET", null, 10000, {
+    let PANEL_COOKIE = "";
+    await expectAsync("[" + mode + "] GET /admin/zombie serves the " + modeLabel + " and mints a session cookie", async () => {
+      const res = await httpText(port, "/admin/zombie", "GET", null, 10000);
+      assert.strictEqual(res.status, 200, "status=" + res.status);
+      assert.ok(res.text.includes(panelMarker), modeLabel + " marker missing");
+      const raw = res.headers["set-cookie"];
+      const first = Array.isArray(raw) ? raw[0] : raw;
+      assert.ok(first && String(first).startsWith("zc_panel="), "zc_panel cookie missing");
+      PANEL_COOKIE = String(first).split(";")[0];
+    });
+
+    await expectAsync("[" + mode + "] GET /admin.html serves the same page", async () => {
+      const res = await httpText(port, "/admin.html", "GET", null, 10000);
+      assert.strictEqual(res.status, 200, "status=" + res.status);
+      assert.ok(res.text.includes(panelMarker), modeLabel + " marker missing");
+    });
+
+    await expectAsync("[" + mode + "] admin methods require the panel session and the admin token", async () => {
+      const noCookie = await httpJson(port, "/api/admin/providers", "GET", null, 10000, {
         "x-admin-token": ADMIN_TOKEN,
       });
-      assert.strictEqual(withToken.status, 200, "status=" + withToken.status);
+      assert.strictEqual(noCookie.status, 401, "status=" + noCookie.status);
+      assert.ok(/panel session/i.test(noCookie.text), "panel-session error missing");
+
+      const noToken = await httpJson(port, "/api/admin/providers", "GET", null, 10000, {
+        cookie: PANEL_COOKIE,
+      });
+      assert.strictEqual(noToken.status, 401, "status=" + noToken.status);
+
+      const withBoth = await httpJson(port, "/api/admin/providers", "GET", null, 10000, {
+        "x-admin-token": ADMIN_TOKEN,
+        cookie: PANEL_COOKIE,
+      });
+      assert.strictEqual(withBoth.status, 200, "status=" + withBoth.status);
     });
 
-    await expectAsync("the panel's POST creates custom_9 in SQLite", async () => {
+    await expectAsync("[" + mode + "] OPTIONS advertises the admin methods", async () => {
+      const res = await httpText(port, "/api/admin/providers", "OPTIONS", null, 10000, {
+        origin: "http://localhost:" + port,
+        "access-control-request-method": "POST",
+      });
+      assert.strictEqual(res.status, 204, "status=" + res.status);
+      const methods = String(res.headers["access-control-allow-methods"] || "");
+      for (const method of ["GET", "POST", "OPTIONS", "PUT", "DELETE"]) {
+        assert.ok(methods.includes(method), "missing method " + method);
+      }
+      const allowed = String(res.headers["access-control-allow-headers"] || "");
+      assert.ok(/x-admin-token/i.test(allowed), "x-admin-token missing from allow-headers");
+    });
+
+    await expectAsync("[" + mode + "] the panel's POST creates custom_9 in SQLite", async () => {
       const payload = {
         action: "save",
         id: "custom_9",
@@ -321,7 +401,7 @@ async function liveCheck() {
         "POST",
         payload,
         10000,
-        { "x-admin-token": ADMIN_TOKEN },
+        { "x-admin-token": ADMIN_TOKEN, cookie: PANEL_COOKIE },
       );
       assert.strictEqual(res.status, 200, "status=" + res.status + " body=" + res.text.slice(0, 240));
       assert.strictEqual(res.json.provider.id, "custom_9");
@@ -342,9 +422,10 @@ async function liveCheck() {
       }
     });
 
-    await expectAsync("GET returns the row and DELETE removes it", async () => {
+    await expectAsync("[" + mode + "] GET returns the row and DELETE removes it", async () => {
       const list = await httpJson(port, "/api/admin/providers", "GET", null, 10000, {
         "x-admin-token": ADMIN_TOKEN,
+        cookie: PANEL_COOKIE,
       });
       const row = (list.json.providers || []).find((p) => p.id === "custom_9");
       assert.ok(row, "custom_9 missing from GET");
@@ -356,11 +437,12 @@ async function liveCheck() {
         "DELETE",
         null,
         10000,
-        { "x-admin-token": ADMIN_TOKEN },
+        { "x-admin-token": ADMIN_TOKEN, cookie: PANEL_COOKIE },
       );
       assert.strictEqual(del.status, 200, "status=" + del.status + " body=" + del.text.slice(0, 200));
       const after = await httpJson(port, "/api/admin/providers", "GET", null, 10000, {
         "x-admin-token": ADMIN_TOKEN,
+        cookie: PANEL_COOKIE,
       });
       assert.strictEqual(
         (after.json.providers || []).some((p) => p.id === "custom_9"),
@@ -371,7 +453,7 @@ async function liveCheck() {
   } finally {
     await stopChild(child);
     try {
-      fs.rmSync(TMP, { recursive: true, force: true });
+      fs.rmSync(runTmp, { recursive: true, force: true });
     } catch (_) {
       /* best effort */
     }
@@ -379,18 +461,38 @@ async function liveCheck() {
 }
 
 async function main() {
-  await liveCheck();
+  fs.mkdirSync(TMP, { recursive: true });
+  const emptyDir = path.join(TMP, "empty-admin");
+  fs.mkdirSync(emptyDir, { recursive: true });
+  await liveCheck({ adminDir: emptyDir, mode: "module" });
+
+  const staticSrc = path.join(ROOT, "public", "admin.html");
+  if (fs.existsSync(staticSrc)) {
+    const staticDir = path.join(TMP, "static-admin");
+    fs.mkdirSync(staticDir, { recursive: true });
+    fs.copyFileSync(staticSrc, path.join(staticDir, "admin.html"));
+    await liveCheck({ adminDir: staticDir, mode: "file" });
+  } else {
+    pass("static page absent: file mode skipped (module fallback proven)");
+  }
+
+  try {
+    fs.rmSync(TMP, { recursive: true, force: true });
+  } catch (_) {
+    /* best effort */
+  }
+
   console.log("\npassed=" + passed + " failed=" + failed);
   if (failed > 0) {
-    console.error("ADMIN_PANEL_SELF_CONTAINED_FAILED");
+    console.error("ADMIN_PAGE_OPTIONAL_FAILED");
     process.exit(1);
   }
-  console.log("ADMIN_PANEL_SELF_CONTAINED_OK");
+  console.log("ADMIN_PAGE_OPTIONAL_OK");
 }
 
 main().catch((error) => {
   console.error(
-    "ADMIN_PANEL_SELF_CONTAINED_FAILED — " +
+    "ADMIN_PAGE_OPTIONAL_FAILED — " +
       (error && error.stack ? error.stack : error),
   );
   process.exit(1);

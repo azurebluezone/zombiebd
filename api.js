@@ -110,10 +110,17 @@ const {
   slimSSOT,
 } = require("./tools/context-slimmer.js");
 const { makeAliasResolver } = require("./tools/model-alias.js");
-const { normalizeText, stripInvisible, scanInvisible } = require("./lib/text-integrity.js");
+const {
+  normalizeText,
+  stripInvisible,
+  scanInvisible,
+  sanitizeForModel,
+  sanitizeForWrite,
+} = require("./lib/text-integrity.js");
 const { chooseUsableModel } = require("./lib/model-choice.js");
 const { loadAgentFiles, getAgentById, listAgentIds, resolveAgentModel } = require("./agent");
 const systemInfo = require("./lib/system-info.js");
+const { verifySessionWithDomain } = require("./lib/session-verify.js");
 const { classifyDbError } = require("./lib/db-guard.js");
 const {
   loadProcessEnv,
@@ -129,6 +136,7 @@ const {
 } = require("./lib/provider-timeout.js");
 const goalsModule = require("./modules/goals.js");
 const verifyModule = require("./modules/verify.js");
+const antiDoteModule = require("./modules/anti-dote.js");
 const compilerModule = require("./modules/compiler.js");
 const agentsModule = require("./modules/agents.js");
 const watchdogModule = require("./modules/watchdog.js");
@@ -166,7 +174,40 @@ const providerTransport = require("./provider/transport");
 const providerCapabilities = require("./provider/capabilities");
 const providerSecretStore = require("./lib/secret-store");
 const adminApi = require("./lib/admin-routes");
-const adminPanel = require("./lib/admin-panel.js");
+const adminSession = require("./lib/admin-session");
+
+// The panel is an optional client. public/admin.html is served when present;
+// otherwise lib/admin-panel.js renders the built-in panel. Both are lazy, so
+// deleting either file never blocks boot: /admin/zombie answers 503 only when
+// both are absent, and every non-admin route keeps working.
+function loadAdminPanel() {
+  try {
+    return require("./lib/admin-panel.js");
+  } catch (err) {
+    return null;
+  }
+}
+
+function adminPageFile() {
+  const dir = path.resolve(
+    process.env.ADMIN_DIR || path.join(__dirname, "public"),
+  );
+  return path.join(dir, "admin.html");
+}
+
+function loadAdminPage(options) {
+  try {
+    const file = adminPageFile();
+    if (fs.statSync(file).isFile()) {
+      return { html: fs.readFileSync(file, "utf8"), source: "file" };
+    }
+  } catch (_) {
+    /* no static page: use the module fallback */
+  }
+  const panel = loadAdminPanel();
+  if (!panel) return null;
+  return { html: panel.renderAdminPanel(options), source: "module" };
+}
 const toolRegister = require("./provider/tools");
 const toolBudget = require("./lib/tool-budget.js");
 const sizeBudget = require("./lib/size-budget.js");
@@ -176,7 +217,7 @@ const sizeBudget = require("./lib/size-budget.js");
 // owning either of them. No admin UI file is read or required here.
 function adminApiContext() {
   return {
-    adminAuthorized,
+    adminAuthorized: adminRouteAuthorized,
     jsonResponse,
     readBody,
     log,
@@ -260,26 +301,6 @@ let ALLOWED_DIRS = (
 )
   .split(",")
   .map((d) => path.resolve(PROJECT_ROOT, d.trim()));
-
-// Outbound proxy configuration. `direct` (or empty) means no proxy. The list
-// is validated at boot; actual proxy egress is opt-in and must be wired by the
-// transport that uses it, so a typo never silently disables provider calls.
-function proxyListState() {
-  const raw = String(process.env.PROXY_LIST || "").trim();
-  if (!raw || raw === "direct") {
-    return { mode: "direct", count: 0, invalid: [] };
-  }
-  const entries = raw.split(",").map((p) => p.trim()).filter(Boolean);
-  const invalid = entries.filter((entry) => {
-    try {
-      const u = new URL(entry);
-      return !/^https?:$/.test(u.protocol);
-    } catch (_) {
-      return true;
-    }
-  });
-  return { mode: "proxy", count: entries.length, invalid };
-}
 
 // ─── Domain Detection ────────────────────────────────────────
 // Domain detected immediately on server start — env var > port heuristic > localhost
@@ -744,9 +765,9 @@ const INTENT_EXTRACT_PROMPT = intentModule.PROMPTS.extract;
 const ALIGNMENT_CHECK_PROMPT = intentModule.PROMPTS.alignment;
 const PROOF_CHECK_PROMPT = intentModule.PROMPTS.proof;
 
-// ══════════════════════════════════════════════════════════════
+// 
 //  ANTI-DOTE TYPE SAFETY SYSTEM — Error Types & Classes
-// ══════════════════════════════════════════════════════════════
+// 
 // Fundamental Theorem:
 //   ∀req ∈ AntidoteRequest: validateSchema(req) ∧ checkProof(req)
 //     ⇒ setGoalContract(req) ⇒ execute(req) ⇒ verifyOutput(res)
@@ -770,8 +791,6 @@ function getApiModelName(m) {
 
 // Resolve public model name to API provider model name (masking reverse)
 // providerId parameter added: searches within specific provider only.
-// Previously searched all providers, causing Groq's fallback alias
-// to route through OpenCode's primary path (wrong apiModel).
 function resolveApiModel(publicModelName, providerId) {
   publicModelName = applyModelAlias(publicModelName); // public alias -> canonical
   // 1. Search within specific provider (if providerId given)
@@ -1106,9 +1125,9 @@ function loadCustomProviders() {
 }
 loadCustomProviders();
 
-// ══════════════════════════════════════════════════════════════
+// 
 //   SQLite MODELS DATABASE (zero-dependency via node:sqlite)
-// ══════════════════════════════════════════════════════════════
+// 
 // The API Normalizer syncs provider models into a `models` table.
 // Lookup order: DB first → env (PROVIDER_CONFIG) → fallback reply.
 // The DB is mandatory: missing, busy or corrupt stops boot with DB_FATAL.
@@ -1333,7 +1352,10 @@ function initModelsDb(attempt) {
         ok INTEGER DEFAULT 1,
         elapsed_ms INTEGER DEFAULT 0,
         swap_count INTEGER DEFAULT 0,
-        domain TEXT
+        domain TEXT,
+        prompt_tokens INTEGER DEFAULT 0,
+        completion_tokens INTEGER DEFAULT 0,
+        total_tokens INTEGER DEFAULT 0
       );
       CREATE INDEX IF NOT EXISTS idx_request_log_ts ON request_log(ts);
       CREATE INDEX IF NOT EXISTS idx_request_log_session ON request_log(session_id);
@@ -1386,6 +1408,19 @@ function initModelsDb(attempt) {
       const rcols = MODELS_DB.prepare("PRAGMA table_info(request_log)").all().map((c) => c.name);
       if (!rcols.includes("upstream_provider")) {
         MODELS_DB.prepare("ALTER TABLE request_log ADD COLUMN upstream_provider TEXT").run();
+      }
+      // Token accounting: without these columns the admin panel and the
+      // audit cannot tell a 3.5k-token "hi" from a real request. Existing
+      // rows keep 0; every new row records what the caller measured.
+      const tokenColumns = [
+        ["prompt_tokens", "prompt_tokens INTEGER DEFAULT 0"],
+        ["completion_tokens", "completion_tokens INTEGER DEFAULT 0"],
+        ["total_tokens", "total_tokens INTEGER DEFAULT 0"],
+      ];
+      for (const [name, ddl] of tokenColumns) {
+        if (!rcols.includes(name)) {
+          MODELS_DB.prepare("ALTER TABLE request_log ADD COLUMN " + ddl).run();
+        }
       }
     }
     log("INFO", "SQLITE_READY", { path: MODELS_DB_PATH });
@@ -2556,20 +2591,6 @@ function deleteProviderFromAdmin(rawId) {
   log("INFO", "ADMIN_PROVIDER_DELETE", { id });
   return { status: 200, payload: { ok: true, id } };
 }
-
-// Look up a model name (public or apiModel) in the DB → provider row or null.
-function findModelInDb(name) {
-  if (!MODELS_DB) return null;
-  try {
-    const row = MODELS_DB.prepare(
-      "SELECT provider, name, api_model FROM models WHERE name = ? OR api_model = ? LIMIT 1",
-    ).get(name, name);
-    return row || null;
-  } catch (e) {
-    return null;
-  }
-}
-
 // ─── API Normalizer: fetch live models from each provider ──
 // GET {baseUrl}/models and merge the returned model IDs into
 // PROVIDER_CONFIG + SQLite. Keyless providers are still tried
@@ -3513,7 +3534,6 @@ function autoSSOT(projectDir) {
   }
 }
 
-// BUG #2 FIX: SSOT Caching — avoid repeated disk reads
 // Cache keyed by projectDir, with mtime validation for invalidation
 const _ssotCacheMap = new Map(); // projectDir → { content, mtimeMs }
 
@@ -3634,7 +3654,7 @@ function autoSyllabus(projectDir) {
 }
 
 /** Read the canonical project syllabus (bounded, mtime-cached). */
-function readSyllabus(projectDir) {
+function readProjectSyllabus(projectDir) {
   try {
     return syllabusModule.readSyllabus(
       projectDir || mcpWorkingDir || path.resolve("."),
@@ -3679,7 +3699,7 @@ function learnToSyllabus(sessionId, agent, userInput, content) {
       .trim();
     if (!topic) return false;
     // Dedupe: skip if topic already exists in the syllabus
-    const existing = readSyllabus(dir);
+    const existing = readProjectSyllabus(dir);
     if (existing && existing.includes("### " + topic)) return false;
     const summary = content.slice(0, 200).replace(/\s+/g, " ").trim();
     const ok = writeSyllabus(dir, topic, {
@@ -3697,33 +3717,6 @@ function learnToSyllabus(sessionId, agent, userInput, content) {
     return false;
   }
 }
-
-/**
- * Build a markdown tools list from MCP_TOOLS for system prompts.
- * Gives the model clear tool names + parameters + usage so it
- * actually CALLS the tools instead of describing them (syllabus 8.6).
- */
-function buildToolsDescription(toolMap) {
-  try {
-    const entries = Object.entries(toolMap || {});
-    if (entries.length === 0) return "- (no tools available)\n";
-    return (
-      entries
-        .map(([name, def]) => {
-          const params = Object.keys(def.params || {}).join(", ");
-          return (
-            "- **" + name + "**" +
-            (params ? " (" + params + ")" : "") +
-            ": " + (def.description || "")
-          );
-        })
-        .join("\n") + "\n"
-    );
-  } catch (e) {
-    return "- (tools unavailable)\n";
-  }
-}
-
 /**
  * Project session memory lives in SQLite (WAL). The legacy ctx_*.json /
  * memory.json files are imported once per project and never written again.
@@ -3904,8 +3897,6 @@ function archiveSession(projectDir, sessionId, messages, summary) {
       agent_count: 0,
       tags: archive.tags || [],
     });
-    // BUG #7 FIX: Keep more recent context (was 5, now 20)
-    // 927+ sessions archived but only 5 contexts retained — important history lost
     const MAX_RECENT_CONTEXT = 20;
     if (mem.recent_context.length > MAX_RECENT_CONTEXT) {
       mem.recent_context = mem.recent_context.slice(-MAX_RECENT_CONTEXT);
@@ -3971,85 +3962,6 @@ function _updateSessionIndex(agentsDir, archive) {
     log("WARN", "INDEX_UPDATE_FAIL", { error: e.message });
   }
 }
-
-/**
- * Load recent session context into the agent's memory.
- * Returns a formatted string with recent summaries.
- */
-function restoreRecentContext(projectDir, maxSessions = 3) {
-  const store = getProjectMemoryStore();
-  if (store) {
-    try {
-      const archives = store.recent(
-        projectDir || mcpWorkingDir || path.resolve("."),
-        maxSessions,
-      );
-      if (archives.length === 0) return "";
-      let context = "\n\n--- Previous Session Context ---\n";
-      for (const data of archives) {
-        context += `\n[Session: ${data.session_id} | ${data.created_at}]\n`;
-        context += `Summary: ${data.summary}\n`;
-        if (data.key_points && data.key_points.length > 0) {
-          context += `Key points: ${data.key_points.join("; ")}\n`;
-        }
-        if (data.decisions && data.decisions.length > 0) {
-          context += `Decisions: ${data.decisions.join("; ")}\n`;
-        }
-      }
-      log("INFO", "CONTEXT_RESTORED", {
-        sessions: archives.length,
-        source: "sqlite:project_memory",
-      });
-      return context;
-    } catch (e) {
-      log("WARN", "CONTEXT_RESTORE_FAIL", { error: e.message });
-    }
-  }
-  try {
-    const agentsDir = getAgentsPath(projectDir);
-    const sessionsDir = path.join(agentsDir, "sessions");
-    if (!fs.existsSync(sessionsDir)) return "";
-
-    // Get most recent session archives
-    const files = fs
-      .readdirSync(sessionsDir)
-      .filter(
-        (f) =>
-          f.startsWith("ctx_") && f.endsWith(".json") && f !== "_index.json",
-      )
-      .sort()
-      .reverse()
-      .slice(0, maxSessions);
-
-    if (files.length === 0) return "";
-
-    let context = "\n\n--- Previous Session Context ---\n";
-    for (const file of files) {
-      try {
-        const data = JSON.parse(
-          fs.readFileSync(path.join(sessionsDir, file), "utf8"),
-        );
-        context += `\n[Session: ${data.session_id} | ${data.created_at}]\n`;
-        context += `Summary: ${data.summary}\n`;
-        if (data.key_points && data.key_points.length > 0) {
-          context += `Key points: ${data.key_points.join("; ")}\n`;
-        }
-        if (data.decisions && data.decisions.length > 0) {
-          context += `Decisions: ${data.decisions.join("; ")}\n`;
-        }
-      } catch (e) {
-        /* skip */
-      }
-    }
-
-    log("INFO", "CONTEXT_RESTORED", { sessions: files.length });
-    return context;
-  } catch (e) {
-    log("WARN", "CONTEXT_RESTORE_FAIL", { error: e.message });
-    return "";
-  }
-}
-
 /**
  * Search session archives by keyword.
  */
@@ -4168,8 +4080,25 @@ function log(level, category, data, consoleOnly) {
 const MCP_SOCKET_IDENTITY = new WeakMap();
 
 function isLoopbackAddress(value) {
-  const addr = String(value || "");
-  return addr === "localhost" || addr === "::1" || addr === "::ffff:localhost" || addr === "localhost";
+  const addr = String(value || "").trim().toLowerCase();
+  return (
+    addr === "localhost" ||
+    addr === "127.0.0.1" ||
+    addr === "::1" ||
+    addr === "::ffff:localhost" ||
+    addr === "::ffff:127.0.0.1" ||
+    addr === "0:0:0:0:0:0:0:1"
+  );
+}
+
+// Bind/probe address for optional listeners. A wildcard bind is not a
+// connectable address, so callers get loopback instead of 0.0.0.0 / ::.
+function serviceBindHost(value) {
+  const host = String(value || "").trim();
+  if (!host || host === "0.0.0.0" || host === "::" || host === "[::]") {
+    return "127.0.0.1";
+  }
+  return host;
 }
 
 function socketAddress(req) {
@@ -4333,9 +4262,9 @@ function visualEventFlow(phase, label, detail) {
   );
 }
 
-// ══════════════════════════════════════════════════════════════
+// 
 //  PERSONAS PARSER
-// ══════════════════════════════════════════════════════════════
+// 
 // ─── YAML Frontmatter Agent Parser ────────────────────────────
 // Parses custom agent files (.zombiecoder/agents/*.md) that use
 // YAML frontmatter instead of the "## agent:" markdown format:
@@ -4432,7 +4361,6 @@ async function loadPersonas() {
   }
   log("WARN", "PERSONAS_NOT_FOUND", { file: PERSONAS_FILE });
 
-  // PRE-EXISTING BUG FIX: Skip HTTPS download if URL is empty.
   // GIT_PERSONAS_URL defaults to "" when env var is not set.
   // https.get("") throws "TypeError: Invalid URL" at new URL("").
   if (!GIT_PERSONAS_URL || !GIT_PERSONAS_URL.startsWith("http")) {
@@ -4610,12 +4538,20 @@ async function ensureAgentsRegistry() {
   // accepted forever because the check was only `count > 0`. INSERT OR IGNORE
   // restores only missing ids, so admin-edited rows are never overwritten.
   let repaired = 0;
+  let namesSynced = 0;
   let modelsFixed = 0;
   try {
     const fileAgents = loadAgentFiles();
     const ins = MODELS_DB.prepare(
       `INSERT OR IGNORE INTO agents (id, name, role, model, expertise, persona, enabled, priority, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)`
+    );
+    // Display names are file-owned: when agent/*.js says "Bug Hunter - Jewel"
+    // the DB row must say the same. Name-only sync — persona edits and
+    // admin-chosen models are never overwritten.
+    const syncName = MODELS_DB.prepare(
+      `UPDATE agents SET name = ?, updated_at = ?
+       WHERE id = ? AND (name IS NULL OR name <> ?)`
     );
     // Older seeds wrote the sentinel "MODELS_DB" as a literal model. Those
     // rows are not usable at routing time, so replace the sentinel with the
@@ -4635,6 +4571,8 @@ async function ensureAgentsRegistry() {
       try {
         const r = ins.run(a.id, a.name || a.id, a.role || "general", model, a.expertise || "", a.persona, a.priority || 99, now);
         repaired += r.changes || 0;
+        const synced = syncName.run(a.name || a.id, now, a.id, a.name || a.id);
+        namesSynced += synced.changes || 0;
         // "added" counts restored agent rows only. A model update is not an
         // added agent; empty models are skipped so updated_at is not churned.
         if (model) {
@@ -4645,10 +4583,10 @@ async function ensureAgentsRegistry() {
     }
     const c = MODELS_DB.prepare("SELECT COUNT(*) c FROM agents").get();
     if (c && c.c > 0) {
-      if (repaired > 0) {
-        log("INFO", "AGENTS_REPAIRED", { from: "agent/*.js", added: repaired, modelsFixed, total: c.c });
+      if (repaired > 0 || namesSynced > 0) {
+        log("INFO", "AGENTS_REPAIRED", { from: "agent/*.js", added: repaired, namesSynced, modelsFixed, total: c.c });
       }
-      return { ok: true, source: "db", count: c.c, repaired, modelsFixed };
+      return { ok: true, source: "db", count: c.c, repaired, namesSynced, modelsFixed };
     }
   } catch (e) {
     log("WARN", "AGENTS_FILE_SEED_FAIL", { error: e.message });
@@ -4739,6 +4677,16 @@ function authFromRequest(req) {
   // checkUserLimits() can enforce token quota / expiry correctly.
   const USER_FIELDS =
     "id, name, enabled, token_limit, valid_days, token_used, expires_at, created_at";
+  // OpenAI-compatible clients send `Authorization: Bearer <api_key>`. The
+  // same users.api_key hash that backs `x-api-key` must work there too.
+  // Session tokens are checked first, so existing clients keep their path.
+  const userFromApiKey = function (rawKey) {
+    const key = String(rawKey || "").trim();
+    if (!key) return null;
+    return MODELS_DB.prepare(
+      `SELECT ${USER_FIELDS} FROM users WHERE api_key = ?`,
+    ).get(sha256Hex(key)) || null;
+  };
   if (bearer.startsWith("Bearer ")) {
     const token = bearer.slice(7).trim();
     const sess = MODELS_DB.prepare(
@@ -4746,7 +4694,12 @@ function authFromRequest(req) {
               u.token_limit, u.valid_days, u.token_used, u.expires_at, u.created_at
        FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ?`,
     ).get(token);
-    if (!sess) return { ok: false, reason: "invalid session token" };
+    if (!sess) {
+      const user = userFromApiKey(token);
+      if (!user) return { ok: false, reason: "invalid session token" };
+      if (user.enabled !== 1) return { ok: false, reason: "user disabled" };
+      return { ok: true, user: user };
+    }
     if (sess.enabled !== 1) return { ok: false, reason: "user disabled" };
     if (sess.sess_expires_at < Date.now()) {
       MODELS_DB.prepare("DELETE FROM sessions WHERE token = ?").run(token);
@@ -4767,10 +4720,7 @@ function authFromRequest(req) {
     };
   }
   if (apiKey) {
-    const hash = sha256Hex(apiKey);
-    const user = MODELS_DB.prepare(
-      `SELECT ${USER_FIELDS} FROM users WHERE api_key = ?`,
-    ).get(hash);
+    const user = userFromApiKey(apiKey);
     if (!user) return { ok: false, reason: "invalid api key" };
     if (user.enabled !== 1) return { ok: false, reason: "user disabled" };
     return {
@@ -4790,9 +4740,9 @@ function authFromRequest(req) {
   return { ok: null };
 }
 
-// ══════════════════════════════════════════════════════════════
+// 
 //  MCP PRIVILEGED-TOOL GATE  (SECURITY 2026-10-08)
-// ══════════════════════════════════════════════════════════════
+// 
 // EVIDENCE — before this gate POST /mcp ran arbitrary shell with NO auth at all:
 //   curl -s -X POST http://localhost:3000/mcp \
 //     -d '{"method":"tools/call","params":{"name":"exec",
@@ -4867,6 +4817,13 @@ function adminAuthorized(req) {
       ? String(h["authorization"]).slice(7).trim()
       : got,
   );
+}
+
+// Admin API methods need the credential AND a live panel session. The
+// session is minted only by GET /admin/zombie, so a bare token or curl call
+// cannot drive the admin routes.
+function adminRouteAuthorized(req) {
+  return adminAuthorized(req) && adminSession.verify(req);
 }
 
 // {ok:true, via} | {ok:false, reason}
@@ -5021,28 +4978,204 @@ function trimHistoryByChars(entries, maxChars) {
   return out;
 }
 
-// Convert MCP_TOOLS catalog → OpenAI function-tools format so any page
-// can request the full server tool set with body { tools: "mcp" }.
-function mcpToolsToOpenAI() {
-  return Object.entries(MCP_TOOLS).map(([name, def]) => ({
+// Convert one MCP_TOOLS entry → OpenAI function-tool shape.
+function toolSchema(name) {
+  const def = MCP_TOOLS[name];
+  if (!def) return null;
+  return {
     type: "function",
     function: {
       name,
       description: def.description,
       parameters: {
         type: "object",
-        properties: def.params,
+        properties: def.params || {},
         required: def.required || [],
       },
     },
-  }));
+  };
+}
+
+// Convert MCP_TOOLS catalog → OpenAI function-tools format so any page
+// can request the full server tool set with body { tools: "mcp" }.
+function mcpToolsToOpenAI() {
+  return Object.keys(MCP_TOOLS)
+    .map((name) => toolSchema(name))
+    .filter(Boolean);
+}
+
+// Lazy tool discovery. The model gets tool_search (plus configured pins)
+// instead of the whole catalog; it asks for a schema only when it needs one.
+function searchToolCatalog(query, limit, includeSchema) {
+  const cleanQuery = sanitizeForModel(String(query || "")).text
+    .trim()
+    .toLowerCase();
+  const terms = cleanQuery.match(/[a-z0-9_]{2,}/g) || [];
+  const max = Math.max(
+    1,
+    Math.min(Number(limit) || (cleanQuery ? 12 : 100), 200),
+  );
+  const entries = Object.keys(MCP_TOOLS).map((name) => {
+    const description = String(MCP_TOOLS[name].description || "");
+    const haystack = (name + " " + description).toLowerCase();
+    let score = 0;
+    for (const term of terms) {
+      if (!haystack.includes(term)) continue;
+      score += name.toLowerCase().includes(term) ? 2 : 1;
+    }
+    return { name, description, score };
+  });
+  const matched = cleanQuery
+    ? entries.filter((entry) => entry.score > 0)
+    : entries.slice();
+  matched.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    return a.name.localeCompare(b.name);
+  });
+  const selected = matched.slice(0, max);
+  return {
+    query: cleanQuery,
+    total: entries.length,
+    matched: matched.length,
+    returned: selected.length,
+    tools:
+      includeSchema === false
+        ? selected.map((entry) => ({
+            name: entry.name,
+            description: entry.description,
+          }))
+        : selected.map((entry) => toolSchema(entry.name)),
+  };
+}
+
+function lazyToolCatalog() {
+  const catalog = [toolSchema("tool_search")].filter(Boolean);
+  const pinned = toolBudget.config().pinned || [];
+  for (const name of pinned) {
+    if (name === "tool_search" || !MCP_TOOLS[name]) continue;
+    catalog.push(toolSchema(name));
+  }
+  return catalog;
+}
+
+// A tool_search result carries full schemas. Add them to the live tool array
+// for the next model round so the model can call the discovered tool.
+function expandToolsFromSearch(tools, toolName, text) {
+  if (toolName !== "tool_search") return tools;
+  try {
+    const parsed = JSON.parse(String(text || ""));
+    const found = Array.isArray(parsed.tools) ? parsed.tools : [];
+    const list = Array.isArray(tools) ? tools.slice() : [];
+    const have = new Set(
+      list.map(
+        (tool) =>
+          (tool && tool.function && tool.function.name) ||
+          (tool && tool.name) ||
+          "",
+      ),
+    );
+    const added = [];
+    for (const item of found) {
+      const name = item && item.function && item.function.name;
+      if (!name || have.has(name) || !MCP_TOOLS[name]) continue;
+      const schema = toolSchema(name);
+      if (!schema) continue;
+      list.push(schema);
+      have.add(name);
+      added.push(name);
+    }
+    if (added.length) {
+      log("INFO", "TOOL_DISCOVERED", { added: added.length, names: added });
+    }
+    return list;
+  } catch (_) {
+    return tools;
+  }
+}
+
+function sanitizeToolValue(value, add) {
+  if (typeof value === "string") {
+    const result = sanitizeForModel(value);
+    add(result.total);
+    return result.text;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeToolValue(item, add));
+  }
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const [key, item] of Object.entries(value)) {
+      const cleanKey = sanitizeForModel(key);
+      add(cleanKey.total);
+      out[cleanKey.text] = sanitizeToolValue(item, add);
+    }
+    return out;
+  }
+  return value;
 }
 
 function sanitizeTools(tools, model) {
   if (!Array.isArray(tools) || tools.length === 0) return undefined;
-  // Shape validation only. callModel/callModelStream pass the array through
-  // lib/tool-budget.js, which trims by provider limit, bytes and prefill.
-  return tools;
+  let removed = 0;
+  const clean = [];
+  for (const tool of tools) {
+    if (!tool || typeof tool !== "object") continue;
+    let clone;
+    try {
+      clone = JSON.parse(JSON.stringify(tool));
+    } catch (_) {
+      continue;
+    }
+    const fn =
+      clone.function && typeof clone.function === "object"
+        ? clone.function
+        : clone;
+    const name = sanitizeForModel(String(fn.name || ""));
+    removed += name.total;
+    fn.name = name.text.trim();
+    if (!fn.name) continue;
+    if (typeof fn.description === "string") {
+      const description = sanitizeForModel(fn.description);
+      removed += description.total;
+      fn.description = description.text;
+    }
+    if (fn.parameters && typeof fn.parameters === "object") {
+      fn.parameters = sanitizeToolValue(fn.parameters, (n) => {
+        removed += n;
+      });
+    }
+    clean.push(clone);
+  }
+  if (removed > 0) {
+    log("INFO", "TOOL_SANITIZED", {
+      removed,
+      sent: clean.length,
+      model: model || "",
+    });
+  }
+  return clean.length ? clean : undefined;
+}
+
+// Model-bound message sanitizer. Applies the same strict character rules to
+// every string content before it can reach a provider.
+function sanitizeMessages(messages, source) {
+  let removed = 0;
+  const clean = (Array.isArray(messages) ? messages : []).map((message) => {
+    if (!message || typeof message !== "object") return message;
+    if (typeof message.content !== "string") return message;
+    const result = sanitizeForModel(message.content);
+    if (!result.total) return message;
+    removed += result.total;
+    return { ...message, content: result.text };
+  });
+  if (removed > 0) {
+    log("INFO", "INPUT_SANITIZED", {
+      source: source || "messages",
+      removed,
+      messages: clean.length,
+    });
+  }
+  return clean;
 }
 
 // Intent text for tool ranking: the last user message, bounded. The resolver
@@ -5145,82 +5278,6 @@ async function loadInstructions() {
   }
 }
 
-// ══════════════════════════════════════════════════════════════
-//  SESSION VERIFY (via configured domain)
-// ══════════════════════════════════════════════════════════════
-function verifySessionWithDomain(sessionId, clientToken) {
-  return new Promise((resolve) => {
-    const url = new URL(RUNTIME_CONFIG.sessionVerifyUrl);
-    // Append session_id as query parameter for GET
-    url.searchParams.set("session_id", sessionId);
-    // FIX: Choose http/https based on URL protocol (was always https,
-    // which broke verify for local http endpoints like http://localhost:3000)
-    const isHttps = url.protocol === "https:";
-    const transport = isHttps ? https : http;
-    const options = {
-      hostname: url.hostname,
-      port: url.port || (isHttps ? 443 : 80),
-      path: url.pathname + url.search,
-      method: "GET",
-      timeout: 10000,
-      rejectUnauthorized: true,
-      headers: {
-        "User-Agent": "MissionBarisal-v3/1.0",
-        "X-Session-Id": sessionId,
-        "X-Verify-Token": clientToken || "",
-      },
-    };
-    const req = transport.request(options, (res) => {
-      let data = "";
-      res.setEncoding("utf8");
-      res.on("data", (c) => (data += c));
-      res.on("end", () => {
-        try {
-          const parsed = JSON.parse(data);
-          if (parsed.verified === true) {
-            resolve({
-              verified: true,
-              session: parsed.session,
-              server_time: parsed.server_time,
-            });
-          } else {
-            resolve({
-              verified: false,
-              error: parsed.error || "verification failed",
-            });
-          }
-        } catch (e) {
-          // SECURITY FIX (S3): Don't auto-verify on parse failure
-          resolve({
-            verified: false,
-            fallback: true,
-            note: "domain response could not be parsed — treat as unverified",
-          });
-        }
-      });
-    });
-    req.on("error", (err) => {
-      resolve({
-        verified: false,
-        fallback: true,
-        note: "domain unreachable — cannot verify token remotely",
-      });
-    });
-    req.on("timeout", () => {
-      req.destroy();
-      resolve({
-        verified: false,
-        fallback: true,
-        note: "domain timeout  cannot verify token remotely",
-      });
-    });
-    req.end();
-  });
-}
-
-// ══════════════════════════════════════════════════════════════
-//  WEB SEARCH
-// ══════════════════════════════════════════════════════════════
 function webSearch(query) {
   return new Promise((resolve) => {
     const url =
@@ -5355,9 +5412,9 @@ async function autoWebSearch(agent, response, userInput) {
   };
 }
 
-// ══════════════════════════════════════════════════════════════
+// 
 //  PUSHER EVENTS
-// ══════════════════════════════════════════════════════════════
+// 
 function triggerPusherEvent(channel, eventName, data) {
   return new Promise((resolve) => {
     if (!PUSHER_ENABLED) {
@@ -5458,9 +5515,9 @@ async function pushDone(stats) {
     });
 }
 
-// ══════════════════════════════════════════════════════════════
+// 
 //  LOCK LOG SYSTEM — JSON Debug Memory (Zero Dependency)
-// ══════════════════════════════════════════════════════════════
+// 
 // Each lock operation (success/failure/timeout) is stored as JSON file.
 // Organized by date — acts as debug memory for later analysis.
 //
@@ -5478,7 +5535,7 @@ async function pushDone(stats) {
 //   model: "optional",
 //   error: "optional error message",
 // }
-// ══════════════════════════════════════════════════════════════
+// 
 
 const LOCK_DIR = path.resolve(
   PROJECT_ROOT,
@@ -5581,23 +5638,6 @@ function readLockLogs(dateStr) {
     return [];
   }
 }
-
-// Filter lock logs by agent, operation, status, or session_id
-function queryLockLogs(filter) {
-  const all = readLockLogs();
-  return all
-    .filter((l) => {
-      if (filter.agent && l.agent !== filter.agent) return false;
-      if (filter.status && l.status !== filter.status) return false;
-      if (filter.operation && l.operation !== filter.operation) return false;
-      if (filter.session_id && l.session_id !== filter.session_id) return false;
-      if (filter.since && new Date(l.timestamp) < new Date(filter.since))
-        return false;
-      return true;
-    })
-    .slice(0, filter.limit || 200);
-}
-
 // Lock log stats: per-agent health, trend analysis, failure patterns
 function getLockStats() {
   const all = readLockLogs();
@@ -5728,9 +5768,9 @@ function getLockStats() {
   return stats;
 }
 
-// ══════════════════════════════════════════════════════════════
+// 
 //  SESSION & MEMORY SYSTEM (Optimized)
-// ══════════════════════════════════════════════════════════════
+// 
 const SESSIONS_FILE = path.join(DATA_DIR, "sessions.json");
 const CLIENTS_FILE = path.join(DATA_DIR, "clients.json");
 const activeSessions = new Map(); // in-memory cache (id → session)
@@ -5797,10 +5837,8 @@ function cleanExpired() {
   // Sync in-memory cache
   for (const s of active) activeSessions.set(s.id, s);
 
-  //  BUG #3 FIX: Clean up orphaned UUID folders in data/
-  // cleanExpired() only removed from sessions.json — UUID folders remained
   try {
-    const dataDir = DATA_DIR; // env-aware (was hardcoded "./data")
+    const dataDir = DATA_DIR;
     if (fs.existsSync(dataDir)) {
       const entries = fs.readdirSync(dataDir);
       const uuidPattern =
@@ -6224,12 +6262,12 @@ function flushAllMemory() {
   flushAllSessions();
 }
 
-// ══════════════════════════════════════════════════════════════
+// 
 // USER MEMORY CACHE — Cross-Session Intelligence — Cross-Session Intelligence
 //  Zero dependency · JSON-based · TTL-aware
 //   Caches user patterns and preferences for accuracy and speed
 //   "Memory from user interactions for closer and more accurate responses"
-// ══════════════════════════════════════════════════════════════
+// 
 
 function initCache() {
   if (!fs.existsSync(CACHE_DIR)) {
@@ -6237,179 +6275,14 @@ function initCache() {
     log("INFO", "CACHE_DIR_CREATED", { dir: CACHE_DIR });
   }
 }
-
-function cacheFilePath(key) {
-  const safeKey = crypto.createHash("md5").update(String(key)).digest("hex");
-  return path.join(CACHE_DIR, safeKey + ".json");
-}
-
-function cacheGet(key, ttl) {
-  const file = cacheFilePath(key);
-  if (!fs.existsSync(file)) return null;
-  try {
-    const data = JSON.parse(fs.readFileSync(file, "utf8"));
-    const maxAge = ttl || CACHE_TTL;
-    if (Date.now() - data.cachedAt > maxAge) {
-      fs.unlinkSync(file);
-      return null;
-    }
-    return data.value;
-  } catch (e) {
-    return null;
-  }
-}
-
-function cacheSet(key, value, ttl) {
-  const file = cacheFilePath(key);
-  try {
-    const data = {
-      value,
-      cachedAt: Date.now(),
-      ttl: ttl || CACHE_TTL,
-      accessCount: 0,
-    };
-    fs.writeFileSync(file, JSON.stringify(data));
-    // Cleanup excess cache entries
-    try {
-      const files = fs
-        .readdirSync(CACHE_DIR)
-        .filter((f) => f.endsWith(".json"));
-      if (files.length > CACHE_MAX_ENTRIES) {
-        const sorted = files
-          .map((f) => ({
-            name: f,
-            time: fs.statSync(path.join(CACHE_DIR, f)).mtimeMs,
-          }))
-          .sort((a, b) => a.time - b.time);
-        for (const f of sorted.slice(0, files.length - CACHE_MAX_ENTRIES)) {
-          fs.unlinkSync(path.join(CACHE_DIR, f.name));
-        }
-      }
-    } catch (e) { }
-    return true;
-  } catch (e) {
-    return false;
-  }
-}
-
-// Cross-session user memory — store user patterns, preferences, corrections
-function cacheUserPattern(userId, input, response, corrections) {
-  const key = "user_pattern:" + (userId || "anonymous");
-  let patterns = cacheGet(key, CACHE_TTL * 7) || {
-    interactions: [],
-    preferences: {},
-    corrections: [],
-  };
-
-  patterns.interactions.push({
-    input: String(input || "").slice(0, 200),
-    responseSummary: String(response || "").slice(0, 100),
-    timestamp: new Date().toISOString(),
-  });
-  if (patterns.interactions.length > 50)
-    patterns.interactions = patterns.interactions.slice(-50);
-
-  if (corrections && corrections.length > 0) {
-    for (const c of corrections) {
-      patterns.corrections.push({
-        original: String(c.original || input || "").slice(0, 200),
-        correction: String(c.correction || "").slice(0, 200),
-        timestamp: new Date().toISOString(),
-      });
-    }
-    if (patterns.corrections.length > 20)
-      patterns.corrections = patterns.corrections.slice(-20);
-  }
-
-  cacheSet(key, patterns, CACHE_TTL * 7);
-  return patterns;
-}
-
-// Find matching patterns from past interactions for faster response
-function cacheFindPattern(input, userId) {
-  const key = "user_pattern:" + (userId || "anonymous");
-  const patterns = cacheGet(key, CACHE_TTL * 7);
-  if (!patterns || !patterns.interactions) return null;
-
-  const inputWords = new Set(
-    String(input || "")
-      .toLowerCase()
-      .split(/\s+/)
-      .filter((w) => w.length > 2),
-  );
-  if (inputWords.size === 0) return null;
-
-  let bestMatch = null;
-  let bestScore = 0;
-  for (const interaction of patterns.interactions) {
-    const pastWords = new Set(
-      (interaction.input || "")
-        .toLowerCase()
-        .split(/\s+/)
-        .filter((w) => w.length > 2),
-    );
-    let overlap = 0;
-    for (const word of inputWords) {
-      if (pastWords.has(word)) overlap++;
-    }
-    const score = overlap / Math.max(inputWords.size, pastWords.size, 1);
-    if (score > bestScore && score > 0.3) {
-      bestScore = score;
-      bestMatch = interaction;
-    }
-  }
-  return bestMatch;
-}
-
-// Learn from explicit user corrections for future accuracy
-function cacheLearnCorrection(userId, originalInput, correctedResponse) {
-  const key = "user_pattern:" + (userId || "anonymous");
-  let patterns = cacheGet(key, CACHE_TTL * 7) || {
-    interactions: [],
-    preferences: {},
-    corrections: [],
-  };
-  patterns.corrections.push({
-    original: String(originalInput || "").slice(0, 200),
-    correction: String(correctedResponse || "").slice(0, 200),
-    timestamp: new Date().toISOString(),
-  });
-  if (patterns.corrections.length > 20)
-    patterns.corrections = patterns.corrections.slice(-20);
-  cacheSet(key, patterns, CACHE_TTL * 7);
-  log("INFO", "CACHE_LEARNED", {
-    userId: String(userId || "").slice(0, 8),
-    correctionCount: patterns.corrections.length,
-  });
-}
-
-// Get all stored corrections for a user to guide agent responses
-function cacheGetCorrections(userId) {
-  const key = "user_pattern:" + (userId || "anonymous");
-  const patterns = cacheGet(key, CACHE_TTL * 7);
-  return patterns ? patterns.corrections || [] : [];
-}
-
-// Quick check: cache-hit → skip full mission
-function cacheQuickResponse(input, userId) {
-  const pattern = cacheFindPattern(input, userId);
-  if (!pattern) return null;
-  // Found similar pattern, return cached response summary for guidance
-  return {
-    hit: true,
-    similarInput: pattern.input,
-    previousResponse: pattern.responseSummary,
-  };
-}
-
-// ══════════════════════════════════════════════════════════════
+// 
 // HAQ MAWLA — Universal Response Normalizer
 //  Zero dependency · OpenAI, Anthropic, Gemini, Ollama unified
 //  Origin: exam/Haq Mawla/server.js
-// ══════════════════════════════════════════════════════════════
+// 
 // Converts any provider response to unified OpenAI-compatible format.
 // Notably extracts content from reasoning_content (Mimo, North Mini, Nemotron)
-// ══════════════════════════════════════════════════════════════
+// 
 
 // ─── Model + Provider Masking System ─────────────────────────
 // Agent only knows zombie name — original model/provider names are hidden
@@ -6427,11 +6300,6 @@ const PROVIDER_MASK_MAP = {
   CUSTOM: "ZombieCoder",
   Unknown: "ZombieCoder",
 };
-
-function maskProviderName(realName) {
-  return PROVIDER_MASK_MAP[realName] || "ZombieCoder";
-}
-
 // Model name masking — resolves zombie name from original model name
 function maskModelName(realModelName) {
   for (const p of Object.values(PROVIDER_CONFIG)) {
@@ -6723,7 +6591,6 @@ function normalizeResponse(raw, modelHint) {
   //   JSON strings (OpenAI canonical [1][5]) so JSON.parse never breaks.
   const toolCalls = TOOLADAPTER.normalizeChatToolCalls(message.tool_calls);
 
-  // KEY FIX: Mimo, North Mini, Nemotron → content empty, reasoning exists
   // Use FULL reasoning as content when content is empty — no truncation
   // Phase 3 (consensus output) handles filtering of meta/reasoning artifacts
   let contentWasEmpty = false;
@@ -6768,9 +6635,9 @@ function normalizeResponse(raw, modelHint) {
   };
 }
 
-// ══════════════════════════════════════════════════════════════
+// 
 //  MODEL CALL (via Competition Router)
-// ══════════════════════════════════════════════════════════════
+// 
 // ─── #5 swap_notice — ethical model/provider swap visibility ──
 // Every silent fallback (provider-hop or model-hop) is recorded on a
 // per-request trail. Keyed by the SAME messages array that recursion
@@ -6945,7 +6812,7 @@ function callModelStream(
           // instead of hot-looping the fallback chain. A malformed provider
           // *response* is the provider's problem, so the chain continues.
           if (/^boundary_reject request:/.test(errMsg || "")) return false;
-          if (retry < 3) {
+          if (!providerOverride && retry < 3) {
             const nextProvider = findNextProvider(model, providerId);
             if (nextProvider) {
               log("WARN", "PROVIDER_FALLBACK", {
@@ -6968,7 +6835,10 @@ function callModelStream(
           const errMsg = r.error || "stream failed";
           if (r.rate_limited || r.statusCode === 429) {
             setRateLimited(providerId, model, errMsg);
-            const nextProvider = retry < 3 ? findNextProvider(model, providerId) : null;
+            const nextProvider =
+              !providerOverride && retry < 3
+                ? findNextProvider(model, providerId)
+                : null;
             if (nextProvider) {
               log("WARN", "PROVIDER_FALLBACK_RATE_LIMIT", {
                 from: providerId,
@@ -7029,7 +6899,10 @@ function callModelStream(
       })
       .catch(function (err) {
         const retry = _retryCount || 0;
-        const nextProvider = retry < 3 ? findNextProvider(model, providerId) : null;
+        const nextProvider =
+          !providerOverride && retry < 3
+            ? findNextProvider(model, providerId)
+            : null;
         if (nextProvider) {
           log("WARN", "PROVIDER_FALLBACK", {
             from: providerId,
@@ -7211,7 +7084,9 @@ function callModel(
         if (r.rate_limited || r.statusCode === 429) {
           const errMsg = r.error || "rate limited";
           setRateLimited(providerId, model, errMsg);
-          const nextProvider = findNextProvider(model, providerId);
+          const nextProvider = providerOverride
+            ? null
+            : findNextProvider(model, providerId);
           if (nextProvider) {
             log("WARN", "PROVIDER_FALLBACK_RATE_LIMIT", {
               from: providerId,
@@ -7414,7 +7289,7 @@ async function callModelWithTools(
   const MAX_ROUNDS = 5;
   const budget = promptBudgetFor(model);
   for (let round = 0; round < MAX_ROUNDS; round++) {
-    // ZOMBIE FIX: Don't force tool_choice to "required" — OpenCode free models
+    // Don't force tool_choice to "required" — OpenCode free models
     // (nemotron-3-ultra-free, mimo-v2.5-free, big-pickle) return 400 error
     // when tool_choice is "required". Let model decide ("auto" behavior).
     // User can still explicitly pass tool_choice if needed.
@@ -7506,6 +7381,7 @@ async function callModelWithTools(
         : {}),
     });
     // Execute each tool
+    const discovered = [];
     for (const tc of tcs) {
       let result;
       try {
@@ -7534,6 +7410,10 @@ async function callModelWithTools(
         tool_call_id: tc.id,
         content: capped.text,
       });
+      if (tc.function.name === "tool_search") discovered.push(capped.text);
+    }
+    for (const text of discovered) {
+      tools = expandToolsFromSearch(tools, "tool_search", text);
     }
   }
   // After max rounds, force a text-only response (no tools) instead of error
@@ -7668,6 +7548,7 @@ async function callModelStreamWithTools(
       tool_calls: tcs,
       ...(result.reasoning_content ? { reasoning_content: result.reasoning_content } : {}),
     });
+    const discovered = [];
     for (const tc of tcs) {
       let text = "";
       try {
@@ -7694,6 +7575,10 @@ async function callModelStreamWithTools(
         tool_call_id: tc.id,
         content: capped.text,
       });
+      if (tc.function.name === "tool_search") discovered.push(capped.text);
+    }
+    for (const text of discovered) {
+      tools = expandToolsFromSearch(tools, "tool_search", text);
     }
     log("INFO", "STREAM_TOOL_ROUND", {
       model,
@@ -7735,9 +7620,9 @@ async function callModelStreamWithTools(
   };
 }
 
-// ══════════════════════════════════════════════════════════════
+// 
 //  PROXY MODE — Direct model call via Competition Router
-// ══════════════════════════════════════════════════════════════
+// 
 // When client calls with masked model name (e.g. "model-pro", "llama-70b", "gemini-flash")
 // competition router → resolveProvider → resolveApiModel (unmask) → provider API → normalize
 
@@ -7807,9 +7692,9 @@ async function proxyChatCompletion(
   );
 }
 
-// ══════════════════════════════════════════════════════════════
+// 
 //  EXECUTION ENGINE
-// ══════════════════════════════════════════════════════════════
+// 
 
 // ─── Input Pattern Recognition Engine ──────────────────────
 // Intelligent classification of user input type
@@ -8047,17 +7932,6 @@ function selectRelevantAgents(input) {
   // Convert to array, keep priority order
   return AGENTS.filter((a) => selected.has(a.id)).map((a) => a.id);
 }
-
-// ─── Legacy: Simple Greeting Check ──────────────────────────
-function isSimpleQuestion(input) {
-  const classification = classifyInput(input);
-  return (
-    classification.type === "greeting" ||
-    (classification.type === "simple_qa" &&
-      classification.complexity === "simple")
-  );
-}
-
 // Phase 1: Parallel Agent Responses with staggered thinking display
 async function phase1_initialResponse(
   agents,
@@ -8902,386 +8776,7 @@ async function phase3_combinedOutput(
   };
 }
 
-// ══════════════════════════════════════════════════════════════
-/**
- * ═══════════════════════════════════════════════════════════════
- * Anti-Dote Chain: Complete 6-Step Execution Wrapper
- * ═══════════════════════════════════════════════════════════════
- *
- * Usage:
- *   const output = await wrapWithAntiDote(executeMission, userInput, ...args);
- *   output.verified === true → guaranteed correct
- */
-async function wrapWithAntiDote(missionFn, input, ...args) {
-  const chainLog = [];
-  const startTime = Date.now();
-  const logChain = (step, status, detail) =>
-    chainLog.push({ step, status, detail, time: Date.now() - startTime });
-
-  // Step 1: Validate
-  const { valid, contract, error: vErr } = antiDoteValidateInput(input);
-  if (!valid) {
-    logChain("validate", "FAILED", vErr.message);
-    return {
-      success: false,
-      verified: false,
-      combined: null,
-      error: vErr.toJSON(),
-      chain: chainLog,
-      contract,
-      antiDote: { applied: true, version: "1.0.0" },
-    };
-  }
-  logChain("validate", "PASSED", "Input schema valid");
-
-  // Step 2: Proof Check
-  const { provable, error: pErr } = antiDoteCheckProof(contract);
-  if (!provable) {
-    logChain("proof_check", "FAILED", pErr.message);
-    return {
-      success: false,
-      verified: false,
-      combined: null,
-      error: pErr.toJSON(),
-      chain: chainLog,
-      contract,
-      antiDote: { applied: true, version: "1.0.0" },
-    };
-  }
-  logChain("proof_check", "PASSED", `Complexity: ${contract.proof.complexity}`);
-
-  // Step 3: getUserConsent — verify user permission
-  // Per documentation: user_approval_required? -> wait_for_confirmation
-  contract.constraints.requireConsent = true;
-
-  // Always require real user consent — no auto-grant even in API mode.
-  // Frontend UI must handle consent UI; API calls get pending status.
-  contract.consent = {
-    required: true,
-    granted: false, // Require real user consent, not server-side auto-approval
-    grantedAt: null,
-    method: "pending_user_consent",
-    requiresFrontendUI: true,
-  };
-  contract.chain.push({
-    step: "consent",
-    status: "PENDING",
-    timestamp: new Date().toISOString(),
-  });
-  logChain(
-    "consent",
-    "PENDING",
-    "Waiting for real user consent (not server-side auto-approval)",
-  );
-
-  // SECURITY FIX (S6): Block execution if consent not granted
-  // Contract says requireConsent=true, but code was continuing without checking
-  if (contract.consent.required && !contract.consent.granted) {
-    logChain(
-      "consent",
-      "BLOCKED",
-      "User consent required but not granted — execution halted",
-    );
-    return {
-      success: false,
-      verified: false,
-      combined: null,
-      error:
-        "User consent required but not granted. Please approve via the frontend UI.",
-      chain: chainLog,
-      contract,
-      antiDote: { applied: true, version: "1.0.0" },
-    };
-  }
-
-  // Step 4: Goal Contract
-  const { contracted, error: cErr } = antiDoteSetGoalContract(contract);
-  if (!contracted) {
-    logChain("goal_contract", "FAILED", cErr.message);
-    return {
-      success: false,
-      verified: false,
-      combined: null,
-      error: cErr.toJSON(),
-      chain: chainLog,
-      contract,
-      antiDote: { applied: true, version: "1.0.0" },
-    };
-  }
-  logChain(
-    "goal_contract",
-    "PASSED",
-    `Type: ${contract.goal.type}, ${contract.goal.successCriteria.length} criteria`,
-  );
-
-  // Step 5: Execute
-  const {
-    success: eSuccess,
-    result,
-    error: eErr,
-  } = await antiDoteExecute(contract, missionFn, input, ...args);
-  if (!eSuccess) {
-    logChain("execute", "FAILED", eErr.message);
-    return {
-      success: false,
-      verified: false,
-      combined: null,
-      error: eErr.toJSON(),
-      chain: chainLog,
-      contract,
-      antiDote: { applied: true, version: "1.0.0" },
-    };
-  }
-  logChain("execute", "PASSED", `Mission done in ${Date.now() - startTime}ms`);
-
-  // Step 6: Verify
-  const { verified } = antiDoteVerifyOutput(contract);
-  logChain(
-    "verify",
-    verified ? "PASSED" : "FAILED",
-    `Score: ${contract.verification.score}/100`,
-  );
-
-  // Augment result
-  return {
-    success: result?.success !== false,
-    verified,
-    combined: result?.combined || "",
-    agents: result?.agents || [],
-    verification: {
-      ...(result?.verification || {}),
-      antiDote: {
-        applied: true,
-        score: contract.verification.score,
-        passed: verified,
-        issues: contract.verification.issues,
-        checks: contract.verification.checks,
-      },
-    },
-    stats: result?.stats || {},
-    timing: { ...(result?.timing || {}), antiDote: Date.now() - startTime },
-    timestamp: new Date().toISOString(),
-    session_id: result?.session_id,
-    contract: {
-      goal: contract.goal,
-      proof: contract.proof,
-      verification: contract.verification,
-      chain: chainLog,
-    },
-    antiDote: { applied: true, version: "1.0.0" },
-  };
-}
-
-/**
- * ═══════════════════════════════════════════════════════════════
- * Anti-Dote Monitor: Non-blocking type safety observation
- * ═══════════════════════════════════════════════════════════════
- *
- * SAME chain as wrapWithAntiDote, but NEVER blocks execution.
- * Runs validation → proof check → consent → goal → execute → verify
- * Logs ALL steps visually with ANSI colors.
- * If anti-dote fails → execution still proceeds (monitoring mode).
- * Returns augmented result with anti-dote metadata.
- */
-async function antiDoteMonitor(missionFn, input, ...args) {
-  const startTime = Date.now();
-  const chainLog = [];
-  const logChain = (step, status, detail) => {
-    const entry = { step, status, detail, time: Date.now() - startTime };
-    chainLog.push(entry);
-    // Visual terminal log with colors
-    const icon = status === "PASSED" ? "" : status === "FAILED" ? "" : "";
-    const color =
-      status === "PASSED"
-        ? "\x1b[32m"
-        : status === "FAILED"
-          ? "\x1b[31m"
-          : "\x1b[33m";
-    const reset = "\x1b[0m";
-    console.log(
-      `  ${icon} ${color}[ANTI-DOTE]${reset} ${step.padEnd(15)} ${status.padEnd(8)} ${detail}`,
-    );
-  };
-  const bold = "\x1b[1m";
-  const reset = "\x1b[0m";
-  const cyan = "\x1b[36m";
-  const yellow = "\x1b[33m";
-
-  console.log(
-    `\n${bold}${cyan}══════════════════ ANTI-DOTE MONITOR ══════════════════${reset}`,
-  );
-  console.log(`  ${bold}Input:${reset} "${(input || "").slice(0, 80)}..."`);
-  console.log(
-    `  ${bold}Mode:${reset} Non-blocking monitoring ${yellow}(execution proceeds regardless)${reset}\n`,
-  );
-
-  // Step 1: Validate
-  const { valid, contract, error: vErr } = antiDoteValidateInput(input);
-  if (!valid) {
-    logChain("validate", "FAILED", vErr.message);
-    console.log(
-      `  ${bold} ANTI-DOTE: Validation failed, but execution continues (monitoring mode)${reset}\n`,
-    );
-    // Still execute the mission even if validation fails
-    try {
-      const result = await missionFn(input, ...args);
-      console.log(
-        `  ${bold}${cyan}══════════════ ANTI-DOTE MONITOR (execution result) ══════════════${reset}\n`,
-      );
-      return {
-        ...result,
-        antiDoteMonitor: {
-          applied: true,
-          passed: false,
-          chain: chainLog,
-          error: vErr.message,
-        },
-      };
-    } catch (err) {
-      return {
-        success: false,
-        error: err.message,
-        antiDoteMonitor: {
-          applied: true,
-          passed: false,
-          chain: chainLog,
-          error: vErr.message,
-        },
-      };
-    }
-  }
-  logChain("validate", "PASSED", `Input valid (${input.length} chars)`);
-
-  // Step 2: Proof Check
-  const { provable, error: pErr } = antiDoteCheckProof(contract);
-  if (!provable) {
-    logChain("proof_check", "FAILED", pErr.message);
-    console.log(
-      `  ${bold} ANTI-DOTE: Proof check failed, but execution continues${reset}\n`,
-    );
-    try {
-      const result = await missionFn(input, ...args);
-      console.log(
-        `  ${bold}${cyan}══════════════ ANTI-DOTE MONITOR (execution result) ══════════════${reset}\n`,
-      );
-      return {
-        ...result,
-        antiDoteMonitor: {
-          applied: true,
-          passed: false,
-          chain: chainLog,
-          error: pErr.message,
-        },
-      };
-    } catch (err) {
-      return {
-        success: false,
-        error: err.message,
-        antiDoteMonitor: {
-          applied: true,
-          passed: false,
-          chain: chainLog,
-          error: pErr.message,
-        },
-      };
-    }
-  }
-  logChain("proof_check", "PASSED", `Complexity: ${contract.proof.complexity}`);
-
-  // Step 3: Goal Contract (skip consent in monitoring mode)
-  const { contracted, error: cErr } = antiDoteSetGoalContract(contract);
-  if (!contracted) {
-    logChain("goal_contract", "FAILED", cErr.message);
-  } else {
-    logChain(
-      "goal_contract",
-      "PASSED",
-      `Type: ${contract.goal.type}, ${contract.goal.successCriteria.length} criteria`,
-    );
-  }
-  // In monitoring mode, always proceed to execution
-
-  // Step 5: Execute (always run the actual mission)
-  let eSuccess = true,
-    eResult = null,
-    eErr2 = null;
-  try {
-    eResult = await missionFn(input, ...args);
-    eSuccess = eResult?.success !== false;
-    logChain(
-      "execute",
-      eSuccess ? "PASSED" : "FAILED",
-      `Done in ${Date.now() - startTime}ms`,
-    );
-    if (!eSuccess) eErr2 = eResult?.error || "Execution returned success=false";
-  } catch (err) {
-    eSuccess = false;
-    eErr2 = err.message;
-    logChain("execute", "FAILED", err.message);
-  }
-
-  // Step 6: Verify (if we have a contract and results)
-  let verified = false;
-  let verificationScore = 0;
-  let verificationIssues = [];
-  let verificationChecks = [];
-  if (contracted && eResult) {
-    contract.execution = {
-      completedAt: new Date().toISOString(),
-      success: eSuccess,
-      result: eResult,
-    };
-    contract.chain.push("executed");
-    const vResult = antiDoteVerifyOutput(contract);
-    verified = vResult.verified;
-    verificationScore = contract.verification.score;
-    verificationIssues = contract.verification.issues;
-    verificationChecks = contract.verification.checks;
-    logChain(
-      "verify",
-      verified ? "PASSED" : "FAILED",
-      `Score: ${verificationScore}/100, Issues: ${verificationIssues.length}`,
-    );
-  } else {
-    logChain(
-      "verify",
-      "SKIPPED",
-      "No verification (contract or result missing)",
-    );
-  }
-
-  // Visual summary
-  const statusIcon = verified ? "" : "";
-  const statusColor = verified ? "\x1b[32m" : "\x1b[31m";
-  console.log(
-    `\n  ${bold}${statusColor}${statusIcon} ANTI-DOTE VERDICT: ${verified ? "PASSED ✓" : "FAILED ✗"}${reset}`,
-  );
-  console.log(`  ${bold}Score:${reset} ${verificationScore}/100`);
-  if (verificationIssues.length > 0) {
-    console.log(`  ${bold}Issues:${reset}`);
-    for (const issue of verificationIssues) {
-      console.log(`    • ${issue}`);
-    }
-  }
-  console.log(
-    `${bold}${cyan}══════════════════════════════════════════════════════${reset}\n`,
-  );
-
-  // Return augmented result
-  const baseResult = eResult || { success: eSuccess, combined: "" };
-  return {
-    ...baseResult,
-    antiDoteMonitor: {
-      applied: true,
-      passed: verified,
-      score: verificationScore,
-      issues: verificationIssues,
-      checks: verificationChecks,
-      chain: chainLog,
-      elapsed: Date.now() - startTime,
-    },
-  };
-}
+const antiDoteMonitor = antiDoteModule.antiDoteMonitor;
 
 // ─── Full Mission Execute ─────────────────────────────────────
 async function executeMission(
@@ -9292,6 +8787,17 @@ async function executeMission(
   tools,
 ) {
   const startTime = Date.now();
+
+  const inputSan = sanitizeForModel(String(userInput || ""));
+  if (inputSan.total > 0) {
+    log("INFO", "INPUT_SANITIZED", {
+      source: "mission",
+      removed: inputSan.total,
+      chars: String(userInput || "").length,
+      clean: inputSan.text.length,
+    });
+  }
+  userInput = inputSan.text;
 
   // Safety: ensure AGENTS is not empty
   if (!AGENTS || AGENTS.length === 0) {
@@ -9309,28 +8815,33 @@ async function executeMission(
     };
   }
 
-  // Auto-inject MCP tools when no tools provided. callModel applies the
-  // single tool budget (count + bytes + prefill) once the provider is known.
-  if (!tools || tools.length === 0) {
-    const mcpToolList = Object.entries(MCP_TOOLS).map(([name, def]) => ({
-      type: "function",
-      function: {
-        name,
-        description: def.description,
-        parameters: {
-          type: "object",
-          properties: def.params || {},
-          required: def.required || [],
-        },
-      },
-    }));
-    if (mcpToolList.length > 0) tools = mcpToolList;
-  }
-
   // ─── Step 0: Classify input → select relevant agents ──────
   const classification = classifyInput(userInput);
   const simpleMode =
     classification.type === "greeting" || classification.type === "simple_qa";
+
+  // Tool delivery:
+  //   simple greeting/QA → no tools at all;
+  //   lazy mode (default) → tool_search + configured pins;
+  //   MCP_TOOL_LAZY=0 → the full catalog.
+  if (!tools || tools.length === 0) {
+    if (simpleMode) {
+      tools = [];
+      log("INFO", "TOOL_LAZY_SKIPPED", {
+        reason: "simple",
+        classification: classification.type,
+      });
+    } else if (String(process.env.MCP_TOOL_LAZY || "1") !== "0") {
+      tools = lazyToolCatalog();
+      log("INFO", "TOOL_LAZY", {
+        sent: tools.length,
+        catalog: Object.keys(MCP_TOOLS).length,
+        classification: classification.type,
+      });
+    } else {
+      tools = mcpToolsToOpenAI();
+    }
+  }
 
   // Smart agent selection: not all agents for every task
   let missionAgents = AGENTS;
@@ -9681,63 +9192,6 @@ async function executeMission(
     session_id: sessionId,
   };
 }
-
-// ─── SSOT Auto-Inject: inject project context sent by client ──
-// If client provides `project_context` or `ssot` field, inject it.
-// Otherwise server injects nothing — server filesystem is not user local.
-/**
- * 2026-09-27 context alignment: check the SSOT file AFTER the user's input and
- * send only the sections that answer THIS input (plus a short overview when
- * nothing matches). The full blueprint stays on disk — the model reads it with
- * read_file when a deeper answer needs it (awareness, not bulk).
- */
-function buildSSOTExcerpt(sessionId, userInput) {
-  try {
-    const dir = getEffectiveDir(sessionId) || mcpWorkingDir || path.resolve(".");
-    const picked = pickEntries(readSSOT(dir), userInput || "", {
-      maxChars: 600,
-      maxEntries: 2,
-      fallback: "none",
-    });
-    if (!picked.body) return "";
-    return (
-      "\n\nPROJECT SSOT (bounded excerpt; full blueprint at .zombie/SSOT.md):\n" +
-      stripInvisible(picked.body) +
-      "\n--- END SSOT EXCERPT ---\n"
-    );
-  } catch (e) {
-    log("WARN", "SSOT_CONTEXT_FAIL", { error: e.message });
-    return "";
-  }
-}
-
-/**
- * Read syllabus.md, memory.json, and recent session context
- * from the project's .zombiecoder/agents/ directory.
- * Returns a formatted string or empty string if nothing found.
- */
-function buildSyllabusExcerpt(sessionId, userInput) {
-  try {
-    const dir = getEffectiveDir(sessionId) || mcpWorkingDir || path.resolve(".");
-    const syllabusContent = readSyllabus(dir);
-    if (!syllabusContent) return "";
-    const picked = pickEntries(syllabusContent, userInput || "", {
-      maxChars: 600,
-      maxEntries: 2,
-      fallback: "none",
-    });
-    if (!picked.body) return "";
-    return (
-      "\n\nAGENT SYLLABUS (bounded excerpt; full file at .zombie/syllabus.md; plugin entries merged read-only):\n" +
-      stripInvisible(picked.body) +
-      "\n--- END SYLLABUS ---\n"
-    );
-  } catch (e) {
-    log("WARN", "SYLLABUS_CONTEXT_FAIL", { error: e.message });
-    return "";
-  }
-}
-
 // ─── System prompt builder ────────────────────────────────────
 // One place builds every agent system prompt. It contains only the selected
 // agent's persona, short rules, and bounded project excerpts. Tool schemas
@@ -9887,11 +9341,6 @@ async function executeSingleAgent(
 
   const userMsg = messages.filter((m) => m.role === "user").pop();
   let userInput = userMsg ? userMsg.content : "";
-  // INPUT_FIX (2026-08-07, Code Guru - Monu): VS Code Copilot Chat sends
-  // content as an ARRAY of parts ([{type:"text",text:"..."}] or duck-typed
-  // [{value:"..."}]) in some paths. mission mode had this fix; single-agent
-  // did NOT — so agents received an empty/object input and replied with
-  // empty responses. Normalize BOTH string and array forms here.
   if (Array.isArray(userInput)) {
     userInput = userInput
       .map((c) => (typeof c === "string" ? c : c.text || c.value || ""))
@@ -9901,6 +9350,16 @@ async function executeSingleAgent(
     userInput = userInput.text || userInput.value || JSON.stringify(userInput);
   }
   userInput = String(userInput || "");
+  const inputSan = sanitizeForModel(userInput);
+  if (inputSan.total > 0) {
+    log("INFO", "INPUT_SANITIZED", {
+      source: "single",
+      removed: inputSan.total,
+      chars: userInput.length,
+      clean: inputSan.text.length,
+    });
+  }
+  userInput = inputSan.text;
 
   // Detect if user input involves code (to add code safety rules)
   const involvesCode =
@@ -9916,6 +9375,7 @@ async function executeSingleAgent(
   // The server owns the system prompt. Client-supplied system messages are
   // extra persona/context the server cannot audit, so they are dropped rather
   // than merged into the selected agent's prompt.
+  messages = sanitizeMessages(messages, "single");
   const clientSystemMessages = messages.filter((m) => m.role === "system");
   if (clientSystemMessages.length > 0) {
     log("INFO", "CLIENT_SYSTEM_MESSAGE_DROPPED", {
@@ -10247,9 +9707,9 @@ async function executeSingleAgent(
   };
 }
 
-// ══════════════════════════════════════════════════════════════
+// 
 //  MCP JSON-RPC 2.0 HANDLER
-// ══════════════════════════════════════════════════════════════
+// 
 let nextMcpId = 1;
 // MCP working directory tracking
 // The runtime may execute from dist/ (the gateway wrapper cd's there and
@@ -10357,6 +9817,27 @@ const MCP_TOOLS = {
   get_working_dir: {
     description: "Get current MCP working directory",
     params: {},
+    required: [],
+  },
+  tool_search: {
+    description:
+      "Search the live tool catalog by keyword. Returns matching tool names, descriptions and full JSON schemas. Call this first when you need a capability; call with an empty query to list every tool name. This keeps the per-request tool payload small.",
+    params: {
+      query: {
+        type: "string",
+        description:
+          "Keyword(s) matched against tool names and descriptions; empty lists all tools",
+      },
+      limit: {
+        type: "integer",
+        description:
+          "Max matches (1-50, default 12; empty query defaults to 100)",
+      },
+      include_schema: {
+        type: "boolean",
+        description: "Include the full JSON schema for each match (default true)",
+      },
+    },
     required: [],
   },
   web_search: {
@@ -10672,11 +10153,6 @@ function loadExternalTools() {
       continue;
     }
     seen.add(name);
-    // TDZ_FIX (2026-08-08): renamed inner `const key` -> `authKey`.
-    // The for-of loop variable is `key`; shadowing it with `const key`
-    // inside the loop body put `key` in the temporal dead zone, so the
-    // first `key.match(...)` above threw "Cannot access 'key' before
-    // initialization" and crashed the server at startup.
     const authKey = process.env["EXTERNAL_TOOL_" + n + "_KEY"] || "";
     const method = (process.env["EXTERNAL_TOOL_" + n + "_METHOD"] || "POST").toUpperCase();
     const desc = process.env["EXTERNAL_TOOL_" + n + "_DESCRIPTION"] || "External tool: " + name;
@@ -10701,7 +10177,7 @@ function loadExternalTools() {
 }
 loadExternalTools();
 
-// ══════════════════════════════════════════════════════════════
+// 
 // PHASE D: OUTBOUND MCP CLIENT (2026-08-10, Code Guru - Monu)
 // This server becomes an MCP *client*: it connects to REMOTE MCP
 // servers (JSON-RPC 2.0 over HTTP POST), discovers their tools, and
@@ -10709,7 +10185,7 @@ loadExternalTools();
 // prefix `remote__<server>__<tool>` so local tools are not shadowed.
 // Config via env: REMOTE_MCP_SERVERS = "url1,url2" OR JSON array:
 //   [{"url":"https://b.zombiecoder.my.id/mcp","name":"zombie"}]
-// ══════════════════════════════════════════════════════════════
+// 
 
 // Generic tool: lets agents call ANY remote MCP server tool by name.
 MCP_TOOLS.remote_mcp_call = {
@@ -11019,9 +10495,7 @@ async function executeRemoteMcpTool(server, tool, args) {
 // Clients often send ~/project even though path.isAbsolute("~/x") is false.
 // Expand it before resolving so the agent reaches the same file a shell would.
 // The expansion rule lives in lib/env.js (one resolver).
-function expandHome(value) {
-  return expandHomePath(value);
-}
+const expandHome = expandHomePath;
 
 function isPathSafe(targetPath, workingDir) {
   // AGENT_FS_SCOPE — env toggle for the agent's filesystem sandbox.
@@ -11042,8 +10516,6 @@ function isPathSafe(targetPath, workingDir) {
   // Also check the static ALLOWED_DIRS (server CWD + log/data dirs).
   for (const allowed of ALLOWED_DIRS) {
     // Root directory ("/" on POSIX, "C:\" on Windows): everything is under it.
-    // Fix: previously `allowed + path.sep` produced "//" for root, which
-    // never matched any path — root access via ALLOWED_DIRS=/ was broken.
     if (allowed === path.sep || allowed === path.parse(allowed).root) {
       return true;
     }
@@ -11123,6 +10595,16 @@ async function executeMcpTool(tool, args, ctx) {
   }
 
   switch (tool) {
+    case "tool_search": {
+      const result = searchToolCatalog(
+        args.query,
+        args.limit,
+        args.include_schema,
+      );
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    }
     case "read_file": {
       const readPath = expandHome(args.path || ".");
       const p = path.isAbsolute(readPath)
@@ -11193,12 +10675,28 @@ async function executeMcpTool(tool, args, ctx) {
       }
       const dir = path.dirname(p);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(p, args.content || "");
+      const writeSan = sanitizeForWrite(String(args.content || ""));
+      if (writeSan.total > 0) {
+        log("INFO", "WRITE_SANITIZED", {
+          path: p,
+          removed: writeSan.total,
+          chars: String(args.content || "").length,
+          clean: writeSan.text.length,
+        });
+      }
+      fs.writeFileSync(p, writeSan.text);
       return {
         content: [
           {
             type: "text",
-            text: "Written " + (args.content || "").length + " bytes to " + p,
+            text:
+              "Written " +
+              writeSan.text.length +
+              " bytes to " +
+              p +
+              (writeSan.total
+                ? " (" + writeSan.total + " invisible/control char(s) removed)"
+                : ""),
           },
         ],
       };
@@ -11420,9 +10918,6 @@ async function executeMcpTool(tool, args, ctx) {
         };
       }
       mcpWorkingDir = newDir;
-      // SECURITY FIX (S4): Don't dynamically add to ALLOWED_DIRS
-      // Previously any directory could be added via MCP set_working_directory,
-      // bypassing the original ALLOWED_DIRS restrictions (path traversal risk).
       // Only update mcpWorkingDir — ALLOWED_DIRS remains static.
       const dirStr = path.resolve(newDir);
       if (
@@ -11735,7 +11230,6 @@ async function executeMcpTool(tool, args, ctx) {
           target = "file://" + filePath;
         }
       }
-      // SECURITY FIX (S1): Use cp.execFile instead of cp.exec to prevent Command Injection
       // cp.exec() passes command through shell — JSON.stringify alone cannot prevent
       // backtick and $() substitution. cp.execFile bypasses shell entirely.
       if (
@@ -12737,9 +12231,9 @@ function handleUdsMcpMessage(socket, message) {
   );
 }
 
-// ══════════════════════════════════════════════════════════════
+// 
 //  IDENTITY MASKING + WATERMARK STRIPPING
-// ══════════════════════════════════════════════════════════════
+// 
 // Removes hidden watermarks, invisible unicode chars, model identity
 // Per V0_PLATFORM_INDEPENDENT_CONTRACT.md: NO hidden watermarks or branding
 function maskModelIdentity(text) {
@@ -12804,7 +12298,6 @@ function maskModelIdentity(text) {
       /(?:Provided by|Courtesy of|Brought to you by)[^.!?\\n]+[.!?]?/gi,
       "",
     )
-    // ── BUG #6 + S7 FIX: Enhanced watermark patterns ──
     // Contract says NO watermarks — these catch additional provider branding
     .replace(
       /(?:Made with|Built with|Powered by|Created by|Developed by|Designed by|Crafted by)\s+\w+[^.!?\n]*[.!?\n]?/gi,
@@ -12824,7 +12317,6 @@ function maskModelIdentity(text) {
     )
     .trim();
 
-  // ── BUG #6 + S7 FIX: Log watermark detection for compliance monitoring ──
   if (cleaned !== text) {
     log("WARN", "WATERMARK_STRIPPED", {
       original_length: text.length,
@@ -12836,9 +12328,9 @@ function maskModelIdentity(text) {
   return cleaned;
 }
 
-// ══════════════════════════════════════════════════════════════
+// 
 //  GOAL VERIFICATION — Type Safety Before Output
-// ══════════════════════════════════════════════════════════════
+// 
 // Checks if output meets goal criteria BEFORE sending to user.
 // If output is invalid, blocks it and returns error message.
 function verifyGoalOutput(content, userInput) {
@@ -12936,9 +12428,9 @@ function verifyGoalOutput(content, userInput) {
   };
 }
 
-// ══════════════════════════════════════════════════════════════
+// 
 //  AGENT-TO-AGENT CALL SYSTEM
-// ══════════════════════════════════════════════════════════════
+// 
 // Allows one agent to call another agent for specific tasks.
 // Pattern: [CALL:agent-id] task description [/CALL]
 function parseAgentCalls(content) {
@@ -13004,48 +12496,13 @@ async function executeAgentCall(
     agent: targetAgent.name,
   };
 }
-
-// ══════════════════════════════════════════════════════════════
-//  MANDATORY READINESS CHECK
-// ══════════════════════════════════════════════════════════════
-// Checks if all required context files exist before mission starts.
-function checkReadiness(projectDir) {
-  const issues = [];
-
-  // Check SSOT
-  const ssot = readSSOT(projectDir || ".");
-  if (!ssot) {
-    issues.push("SSOT.md not found — agent will lack project context");
-  }
-
-  // Check Syllabus
-  const syllabus = readSyllabus(projectDir || ".");
-  if (!syllabus) {
-    issues.push("Syllabus not found — agent will lack learned knowledge");
-  }
-
-  // Check Memory
-  const memory = readMemory(projectDir || ".");
-  if (!memory || !memory.recent_context || memory.recent_context.length === 0) {
-    issues.push("Memory empty — agent will lack session history");
-  }
-
-  return {
-    ready: issues.length === 0,
-    issues,
-    hasSSOT: !!ssot,
-    hasSyllabus: !!syllabus,
-    hasMemory: !!(memory && memory.recent_context?.length > 0),
-  };
-}
-
-// ══════════════════════════════════════════════════════════════
+// 
 //  RATE LIMIT TRACKING SYSTEM — Per-Domain Server Monitor
-// ══════════════════════════════════════════════════════════════
+// 
 // Tracks HTTP 429 rate limits and switches to fallback provider.
 // Each domain maintains its own rate limit state.
 // Respects cooldown period until limit reset.
-// ══════════════════════════════════════════════════════════════
+// 
 
 // Per-domain rate limit states (each server tracks its own limits)
 const RATE_LIMIT_STATES = {};
@@ -13124,9 +12581,9 @@ function getRateLimitStatus(domain) {
   };
 }
 
-// ══════════════════════════════════════════════════════════════
+// 
 //  PROVIDER HEALTH TRACKING SYSTEM
-// ══════════════════════════════════════════════════════════════
+// 
 
 const PROVIDER_HEALTH = {};
 
@@ -13279,31 +12736,6 @@ function isProviderHealthy(providerId, model) {
   if (isRateLimited(providerId, model)) return false;
   return true;
 }
-
-function getUnhealthyProviders() {
-  const result = [];
-  for (const [id, health] of Object.entries(PROVIDER_HEALTH)) {
-    // Only confirmed-down counts as unhealthy. `healthy === null` is unknown
-    // (never probed) and must not be reported as a dead provider.
-    if (health.healthy === false) {
-      result.push({
-        providerId: id,
-        status: providerHealthSnapshot(id).status,
-        consecutiveFailures: health.consecutiveFailures,
-        lastError: health.lastError,
-        remainingCooldownMs: health.lastFailureAt
-          ? Math.max(
-            0,
-            providerHealthCooldownMs() -
-            (Date.now() - health.lastFailureAt),
-          )
-          : 0,
-      });
-    }
-  }
-  return result;
-}
-
 // Public snapshot of every provider the process knows about, for /health.
 // Distinct from `healthy` (the process): a gateway can be perfectly alive
 // while one provider is down or stale.
@@ -13331,9 +12763,9 @@ function providerHealthReport() {
   return out;
 }
 
-// ══════════════════════════════════════════════════════════════
+// 
 //  HTTP SERVER
-// ══════════════════════════════════════════════════════════════
+// 
 function readBody(req, maxBytes = MAX_BODY_SIZE) {
   return new Promise((resolve) => {
     const chunks = [];
@@ -13428,7 +12860,6 @@ function writeWebChunk(res, chunk) {
   return true;
 }
 
-// SECURITY FIX (S5): Rate limiter for API endpoints
 const _rateLimitMap = new Map();
 function checkRateLimit(ip) {
   const now = Date.now();
@@ -13565,10 +12996,10 @@ function getUsageStats() {
   };
 }
 
-// ══════════════════════════════════════════════════════════════
+// 
 //  PERSISTENT TELEMETRY — write-through to SQLite (data/models.db)
 //  In-memory STATS die on restart; these tables do not.
-// ══════════════════════════════════════════════════════════════
+// 
 function dbRun(sql, params) {
   try {
     if (MODELS_DB) MODELS_DB.prepare(sql).run(...(params || []));
@@ -13683,8 +13114,8 @@ function recordRequestLog(row) {
   try {
     const now = Date.now();
     MODELS_DB.prepare(
-      `INSERT INTO request_log (ts, path, session_id, editor, agent, model, provider, upstream_provider, status, ok, elapsed_ms, swap_count, domain)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO request_log (ts, path, session_id, editor, agent, model, provider, upstream_provider, status, ok, elapsed_ms, swap_count, domain, prompt_tokens, completion_tokens, total_tokens)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       now,
       row.path || null,
@@ -13699,6 +13130,15 @@ function recordRequestLog(row) {
       Math.round(row.elapsed_ms || 0),
       row.swap_count || 0,
       row.domain || DETECTED_DOMAIN || null,
+      Math.max(0, Math.round(row.prompt_tokens || 0)),
+      Math.max(0, Math.round(row.completion_tokens || 0)),
+      Math.max(
+        0,
+        Math.round(
+          row.total_tokens ||
+            (Number(row.prompt_tokens) || 0) + (Number(row.completion_tokens) || 0),
+        ),
+      ),
     );
     // keep the log bounded (~20k rows) — occasional prune
     if (Math.random() < 0.02) {
@@ -13772,10 +13212,10 @@ function toolEnabled(tool) {
   }
 }
 
-// ══════════════════════════════════════════════════════════════
+// 
 //  WORKSPACE AUTO-SSOT — Extension sends workspace path,
 //  server auto-generates .zombiecoder/SSOT.md there.
-// ══════════════════════════════════════════════════════════════
+// 
 
 /**
  * Handle POST /api/workspace — Receive workspace path from extension,
@@ -13982,9 +13422,9 @@ const tcpServer = net.createServer((socket) => {
   });
 });
 
-// ══════════════════════════════════════════════════════════════
+// 
 // HTTP/1.1 Server (inbound) + HTTP/2 Client (outbound to providers)
-// ══════════════════════════════════════════════════════════════
+// 
 // ─── Service map for /api/system ─────────────────────────────
 // A TCP connect is enough to answer "is something listening"; we do not
 // claim the listener is healthy. /health and each service's own /health
@@ -14151,7 +13591,7 @@ const handleHttpRequest = async (req, res) => {
   );
   res.setHeader(
     "Access-Control-Allow-Headers",
-    "Origin, X-Requested-With, Content-Type, Accept, Authorization, X-Session-Id, X-Verify-Token, X-Working-Dir, X-File-Name",
+    "Origin, X-Requested-With, Content-Type, Accept, Authorization, X-Session-Id, X-Verify-Token, X-Working-Dir, X-File-Name, X-Admin-Token, X-Api-Key",
   );
   res.setHeader("Access-Control-Allow-Credentials", "true");
   res.setHeader("Access-Control-Max-Age", "86400");
@@ -14181,16 +13621,20 @@ const handleHttpRequest = async (req, res) => {
   }
 
   // ─── UI-1: graceful static serve for public/ pages ──────────
-  // Any request matching a file in s/public/ is served from there,
-  // so admin.html / index.html /
-  // even when the server runs in a folder without those files.
+  // Any request matching a file in public/ is served from there, except
+  // admin.html: the panel route owns it so the session cookie is always set.
   if (method === "GET" && !url.startsWith("/api/") && !url.startsWith("/v1/") && !url.startsWith("/mcp")) {
     const base = path.resolve(__dirname, "public");
     let rel = url.split("?")[0].split("#")[0];
     if (rel === "/") rel = "/index.html";
     // Only allow safe, non-traversal relative names
     const safeRel = rel.replace(/^\/+/, "");
-    if (safeRel && !safeRel.includes("..") && !safeRel.includes("\\")) {
+    if (
+      safeRel &&
+      safeRel !== "admin.html" &&
+      !safeRel.includes("..") &&
+      !safeRel.includes("\\")
+    ) {
       const filePath = path.join(base, safeRel);
       if (filePath.startsWith(base)) {
         try {
@@ -14286,7 +13730,7 @@ const handleHttpRequest = async (req, res) => {
         runtime: {
           port: PORT,
           uds_port: UDS_PORT,
-          grpc_port: parseInt(process.env.GRPC_PORT || "5052", 10),
+          grpc_port: parseInt(process.env.GRPC_PORT || DEFAULTS.GRPC_PORT, 10),
           bridge_port: parseInt(process.env.BRIDGE_PORT || DEFAULTS.BRIDGE_PORT, 10),
           ollama_base: process.env.OLLAMA_BASE || "",
         },
@@ -14305,8 +13749,8 @@ const handleHttpRequest = async (req, res) => {
       // rate-limit state (defeating the 50 req/min protection). This route is
       // declared BEFORE the old block-local adminAuthorized(), which is one of
       // the reasons that helper is now module-scope.
-      if (!adminAuthorized(req)) {
-        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN required" });
+      if (!adminRouteAuthorized(req)) {
+        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN and panel session required" });
         return;
       }
       const state = getRateLimitState(requestDomain);
@@ -14353,7 +13797,7 @@ const handleHttpRequest = async (req, res) => {
           "  -H \"x-working-dir: $PWD\" \\\n" +
           "  -d '{\"model\":\"mission\",\"messages\":[{\"role\":\"user\",\"content\":\"Say OK\"}],\"stream\":false}'"
         : "# OpenAI over UDS is disabled";
-      const grpcPort = parseInt(process.env.GRPC_PORT || "5052", 10);
+      const grpcPort = parseInt(process.env.GRPC_PORT || DEFAULTS.GRPC_PORT, 10);
       const httpsReady = !!(httpsServer && httpsServer.listening);
       const httpsExternal = /^https:/i.test(publicOrigin);
 
@@ -14737,129 +14181,56 @@ const handleHttpRequest = async (req, res) => {
     }
 
     // ─── DB mutation API (providers, models, agents) ───────────
-    // SECURITY: adminAuthorized() is module scope; lib/admin-routes.js
-    // receives it via ctx and checks every route before touching the DB.
-    // The admin page is only a client; no UI file is required to boot.
+    // SECURITY: adminRouteAuthorized() is module scope and checks both the
+    // admin credential and the panel-session cookie. lib/admin-routes.js
+    // receives the same guard via ctx. No UI file is required to boot.
     if (await adminApi.handle(adminApiContext(), req, res, url, method)) return;
 
-    // ─── GET /admin — self-contained panel ────────────────────
-    // The full document, CSS and client JS come from lib/admin-panel.js.
-    // public/admin.html is never read here, so an absent or renamed file
-    // cannot break the panel. The client verifies the admin credential once
-    // and then polls the same plain routes curl uses.
-    if ((url === "/admin" || url === "/admin/") && method === "GET") {
-      const html = adminPanel.renderAdminPanel({
+    // ─── GET /admin/zombie — optional admin page ──────────────
+    // Served directly by this process: no Nginx hop, no upstream fetch. The
+    // route mints the panel-session cookie that every admin method requires.
+    // public/admin.html is the convenience page; lib/admin-panel.js is the
+    // fallback. Both are optional: 503 only when neither exists.
+    if (
+      (url === "/admin/zombie" ||
+        url === "/admin/zombie/" ||
+        url === "/admin" ||
+        url === "/admin/" ||
+        url === "/admin.html") &&
+      method === "GET"
+    ) {
+      const page = loadAdminPage({
         domain: DETECTED_DOMAIN,
         version: DOMAIN_CFG.version,
         serverType: DOMAIN_CFG.type,
       });
+      if (!page) {
+        res.writeHead(503, {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Cache-Control": "no-store",
+        });
+        res.end("admin panel unavailable");
+        return;
+      }
+      const panelToken = adminSession.create();
       res.writeHead(200, {
         "Content-Type": "text/html; charset=utf-8",
         "Access-Control-Allow-Origin": getCorsOrigin(req.headers.origin),
-        "Cache-Control": "no-cache",
+        "Cache-Control": "no-store",
+        "Set-Cookie": adminSession.cookie(panelToken),
       });
-      res.end(html);
+      res.end(page.html);
       log("INFO", "REQUEST", {
         method,
         url,
         status: 200,
+        source: page.source,
         elapsed: Date.now() - startTime,
       });
       return;
     }
 
-    // ─── GET /admin/:file — legacy static assets ──────────────
-    // Directory resolution: ADMIN_DIR env var first; NO hardcoded path —
-    // fallback is <project>/public. The panel itself no longer depends on
-    // this route; it remains for operators who keep extra assets there.
-    if (url.startsWith("/admin/") && method === "GET") {
-      const ADMIN_DIR = path.resolve(
-        process.env.ADMIN_DIR || path.join(__dirname, "public"),
-      );
-      let filePath = url.replace("/admin", "");
-      if (!filePath || filePath === "/") filePath = "/admin.html";
-      const fullPath = path.join(ADMIN_DIR, filePath);
-
-      // Security: prevent directory traversal
-      if (
-        fullPath !== ADMIN_DIR &&
-        !fullPath.startsWith(ADMIN_DIR + path.sep)
-      ) {
-        jsonResponse(res, 403, { error: "Forbidden" });
-        return;
-      }
-
-      if (!fs.existsSync(fullPath)) {
-        jsonResponse(res, 404, { error: "File not found: " + filePath });
-        return;
-      }
-
-      try {
-        let content = fs.readFileSync(fullPath, "utf8");
-        const ext = path.extname(fullPath).toLowerCase();
-
-        // Content-Type mapping
-        const mimeTypes = {
-          ".html": "text/html; charset=utf-8",
-          ".css": "text/css; charset=utf-8",
-          ".js": "application/javascript; charset=utf-8",
-          ".json": "application/json",
-          ".png": "image/png",
-          ".jpg": "image/jpeg",
-          ".jpeg": "image/jpeg",
-          ".gif": "image/gif",
-          ".svg": "image/svg+xml",
-          ".ico": "image/x-icon",
-          ".woff": "font/woff",
-          ".woff2": "font/woff2",
-        };
-
-        const contentType = mimeTypes[ext] || "application/octet-stream";
-
-        // Inject dynamic BASE_URL into HTML files
-        if (ext === ".html") {
-          const baseUrl = DOMAIN_CFG.baseUrl || `http://localhost:${PORT}`;
-          // Replace hardcoded localhost URLs with dynamic server URL
-          content = content.replace(/http:\/\/localhost:\d+/g, baseUrl);
-          // Also inject server config as a global JS variable
-          const configScript = `
-<script>
-window.__ADMIN_CONFIG = ${JSON.stringify({
-            baseUrl: baseUrl,
-            port: PORT,
-            domain: DETECTED_DOMAIN,
-            version: DOMAIN_CFG.version,
-            serverType: DOMAIN_CFG.type,
-            corsOrigins: DOMAIN_CFG.corsOrigins,
-          })};
-</script>`;
-          content = content.replace("</head>", configScript + "\n</head>");
-        }
-
-        // CORS headers — allow any origin for admin files
-        // SECURITY (2026-10-08): was "Access-Control-Allow-Origin: *",
-        // letting any web page read the admin panel markup/config. Now
-        // reflects only allowlisted origins (localhost + APP_URL).
-        const adminCors = getCorsOrigin(req.headers.origin);
-        res.writeHead(200, {
-          "Content-Type": contentType,
-          "Access-Control-Allow-Origin": adminCors,
-          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-          "Access-Control-Allow-Headers": "Content-Type, x-session-id, x-working-dir",
-          "Cache-Control": "no-cache",
-        });
-        res.end(content);
-      } catch (e) {
-        jsonResponse(res, 500, { error: "Error reading file: " + e.message });
-      }
-      return;
-    }
-
     // ─── GET /api/admin — redirect to the real admin panel ────
-    // The full HTML/CSS dashboard (env vars, tables,
-    // colors, polling) used to be inlined right here. It is gone — api.js
-    // ships JSON only. The panel lives in public/admin.html (/admin route)
-    // and the system runs, tools and all, without ever opening it.
     if (url === "/api/admin" && method === "GET") {
       log("INFO", "REQUEST", {
         method,
@@ -14867,7 +14238,10 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
         status: 302,
         elapsed: Date.now() - startTime,
       });
-      res.writeHead(302, { Location: "/admin", "Cache-Control": "no-store" });
+      res.writeHead(302, {
+        Location: "/admin/zombie",
+        "Cache-Control": "no-store",
+      });
       res.end();
       return;
     }
@@ -14876,8 +14250,8 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
     // Returns all runtime stats as JSON (programmatic access)
     // ─── GET /api/admin/tools — per-tool stats + on/off (DB-backed) ──
     if (url === "/api/admin/tools" && method === "GET") {
-      if (!adminAuthorized(req)) {
-        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN required" });
+      if (!adminRouteAuthorized(req)) {
+        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN and panel session required" });
         return;
       }
       const dbRows = {};
@@ -14923,8 +14297,8 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
     }
     // ─── POST /api/admin/tools — toggle one tool on/off ────────────
     if (url === "/api/admin/tools" && method === "POST") {
-      if (!adminAuthorized(req)) {
-        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN required" });
+      if (!adminRouteAuthorized(req)) {
+        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN and panel session required" });
         return;
       }
       const body = await readBody(req);
@@ -14957,8 +14331,8 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
     }
     // ─── GET /api/admin/session-log — SQLite session/request history ──
     if (url === "/api/admin/session-log" && method === "GET") {
-      if (!adminAuthorized(req)) {
-        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN required" });
+      if (!adminRouteAuthorized(req)) {
+        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN and panel session required" });
         return;
       }
       const sessions = [];
@@ -14997,8 +14371,8 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
     }
 
     if (url === "/api/admin/stats" && method === "GET") {
-      if (!adminAuthorized(req)) {
-        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN required" });
+      if (!adminRouteAuthorized(req)) {
+        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN and panel session required" });
         return;
       }
       try {
@@ -15106,8 +14480,8 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
       // SECURITY (2026-10-08): mode:"sync" dials every configured provider
       // and rewrites models.db; mode:"envSync" rewrites config from env. Both
       // were anonymous + cross-origin callable. Admin token required.
-      if (!adminAuthorized(req)) {
-        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN required" });
+      if (!adminRouteAuthorized(req)) {
+        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN and panel session required" });
         return;
       }
       if (!mcpOriginAllowed(req)) {
@@ -15279,8 +14653,8 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
       // X-Verify-Token to. An anonymous caller could repoint it at their own
       // host and harvest session tokens. Reproduced: POST with
       // Origin: https://evil.example returned {"success":true}.
-      if (!adminAuthorized(req)) {
-        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN required" });
+      if (!adminRouteAuthorized(req)) {
+        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN and panel session required" });
         return;
       }
       if (!mcpOriginAllowed(req)) {
@@ -15406,8 +14780,8 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
     if (url === "/api/mcp-remote/sync" && method === "POST") {
       // SECURITY (2026-10-08): re-dials every registered remote URL — same
       // outbound/SSRF surface as /add. Admin token required.
-      if (!adminAuthorized(req)) {
-        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN required" });
+      if (!adminRouteAuthorized(req)) {
+        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN and panel session required" });
         return;
       }
       const result = await syncAllRemoteMCPs();
@@ -15422,8 +14796,8 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
       // server open an OUTBOUND connection to an arbitrary caller-supplied URL
       // (SSRF) and then merges that server's tool definitions into MCP_TOOLS,
       // so an attacker could register a hostile tool into the agent tool bus.
-      if (!adminAuthorized(req)) {
-        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN required" });
+      if (!adminRouteAuthorized(req)) {
+        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN and panel session required" });
         return;
       }
       if (!mcpOriginAllowed(req)) {
@@ -15458,8 +14832,8 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
     if (url === "/api/mcp-remote/remove" && method === "POST") {
       // SECURITY (2026-10-08): unauthenticated callers could unregister the
       // server's own MCP peers (denial of service). Admin token required.
-      if (!adminAuthorized(req)) {
-        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN required" });
+      if (!adminRouteAuthorized(req)) {
+        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN and panel session required" });
         return;
       }
       const body = await readBody(req);
@@ -15790,20 +15164,47 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
       }
 
       const model = parsed.model || "mission";
-      const messages = parsed.messages || [];
+      // Optional per-request provider pin. It is validated in the proxy block
+      // below; agent/mission requests reject it instead of ignoring it.
+      const pinnedProvider = String(parsed.provider || "").trim();
+      const rejectPinForAgent = () => {
+        jsonResponse(res, 400, {
+          error: {
+            message:
+              `Provider pin "${pinnedProvider}" applies to direct model requests only; ` +
+              `"${model}" is an agent/mission request.`,
+            type: "invalid_request_error",
+            code: "provider_pin_agent_unsupported",
+          },
+        });
+      };
+      const messages = sanitizeMessages(parsed.messages || [], "chat");
       const stream = parsed.stream || false;
       const temperature = parsed.temperature || 0.7;
       const toolChoice = parsed.tool_choice;
       // Shared sanitizer validates the array; lib/tool-budget.js caps it
       // later in callModel/callModelStream. Every /v1/chat/completions
       // branch is protected.
-      // tools:"mcp" → server builds the tool list from MCP_TOOLS, so the
-      // admin Agent Chat (and any simple client) gets REAL tool access
-      // (web_search, read_file, ...) instead of plain chat-only.
+      // tools:"mcp" → server builds the tool list from MCP_TOOLS. In lazy
+      // mode (default) the model gets tool_search + pins instead of the
+      // full catalog; it discovers a schema only when it needs one.
+      const lazyTools = String(process.env.MCP_TOOL_LAZY || "1") !== "0";
       let tools = sanitizeTools(
-        parsed.tools === "mcp" ? mcpToolsToOpenAI() : parsed.tools,
+        parsed.tools === "mcp"
+          ? lazyTools
+            ? lazyToolCatalog()
+            : mcpToolsToOpenAI()
+          : parsed.tools,
         model,
       );
+      if (parsed.tools === "mcp") {
+        log("INFO", "TOOL_LAZY", {
+          source: "chat",
+          sent: Array.isArray(tools) ? tools.length : 0,
+          catalog: Object.keys(MCP_TOOLS).length,
+          lazy: lazyTools,
+        });
+      }
       const projectContext = parsed.project_context || parsed.ssot || "";
 
       // ── WEB CHAT CHANNEL ────────────────────────────────
@@ -16091,10 +15492,12 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
 
       // ─── MISSION MODE ────────────────────────────────────
       if (model === "mission" || model === "agent/mission") {
+        if (pinnedProvider) {
+          rejectPinForAgent();
+          return;
+        }
         const userMsg = messages.filter((m) => m.role === "user").pop();
         let userInput = userMsg ? userMsg.content : "";
-        // FIX: Handle content array format (OpenAI multi-modal)
-        // When content is [{type: "text", text: "..."}], extract text
         if (Array.isArray(userInput)) {
           userInput = userInput
             .filter((c) => c.type === "text")
@@ -16276,6 +15679,8 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
             ok: !!finalCombined,
             elapsed_ms:
               typeof startTime === "number" ? Date.now() - startTime : 0,
+            prompt_tokens: Math.ceil(JSON.stringify(messages).length / 4),
+            completion_tokens: Math.ceil(String(finalCombined || "").length / 4),
           });
           recordSessionTouch(sessionId, {
             agent: "mission",
@@ -16361,6 +15766,8 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
           ok: !!result.success,
           elapsed_ms:
             typeof startTime === "number" ? Date.now() - startTime : 0,
+          prompt_tokens: Math.ceil(JSON.stringify(messages).length / 4),
+          completion_tokens: Math.ceil(String(cleanCombined || "").length / 4),
         });
         recordSessionTouch(sessionId, {
           agent: "mission",
@@ -16401,7 +15808,49 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
       if (!isAgent) {
         // Only providers that actually advertise THIS model may serve it.
         // A different model from the same provider is never a fallback.
-        const orderedProviders = resolveAllProviders(model);
+        let orderedProviders = resolveAllProviders(model);
+        // Optional pin: honor exactly one provider, with no fallback. A pin is
+        // an explicit operator/debug choice, so a failure must surface as that
+        // provider's error instead of another provider's answer.
+        if (pinnedProvider) {
+          const pinnedConfig = PROVIDER_CONFIG[pinnedProvider];
+          if (!pinnedConfig) {
+            jsonResponse(res, 400, {
+              error: {
+                message: `Unknown provider "${pinnedProvider}".`,
+                type: "invalid_request_error",
+                code: "provider_not_found",
+              },
+            });
+            return;
+          }
+          if (pinnedConfig.enabled === false) {
+            jsonResponse(res, 400, {
+              error: {
+                message: `Provider "${pinnedProvider}" is disabled.`,
+                type: "invalid_request_error",
+                code: "provider_disabled",
+              },
+            });
+            return;
+          }
+          const pinned = resolveAllProviders(model, {
+            includeUnhealthy: true,
+          }).find((candidate) => candidate.providerId === pinnedProvider);
+          if (!pinned) {
+            jsonResponse(res, 400, {
+              error: {
+                message:
+                  `Provider "${pinnedProvider}" does not advertise model "${model}". ` +
+                  `Pin a provider that serves this model, or omit "provider" to use priority routing.`,
+                type: "invalid_request_error",
+                code: "provider_model_mismatch",
+              },
+            });
+            return;
+          }
+          orderedProviders = [pinned];
+        }
         // A provider that advertises the model but has no credential cannot
         // serve it. DB -> env already happened; nothing left is a direct 404,
         // never a fake upstream attempt.
@@ -16472,6 +15921,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
           model,
           primaryProvider: orderedProviders[0]?.providerId,
           fallbackCount: orderedProviders.length - 1,
+          pinnedProvider: pinnedProvider || null,
           stream,
           messages: messages.length,
         });
@@ -16488,6 +15938,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
         let sseId = null;
         let sseCreated = null;
         let sseToolCalls = false;
+        let activeProviderId = null;
         const onProxyChunk = stream
           ? (delta, chunk) => {
             if (Array.isArray(delta && delta.tool_calls) && delta.tool_calls.length) {
@@ -16497,6 +15948,10 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
               sseStarted = true;
               sseId = "chatcmpl-" + crypto.randomUUID().replace(/-/g, "");
               sseCreated = Math.floor(Date.now() / 1000);
+              res.setHeader(
+                "x-zc-chat-provider",
+                activeProviderId || "unknown",
+              );
               res.writeHead(200, {
                 "Content-Type": "text/event-stream",
                 "Cache-Control": "no-cache",
@@ -16537,6 +15992,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
         // different model and provider; that path is removed.
         for (const candidate of keyedProviders) {
           log("INFO", "PROXY_TRY", { model, provider: candidate.providerId });
+          activeProviderId = candidate.providerId;
           proxyResult = await proxyChatCompletion(
             model,
             messages,
@@ -16592,6 +16048,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
             status: 502,
             ok: false,
             elapsed_ms: Date.now() - startTime,
+            prompt_tokens: Math.ceil(JSON.stringify(messages).length / 4),
           });
           return;
         }
@@ -16608,6 +16065,10 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
           status: 200,
           ok: true,
           elapsed_ms: Date.now() - startTime,
+          prompt_tokens: Math.ceil(JSON.stringify(messages).length / 4),
+          completion_tokens: Math.ceil(
+            String((proxyResult && proxyResult.content) || "").length / 4,
+          ),
         });
         recordSessionTouch(sessionId, {
           model: usedModel || model,
@@ -16618,6 +16079,9 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
         // client — this block used to hardcode finish_reason:"stop" and
         // DROP tool_calls, so no /v1 client could ever see a function call.
         if (stream) {
+          if (!sseStarted) {
+            res.setHeader("x-zc-chat-provider", usedProvider || "unknown");
+          }
           finishProxyStream(res, {
             started: sseStarted,
             id: sseId,
@@ -16638,6 +16102,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
         const proxyContent = proxyResult ? proxyResult.content || "" : "";
         const promptTokens = Math.ceil(JSON.stringify(messages).length / 4);
         const completionTokens = Math.ceil(proxyContent.length / 4);
+        res.setHeader("x-zc-chat-provider", usedProvider || "unknown");
         return jsonResponse(res, 200, {
           id: "chatcmpl-" + crypto.randomUUID().replace(/-/g, ""),
           object: "chat.completion",
@@ -16670,6 +16135,10 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
 
       // ─── SINGLE AGENT MODE ──────────────────────────────
       const agentId = String(model).replace(/^agent\//, ""); // model param = agent id (agent/ prefix optional)
+      if (pinnedProvider) {
+        rejectPinForAgent();
+        return;
+      }
       const agent = AGENTS.find((a) => a.id === agentId);
       if (!agent) {
         jsonResponse(res, 404, {
@@ -16721,7 +16190,6 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
         // Augment messages with system prompt
         let userMsgContent =
           messages.filter((m) => m.role === "user").pop()?.content || "";
-        // INPUT_FIX: same array-form normalization for the streaming path
         if (Array.isArray(userMsgContent)) {
           userMsgContent = userMsgContent
             .map((c) => (typeof c === "string" ? c : c.text || c.value || ""))
@@ -16919,7 +16387,6 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
         if (sessionId) {
           const userMsg = messages.filter((m) => m.role === "user").pop();
           let userContent = userMsg ? userMsg.content : "";
-          //  INPUT_FIX: normalize array content before persisting to memory
           if (Array.isArray(userContent)) {
             userContent = userContent
               .map((c) => (typeof c === "string" ? c : c.text || c.value || ""))
@@ -16971,6 +16438,8 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
           status: 200,
           ok: !!fullContent,
           elapsed_ms: _finMs,
+          prompt_tokens: Math.ceil(JSON.stringify(messages).length / 4),
+          completion_tokens: Math.ceil(String(fullContent || "").length / 4),
         });
         recordSessionTouch(sessionId, {
           agent: agent.id,
@@ -17024,6 +16493,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
           status: 502,
           ok: false,
           elapsed_ms: Date.now() - startTime,
+          prompt_tokens: Math.ceil(JSON.stringify(messages).length / 4),
         });
         jsonResponse(res, 502, { error: { message: singleResult.error } });
         return;
@@ -17062,6 +16532,10 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
           status: 200,
           ok: true,
           elapsed_ms: Date.now() - startTime,
+          prompt_tokens: Math.ceil(JSON.stringify(messages).length / 4),
+          completion_tokens: Math.ceil(
+            String((singleResult && singleResult.content) || "").length / 4,
+          ),
         });
         recordSessionTouch(sessionId, {
           agent: agentId,
@@ -17105,7 +16579,6 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
 
     // ─── GET /api/verify-session ──────────────────────────────
     if (url === "/api/verify-session" && method === "GET") {
-      // SECURITY FIX (S5): Rate limit check
       const clientIp = req.socket.remoteAddress || "unknown";
       if (!checkRateLimit(clientIp)) {
         jsonResponse(res, 429, {
@@ -17161,10 +16634,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
 
       const localSession = getSession(sessionId);
 
-      // SECURITY FIX (S3): Validate x-verify-token against session
-      // Previously the token was stored but never checked
       if (!localSession) {
-        // Session not found — handle below
       } else if (
         clientToken &&
         localSession.client_token &&
@@ -17204,7 +16674,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
             local: true,
             note: "session verified locally (self-hosted verify URL)",
           }
-        : await verifySessionWithDomain(sessionId, clientToken);
+        : await verifySessionWithDomain(sessionId, clientToken, RUNTIME_CONFIG.sessionVerifyUrl);
       jsonResponse(res, 200, {
         verified: verifyResult.verified,
         session_id: sessionId,
@@ -17330,8 +16800,8 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
 
     // ─── UI-1: /api/admin/users — list users (with limits) ─────
     if (url === "/api/admin/users" && method === "GET") {
-      if (!adminAuthorized(req)) {
-        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN required" });
+      if (!adminRouteAuthorized(req)) {
+        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN and panel session required" });
         return;
       }
       if (!MODELS_DB) {
@@ -17348,8 +16818,8 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
 
     // ─── UI-1: /api/admin/users — create user → returns API key ──
     if (url === "/api/admin/users" && method === "POST") {
-      if (!adminAuthorized(req)) {
-        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN required" });
+      if (!adminRouteAuthorized(req)) {
+        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN and panel session required" });
         return;
       }
       if (!MODELS_DB) {
@@ -17392,8 +16862,8 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
 
     // ─── UI-1: /api/admin/users/:id — update limits / enabled ──
     if (url.startsWith("/api/admin/users/") && method === "PUT") {
-      if (!adminAuthorized(req)) {
-        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN required" });
+      if (!adminRouteAuthorized(req)) {
+        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN and panel session required" });
         return;
       }
       if (!MODELS_DB) {
@@ -17425,8 +16895,8 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
 
     // ─── UI-1: /api/admin/users/:id — delete user ─────────────
     if (url.startsWith("/api/admin/users/") && method === "DELETE") {
-      if (!adminAuthorized(req)) {
-        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN required" });
+      if (!adminRouteAuthorized(req)) {
+        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN and panel session required" });
         return;
       }
       if (!MODELS_DB) {
@@ -17668,8 +17138,8 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
     // ─── GET /api/admin/ssot-status ─────────────────────────
     // Check SSOT auto-generation status
     if (url === "/api/admin/ssot-status" && method === "GET") {
-      if (!adminAuthorized(req)) {
-        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN required" });
+      if (!adminRouteAuthorized(req)) {
+        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN and panel session required" });
         return;
       }
       const ssotPath = path.resolve(".zombie/SSOT.md");
@@ -17700,8 +17170,8 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
     // ─── GET /api/admin/agents-status ────────────────────────
     // Detailed agent status with usage
     if (url === "/api/admin/agents-status" && method === "GET") {
-      if (!adminAuthorized(req)) {
-        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN required" });
+      if (!adminRouteAuthorized(req)) {
+        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN and panel session required" });
         return;
       }
       const agentsWithStatus = AGENTS.map((a) => ({
@@ -17727,8 +17197,8 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
     // ─── GET /api/admin/mcp-connections ──────────────────────
     // MCP client connections and tool usage
     if (url === "/api/admin/mcp-connections" && method === "GET") {
-      if (!adminAuthorized(req)) {
-        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN required" });
+      if (!adminRouteAuthorized(req)) {
+        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN and panel session required" });
         return;
       }
       jsonResponse(res, 200, {
@@ -17750,8 +17220,8 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
     // ─── GET /api/admin/rate-limits ──────────────────────────
     // Rate limit status per domain/provider
     if (url === "/api/admin/rate-limits" && method === "GET") {
-      if (!adminAuthorized(req)) {
-        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN required" });
+      if (!adminRouteAuthorized(req)) {
+        jsonResponse(res, 401, { error: "Unauthorized: ADMIN_TOKEN and panel session required" });
         return;
       }
       const domains = Object.keys(RATE_LIMIT_STATES);
@@ -17923,7 +17393,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
 
     // ─── GET /api/syllabus — Read syllabus.md content
     if (url === "/api/syllabus" && method === "GET") {
-      const syllabusContent = readSyllabus();
+      const syllabusContent = readProjectSyllabus();
       jsonResponse(res, 200, {
         ok: true,
         syllabus: syllabusContent,
@@ -18030,10 +17500,10 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
       //     -d '{"action":"write_file","path":"/tmp/x","content":"..."}'
       //     -> {"status":"ok","message":"Written 26 bytes to /tmp/x"}
       // Now: admin credential + loopback origin required, on every action.
-      if (!adminAuthorized(req)) {
+      if (!adminRouteAuthorized(req)) {
         jsonResponse(res, 401, {
           status: "error",
-          error: "Unauthorized: ADMIN_TOKEN required",
+          error: "Unauthorized: ADMIN_TOKEN and panel session required",
         });
         return;
       }
@@ -18282,9 +17752,9 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
 
 const server = http.createServer(handleHttpRequest);
 
-// ══════════════════════════════════════════════════════════════
+// 
 //  WEBSOCKET HANDLER (Native, zero-dep)
-// ══════════════════════════════════════════════════════════════
+// 
 function handleWebSocketUpgrade(req, socket, head) {
   // SECURITY (2026-10-08): this handshake had NO origin check and replied
   // with "Access-Control-Allow-Origin: *". Cross-origin WebSocket needs no CORS
@@ -18391,8 +17861,6 @@ async function handleWSMessage(socket, message) {
     const data = JSON.parse(message);
     switch (data.type) {
       case "auth": {
-        // SECURITY FIX (S2): Real WebSocket authentication
-        // Previously sent auth_success without any verification
         const authToken = data.token || "";
         const authSessionId = data.session_id || "";
         // Validate: must have a valid session or token
@@ -18613,9 +18081,9 @@ h2cServer.on("error", (err) => {
   log("WARN", "HTTP2_SERVER_ERROR", { error: err.message });
 });
 
-// ══════════════════════════════════════════════════════════════
+// 
 //  START
-// ══════════════════════════════════════════════════════════════
+// 
 async function init() {
   // Tool budget is configuration, not a suggestion: invalid limits or more
   // pinned tools than the ceiling stop the gateway before it serves.
@@ -18636,14 +18104,6 @@ async function init() {
     tokens_per_sec: budgetConfig.config.tokensPerSec,
   });
 
-  const proxyState = proxyListState();
-  if (proxyState.invalid.length) {
-    log("WARN", "PROXY_LIST_INVALID", { invalid: proxyState.invalid });
-  } else if (proxyState.mode === "proxy") {
-    log("INFO", "PROXY_LIST_CONFIGURED", { count: proxyState.count });
-  } else {
-    log("INFO", "PROXY_LIST_DIRECT", {});
-  }
   // PHASE A: open SQLite models DB FIRST so that seedAgentsFromPersonas()
   // and DB-first loadPersonas() see MODELS_DB ready. initModelsDb also runs
   // later in this function; the later call is guarded to avoid re-opening.
@@ -18911,28 +18371,34 @@ async function init() {
   const httpsCert = process.env.HTTPS_CERT_PATH || "";
   const httpsKey = process.env.HTTPS_KEY_PATH || "";
   if (httpsCert && httpsKey && fs.existsSync(httpsCert) && fs.existsSync(httpsKey)) {
-    const httpsPort = parseInt(process.env.HTTPS_PORT || "5444", 10);
+    const httpsPort = parseInt(process.env.HTTPS_PORT || DEFAULTS.HTTPS_PORT, 10);
+    const httpsHost = serviceBindHost(
+      process.env.HTTPS_HOST || process.env.BIND_HOST,
+    );
     httpsServer = require("https").createServer(
       { cert: fs.readFileSync(httpsCert), key: fs.readFileSync(httpsKey) },
       handleHttpRequest,
     );
     httpsServer.on("error", (err) => log("WARN", "HTTPS_ERROR", { error: err.message }));
-    httpsServer.listen(httpsPort, "localhost", () =>
-      log("INFO", "HTTPS_LISTENING", { port: httpsPort }),
+    httpsServer.listen(httpsPort, httpsHost, () =>
+      log("INFO", "HTTPS_LISTENING", { port: httpsPort, host: httpsHost }),
     );
   }
 
   // ── gRPC (h2c + protobuf) — forwards to this same server ────
   if (process.env.GRPC !== "0") {
-    const grpcPort = parseInt(process.env.GRPC_PORT || "5052", 10);
+    const grpcPort = parseInt(process.env.GRPC_PORT || DEFAULTS.GRPC_PORT, 10);
+    const grpcHost = serviceBindHost(
+      process.env.GRPC_HOST || process.env.BIND_HOST,
+    );
     const { createGrpcServer } = require("./transport/grpc");
     grpcServer = createGrpcServer({
       port: grpcPort,
-      host: "localhost",
-      upstream: "http://localhost:" + PORT,
+      host: grpcHost,
+      upstream: "http://" + grpcHost + ":" + PORT,
     });
     grpcServer.listen().then(
-      (p) => log("INFO", "GRPC_LISTENING", { port: p }),
+      (p) => log("INFO", "GRPC_LISTENING", { port: p, host: grpcHost }),
       (err) => log("WARN", "GRPC_ERROR", { error: err.message }),
     );
   }
@@ -19070,7 +18536,6 @@ async function init() {
     console.log("  POST /mcp                 MCP JSON-RPC 2.0");
     console.log("  GET  /mcp (SSE)          — MCP SSE streaming (keep-alive)");
     // Conditional: UDS_PORT only listens on Windows (UDS fallback).
-    // On POSIX this previously advertised a dead TCP endpoint — removed.
     console.log(
       isWindows
         ? "  TCP  localhost:" +
@@ -19142,9 +18607,9 @@ async function init() {
     .catch((e) => log("WARN", "EXTERNAL_MCP_STARTUP_FAIL", { error: e.message }));
 }
 
-// ══════════════════════════════════════════════════════════════
+// 
 //  UNIFIED MESSAGE HANDLER — Transport Adapter Layer
-// ══════════════════════════════════════════════════════════════
+// 
 // All transports (UDS/TCP/WS/HTTP/SSE) go through this layer.
 // Handles: parsing → context injection → type safety → goal
 // → routing → execution → verification → streaming response.
@@ -19264,9 +18729,9 @@ class TransportAdapter {
   }
 }
 
-// ══════════════════════════════════════════════════════════════
+// 
 //  CONTEXT INJECTION — Syllabus, SSOT, Memory per-request
-// ══════════════════════════════════════════════════════════════
+// 
 async function injectContext(sessionId, projectDir, agentId) {
   const context = {};
 
@@ -19277,7 +18742,7 @@ async function injectContext(sessionId, projectDir, agentId) {
   }
 
   // 2. Syllabus Load
-  context.syllabus = readSyllabus(projectDir);
+  context.syllabus = readProjectSyllabus(projectDir);
 
   // 3. Bounded excerpts only. The full files stay on disk and reach the model
   // solely through the agent system-prompt builder.
@@ -19333,7 +18798,7 @@ async function injectContext(sessionId, projectDir, agentId) {
 
 // ═════════════════════════════════════════════════════════════
 //  TYPE SAFETY CHECK — Anti-Dote Wrapper
-// ══════════════════════════════════════════════════════════════
+// 
 // Wraps existing antiDoteValidateInput, antiDoteCheckProof,
 // antiDoteSetGoalContract, antiDoteVerifyOutput into a
 // unified streaming-aware check.
@@ -19420,7 +18885,7 @@ async function typeSafetyCheck(msg, context, transport) {
   };
 }
 
-// ══════════════════════════════════════════════════════════════
+// 
 //  GOAL SETTING CHECK
 // ═════════════════════════════════════════════════════════════
 // Determines what the user wants, what constraints apply,
@@ -19488,9 +18953,9 @@ function goalSettingCheck(msg, context, transport) {
   return goal;
 }
 
-// ══════════════════════════════════════════════════════════════
+// 
 //  SINGLE AGENT CROSS-VERIFICATION
-// ══════════════════════════════════════════════════════════════
+// 
 // Verifies a single agent's output for:
 // - Self-consistency
 // - Evidence verification
@@ -19651,9 +19116,9 @@ function referencesUserInput(content, userInput) {
   return matchCount >= Math.min(2, keywords.length);
 }
 
-// ══════════════════════════════════════════════════════════════
+// 
 //  UNIFIED MESSAGE HANDLER — Central Processing Unit
-// ══════════════════════════════════════════════════════════════
+// 
 // All transports route here. This function:
 // 1. Parses the message
 // 2. Injects context (syllabus + SSOT + memory)
@@ -19719,10 +19184,13 @@ async function handleMessage(transport, rawMessage) {
       });
     }
 
-    // Merge with user messages
+    // Merge with user messages (strict model-bound character cleanup).
     const allMessages = [
       ...systemMessages,
-      ...(msg.messages || [{ role: "user", content: "" }]),
+      ...sanitizeMessages(
+        msg.messages || [{ role: "user", content: "" }],
+        "handleMessage",
+      ),
     ];
 
     // Step 3: Type Safety Check
@@ -19897,9 +19365,9 @@ if (process.argv.includes("--db-bootstrap")) {
 
 init();
 
-// ══════════════════════════════════════════════════════════════════
+// ════
 //  R2T — RESPONSE-TO-TOOL VIRTUAL MODEL (external module bridge)
-// ══════════════════════════════════════════════════════════════════
+// ════
 //  Purpose:
 //    model="r2t" converts marker blocks ([[TOOL:exec]]...[[/TOOL]]) in
 //    the user message into real OS tool executions, then returns the
@@ -19921,7 +19389,7 @@ init();
 //                   basicR2tExecutor is used — no network call happens.
 //
 //  Returns an OpenAI-shaped object: { choices:[{message:{content}}], ...}
-// ══════════════════════════════════════════════════════════════════
+// ════
 async function executeR2tRequest(requestModel, messages, opts = {}) {
   const startedAt = Date.now();
   // Trace state: which engine really answered, and why the builtin was used.

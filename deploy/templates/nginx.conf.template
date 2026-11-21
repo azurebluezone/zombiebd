@@ -1,0 +1,50 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# deploy/templates/nginx.conf.template — rendered by modules/edge-proxy.js
+# ─────────────────────────────────────────────────────────────────────────────
+# Every {{PLACEHOLDER}} is filled from lib/env.js values. Port 80 redirects to
+# 443; 443 uses the self-signed loopback certificate created by the module
+# (TLS_MODE=internal) or the certificate paths supplied in the environment.
+#
+# Admin is loopback-only. /admin and /api/admin are answered 404 at the edge
+# and are NEVER forwarded to the API. Use http://127.0.0.1:<PORT>/admin
+# directly when you need the admin panel.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# :80 -> :443
+server {
+    listen {{HTTP_PORT}};
+    server_name {{MAIN_HOST}};
+    return 301 https://$host$request_uri;
+}
+
+# :443 -> API
+server {
+    listen {{HTTPS_PORT}} ssl;
+    server_name {{MAIN_HOST}};
+
+    ssl_certificate "{{CERT_FILE}}";
+    ssl_certificate_key "{{KEY_FILE}}";
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:ZC:10m;
+    ssl_session_timeout 10m;
+
+    # Admin stays on loopback. Never proxy these paths.
+    location ^~ /api/admin {
+        return 404;
+    }
+    location ^~ /admin {
+        return 404;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:{{API_PORT}};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+        proxy_read_timeout 300s;
+    }
+}
+{{TOOL_SITES}}

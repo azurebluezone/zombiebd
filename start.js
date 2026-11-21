@@ -14,14 +14,17 @@ const path = require("path");
 const readline = require("readline");
 const http = require("http");
 const net = require("net");
+const crypto = require("crypto");
 const { execSync, spawn, spawnSync } = require("child_process");
 const systemInfo = require("./lib/system-info.js");
 const {
   loadProcessEnv,
+  DEFAULTS,
   resolveRuntimePaths,
   userHomeDir,
 } = require("./lib/env");
 const { classifyDbError, isBusyError } = require("./lib/db-guard");
+const edgeProxy = require("./modules/edge-proxy");
 
 const VERSION = "3.2.1"; // keep in sync with api.js /health version
 
@@ -161,6 +164,310 @@ const HEALTH_ENDPOINTS = [
 const STARTUP_TIMEOUT_MS = 30000;
 const HEALTH_CHECK_DELAY_MS = 2000;
 
+// ─── systemd lifecycle ───────────────────────────────────────
+// The launcher owns the boot order: stop the unit first so Restart=always
+// cannot restart-fight the port cleanup, run the server from this process,
+// then re-enable the unit for the next boot and print the live status.
+const SYSTEMD_UNIT = process.env.ZC_SYSTEMD_UNIT || "zombiecoder-gateway.service";
+const STATUS_INTERVAL_MS = Math.max(
+  0,
+  Number(process.env.STATUS_INTERVAL_MS || 60000) || 0,
+);
+const systemdState = { unit: SYSTEMD_UNIT, available: false, skipped: "" };
+
+function systemdEnabledByEnv() {
+  return String(process.env.ZC_SYSTEMD || "1") !== "0";
+}
+
+function systemctl(args) {
+  return spawnSync("systemctl", ["--user"].concat(args), {
+    encoding: "utf8",
+    timeout: 20000,
+  });
+}
+
+function systemdAvailable() {
+  if (process.platform !== "linux" || !systemdEnabledByEnv()) return false;
+  const probe = spawnSync("systemctl", ["--user", "show-environment"], {
+    encoding: "utf8",
+    timeout: 5000,
+  });
+  return probe.status === 0;
+}
+
+function runningUnderSystemd() {
+  if (process.env.INVOCATION_ID || process.env.SYSTEMD_EXEC_PID) return true;
+  try {
+    return /zombiecoder-gateway\.service/.test(
+      fs.readFileSync("/proc/self/cgroup", "utf8"),
+    );
+  } catch (_) {
+    return false;
+  }
+}
+
+function unitExists() {
+  return systemctl(["cat", SYSTEMD_UNIT]).status === 0;
+}
+
+function ensureSystemdUnit() {
+  if (!systemdAvailable()) return false;
+  if (unitExists()) return true;
+  const installer = path.join(__dirname, "scripts", "install-service.sh");
+  if (!fs.existsSync(installer)) {
+    console.warn("[SYSTEMD] unit missing and scripts/install-service.sh not found");
+    return false;
+  }
+  console.log("[SYSTEMD] unit missing — generating it with scripts/install-service.sh ...");
+  const res = spawnSync("bash", [installer], {
+    cwd: __dirname,
+    stdio: "inherit",
+    timeout: 30000,
+  });
+  return res.status === 0 && unitExists();
+}
+
+function systemdDisableUnit() {
+  systemdState.available = systemdAvailable();
+  if (!systemdState.available) {
+    systemdState.skipped = "unavailable";
+    console.log(
+      "[SYSTEMD] unavailable — skipping disable (non-Linux, no user bus, or ZC_SYSTEMD=0)",
+    );
+    return false;
+  }
+  if (runningUnderSystemd()) {
+    systemdState.skipped = "running-under-unit";
+    console.log("[SYSTEMD] launcher runs inside " + SYSTEMD_UNIT + " — skipping disable");
+    return false;
+  }
+  if (!ensureSystemdUnit()) {
+    systemdState.skipped = "unit-missing";
+    console.warn("[SYSTEMD] " + SYSTEMD_UNIT + " is not installed — skipping disable");
+    return false;
+  }
+  const res = systemctl(["disable", "--now", SYSTEMD_UNIT]);
+  if (res.status === 0) {
+    console.log(
+      "[SYSTEMD] disabled --now " + SYSTEMD_UNIT +
+      " (no auto-restart while this launcher owns the port)",
+    );
+    return true;
+  }
+  const detail = String(res.stderr || res.stdout || "exit " + res.status).trim();
+  console.warn("[SYSTEMD] disable failed: " + detail);
+  return false;
+}
+
+function systemdEnableUnit() {
+  if (!systemdState.available || runningUnderSystemd()) return false;
+  if (systemdState.skipped === "unit-missing") return false;
+  const res = systemctl(["enable", SYSTEMD_UNIT]);
+  if (res.status === 0) {
+    console.log("[SYSTEMD] enabled " + SYSTEMD_UNIT + " for the next boot");
+    return true;
+  }
+  const detail = String(res.stderr || res.stdout || "exit " + res.status).trim();
+  console.warn("[SYSTEMD] enable failed: " + detail);
+  return false;
+}
+
+function systemdStatusLine() {
+  if (!systemdAvailable()) return "systemd=unavailable";
+  const enabled =
+    String(systemctl(["is-enabled", SYSTEMD_UNIT]).stdout || "").trim() || "unknown";
+  const active =
+    String(systemctl(["is-active", SYSTEMD_UNIT]).stdout || "").trim() || "unknown";
+  const mainPid =
+    String(systemctl(["show", "-p", "MainPID", "--value", SYSTEMD_UNIT]).stdout || "").trim() ||
+    "0";
+  return (
+    "systemd=" + enabled + "/" + active +
+    " unit=" + SYSTEMD_UNIT + " mainPid=" + mainPid
+  );
+}
+
+// ─── Database bootstrap + sync report ────────────────────────
+// api.js owns the schema and the repair logic. start.js only decides whether
+// creation is allowed (DB_BOOTSTRAP=1 for a missing file) and then reports
+// what the server actually wrote. An existing file is never deleted.
+function bootstrapDatabase() {
+  const dbPath = projectDbPath();
+  const existed = fs.existsSync(dbPath);
+  if (existed) {
+    console.log("[BOOTSTRAP] existing database kept (never overwritten): " + dbPath);
+  } else {
+    process.env.DB_BOOTSTRAP = "1";
+    console.log(
+      "[BOOTSTRAP] no database found — creating " + dbPath + " (DB_BOOTSTRAP=1)",
+    );
+  }
+  return { existed, dbPath };
+}
+
+function agentFileRows() {
+  const dir = path.join(__dirname, "agent");
+  const rows = [];
+  let files = [];
+  try {
+    files = fs.readdirSync(dir).filter((f) => f.endsWith(".js") && f !== "index.js");
+  } catch (_) {
+    return rows;
+  }
+  for (const file of files) {
+    try {
+      const src = fs.readFileSync(path.join(dir, file), "utf8");
+      const id = (src.match(/\bid:\s*"([^"]+)"/) || [])[1];
+      const name = (src.match(/\bname:\s*"([^"]+)"/) || [])[1];
+      if (id) rows.push({ id, name: name || id, file });
+    } catch (_) {
+      /* an unreadable agent file is reported by api.js */
+    }
+  }
+  return rows;
+}
+
+function dbSummary() {
+  const dbPath = projectDbPath();
+  if (!fs.existsSync(dbPath)) return { exists: false, dbPath };
+  let db = null;
+  try {
+    const { DatabaseSync } = require("node:sqlite");
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    const tables = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table'")
+      .all()
+      .map((r) => r.name);
+    const count = (table) =>
+      tables.includes(table)
+        ? db.prepare("SELECT COUNT(*) c FROM " + table).get().c
+        : 0;
+    const files = agentFileRows();
+    let missingAgents = 0;
+    let nameMismatch = 0;
+    if (tables.includes("agents")) {
+      const get = db.prepare("SELECT name FROM agents WHERE id = ?");
+      for (const a of files) {
+        const row = get.get(a.id);
+        if (!row) missingAgents++;
+        else if (String(row.name) !== String(a.name)) nameMismatch++;
+      }
+    }
+    return {
+      exists: true,
+      dbPath,
+      tables,
+      agents: count("agents"),
+      models: count("models"),
+      fileAgents: files.length,
+      missingAgents,
+      nameMismatch,
+    };
+  } catch (err) {
+    return { exists: true, dbPath, error: err.message };
+  } finally {
+    if (db) {
+      try { db.close(); } catch (_) {}
+    }
+  }
+}
+
+function reportDatabaseState(phase) {
+  const s = dbSummary();
+  if (!s.exists) {
+    console.warn("[DB] " + phase + ": no database at " + s.dbPath);
+    return s;
+  }
+  if (s.error) {
+    console.warn("[DB] " + phase + ": " + s.error);
+    return s;
+  }
+  console.log(
+    "[DB] " + phase + ": agents=" + s.agents + "/" + s.fileAgents +
+    " models=" + s.models + " missing_agents=" + s.missingAgents +
+    " name_mismatch=" + s.nameMismatch + " path=" + s.dbPath,
+  );
+  return s;
+}
+
+// ─── Runtime logs + status ───────────────────────────────────
+function todayLogFile() {
+  return path.join(
+    resolveRuntimePaths(process.env).logDir,
+    new Date().toISOString().slice(0, 10) + ".log",
+  );
+}
+
+function recentLogLines(limit) {
+  try {
+    const file = todayLogFile();
+    if (!fs.existsSync(file)) return [];
+    const lines = fs
+      .readFileSync(file, "utf8")
+      .trim()
+      .split(/\r?\n/)
+      .filter(Boolean);
+    return lines
+      .slice(-limit)
+      .map((line) => (line.length > 220 ? line.slice(0, 217) + "..." : line));
+  } catch (_) {
+    return [];
+  }
+}
+
+async function showRuntimeStatus(port) {
+  const health = await httpGetJson(port, "/health", 1500);
+  const ok = health.ok && health.json && health.json.healthy === true;
+  const db = dbSummary();
+  console.log(
+    "[STATUS] time=" + new Date().toISOString() +
+    " health=" + (ok ? "ok" : "unreachable") +
+    (ok
+      ? " uptime=" + health.json.uptime + "s agents=" + health.json.agents +
+        " models=" + health.json.models
+      : "") +
+    " db=" + (db.exists
+      ? "agents=" + db.agents + " models=" + db.models +
+        (db.nameMismatch ? " name_mismatch=" + db.nameMismatch : "")
+      : "missing") +
+    " port=" + port + " " + systemdStatusLine(),
+  );
+  for (const line of recentLogLines(5)) console.log("[LOG] " + line);
+  return ok;
+}
+
+function startLogTail(keepAlive) {
+  const file = todayLogFile();
+  let offset = 0;
+  try {
+    offset = fs.existsSync(file) ? fs.statSync(file).size : 0;
+  } catch (_) {}
+  console.log("[LOGS] tailing " + file + " (new lines only; Ctrl+C to stop)");
+  const timer = setInterval(() => {
+    const target = todayLogFile();
+    let size = 0;
+    try {
+      size = fs.statSync(target).size;
+    } catch (_) {
+      return;
+    }
+    if (size < offset) offset = 0; // rotation/truncate
+    if (size === offset) return;
+    try {
+      const fd = fs.openSync(target, "r");
+      const buf = Buffer.alloc(size - offset);
+      fs.readSync(fd, buf, 0, buf.length, offset);
+      fs.closeSync(fd);
+      offset = size;
+      for (const line of buf.toString("utf8").split(/\r?\n/)) {
+        if (line.trim()) console.log("[LOG] " + line);
+      }
+    } catch (_) {}
+  }, 1000);
+  if (!keepAlive && timer.unref) timer.unref();
+  return timer;
+}
+
 // ---------------------------------------------------------------------------
 // Environment loader (delegates to lib/env.js — the only .env reader)
 // ---------------------------------------------------------------------------
@@ -236,8 +543,9 @@ function ensureDatabase() {
   const dbPath = projectDbPath();
   if (!fs.existsSync(dbPath)) {
     console.log(
-      "[DB] " + dbPath + " not found — api.js will create it only when " +
-      "DB_BOOTSTRAP=1; otherwise boot stops with DB_FATAL missing (exit 78).",
+      "[DB] " + dbPath + " not found — DB_BOOTSTRAP=" +
+      (process.env.DB_BOOTSTRAP || "0") +
+      " will create it; an existing file is never overwritten.",
     );
     return { exists: false, dbPath };
   }
@@ -319,6 +627,15 @@ function storeRuntimeConfig(envInfo) {
       environment: envInfo,
       envVars: {},
       providers: {},
+      edge: {
+        provider: process.env.EDGE_PROVIDER || "auto",
+        mainHost: process.env.MAIN_HOST || "",
+        httpPort: process.env.CADDY_HTTP_PORT || "80",
+        httpsPort: process.env.CADDY_HTTPS_PORT || "443",
+        tlsMode: process.env.TLS_MODE || "internal",
+        adminPaths: ["/admin", "/api/admin"],
+        apply: process.env.EDGE_APPLY === "1",
+      },
     };
     
     // Filter and store relevant env vars (exclude secrets)
@@ -328,6 +645,8 @@ function storeRuntimeConfig(envInfo) {
       "OPENCODE_MODELS", "GROQ_MODELS", "GEMINI_MODELS",
       "ADMIN_USER", "ADMIN_API_KEY",
       "PUSHER_APP_ID", "PUSHER_KEY", "PUSHER_SECRET", "PUSHER_CLUSTER",
+      "MAIN_HOST", "CADDY_HTTP_PORT", "CADDY_HTTPS_PORT", "TLS_MODE",
+      "EDGE_PROVIDER", "EDGE_APPLY",
     ];
     
     for (const key of relevantKeys) {
@@ -514,8 +833,8 @@ async function runHealthChecks(host, port) {
 function getDefaultConfig() {
   return {
     version: VERSION,
-    serverPort: Number(process.env.SERVER_PORT) || Number(process.env.PORT) || 5050,
-    udsPort: Number(process.env.UDS_PORT) || 5150,
+    serverPort: Number(process.env.SERVER_PORT) || Number(process.env.PORT) || Number(DEFAULTS.PORT),
+    udsPort: Number(process.env.UDS_PORT) || Number(DEFAULTS.UDS_PORT),
     udsPath:
       require("./transport/uds-gateway").collectUdsPaths(process.env, process.cwd())[0] ||
       path.join(resolveRuntimePaths(process.env).tmpDir, "mcp.sock"),
@@ -563,7 +882,7 @@ function cleanupOldProcesses() {
   const targetPort =
     Number(process.env.PORT) ||
     Number(process.env.SERVER_PORT) ||
-    5050;
+    Number(DEFAULTS.PORT);
   console.log(
     "[CLEANUP] Scanning for old server processes on port " +
       targetPort +
@@ -609,36 +928,45 @@ function cleanupOldProcesses() {
   };
 
   const killPid = (pid, force) => {
-    if (!pid || pid === process.pid || killed.has(pid)) return;
-    killed.add(pid);
+    if (!pid || pid === process.pid) return;
+    const key = pid + ":" + (force ? "KILL" : "TERM");
+    if (killed.has(key)) return;
+    killed.add(key);
     try {
       if (process.platform === "win32") {
         execSync("taskkill /F /PID " + pid, { stdio: "ignore" });
       } else {
-        try {
-          process.kill(pid, force ? "SIGKILL" : "SIGTERM");
-        } catch (_) {}
+        process.kill(pid, force ? "SIGKILL" : "SIGTERM");
       }
       console.log(
         "[CLEANUP] Killed old process pid=" + pid + (force ? " (forced)" : ""),
       );
-    } catch (_) {}
+    } catch (err) {
+      if (err && err.code === "EPERM") {
+        console.error(
+          "[CLEANUP] no permission to signal pid=" + pid +
+          " on port " + targetPort,
+        );
+      }
+    }
+  };
+
+  const describePid = (pid) => {
+    try {
+      return (
+        fs.readFileSync("/proc/" + pid + "/cmdline", "utf8").replace(/\0/g, " ").trim() ||
+        "(empty cmdline)"
+      );
+    } catch (_) {
+      return "(cmdline unavailable)";
+    }
   };
 
   // A service-managed gateway has Restart=always. If this process was started
   // from a terminal, killing the service listener makes systemd restart it at
   // once, and the new instance kills this one. Stop the unit before touching
   // the port so exactly one owner survives — the terminal that asked for it.
-  const runsUnderSystemd = (() => {
-    if (process.env.INVOCATION_ID || process.env.SYSTEMD_EXEC_PID) return true;
-    try {
-      return /zombiecoder-gateway\.service/.test(
-        fs.readFileSync("/proc/self/cgroup", "utf8"),
-      );
-    } catch (_) {
-      return false;
-    }
-  })();
+  const runsUnderSystemd = runningUnderSystemd();
 
   const unitOf = (pid) => {
     try {
@@ -697,17 +1025,15 @@ function cleanupOldProcesses() {
     }
   }
 
-  // 1) Stop only THIS project's server. A foreign process (another checkout,
-  //    another product) is not ours to kill; report it and exit instead of
-  //    starting a cross-project kill loop.
+  // 1) Kill the owner of the env PORT. The user contract is explicit: the
+  //    port named by PORT/SERVER_PORT must be free before this boot. The
+  //    command line is logged first so a killed foreign process is auditable.
   for (const pid of findPidsOnPort()) {
-    if (!isThisProjectServer(pid)) {
-      console.error(
-        "[CLEANUP] refusing to kill foreign port owner pid=" + pid +
-        " on port " + targetPort + " — stop it yourself or set PORT to a free port.",
-      );
-      process.exit(1);
-    }
+    if (pid === process.pid || pid === process.ppid || pid <= 1) continue;
+    console.log(
+      "[CLEANUP] port " + targetPort + " owner pid=" + pid +
+      " cmd=" + describePid(pid),
+    );
     killPid(pid, false);
   }
 
@@ -743,14 +1069,29 @@ function cleanupOldProcesses() {
     sleepMs(30);
   }
   for (const pid of findPidsOnPort()) {
-    if (!isThisProjectServer(pid)) {
-      console.error(
-        "[CLEANUP] refusing to kill foreign port owner pid=" + pid +
-        " on port " + targetPort + " — stop it yourself or set PORT to a free port.",
-      );
-      process.exit(1);
-    }
+    if (pid === process.pid || pid === process.ppid || pid <= 1) continue;
     killPid(pid, true);
+  }
+
+  // A listener whose pid is hidden (another user, restricted /proc) cannot be
+  // killed from here. Report it instead of booting into EADDRINUSE.
+  let invisible = [];
+  try {
+    invisible = String(
+      execSync('ss -tln 2>/dev/null | grep ":' + targetPort + ' "', {
+        encoding: "utf8",
+      }),
+    )
+      .split("\n")
+      .filter(Boolean);
+  } catch (_) {}
+  if (invisible.length) {
+    console.error(
+      "[CLEANUP] port " + targetPort +
+      " still has a listener without a visible pid:",
+    );
+    for (const line of invisible) console.error("  " + line.trim());
+    process.exit(1);
   }
 
   console.log("[CLEANUP] Port " + targetPort + " is free. Starting fresh ...");
@@ -764,12 +1105,23 @@ let bridgeChild = null;
 let bridgeShuttingDown = false;
 
 function bridgePort() {
-  return parseInt(process.env.BRIDGE_PORT || "11435", 10);
+  return parseInt(process.env.BRIDGE_PORT || DEFAULTS.BRIDGE_PORT, 10);
+}
+
+// Health and bridge probes must use the address the API actually binds.
+// `localhost` can resolve to ::1 while the server listens on 127.0.0.1 only,
+// which turns a healthy server into a false "unreachable" report.
+function loopbackHost() {
+  const bind = String(process.env.BIND_HOST || "").trim();
+  if (!bind || bind === "0.0.0.0" || bind === "::" || bind === "[::]") {
+    return "127.0.0.1";
+  }
+  return bind;
 }
 
 function tcpOpen(port, host, timeoutMs) {
   return new Promise((resolve) => {
-    const socket = net.connect({ port, host: host || "localhost" });
+    const socket = net.connect({ port, host: host || loopbackHost() });
     let settled = false;
     const done = (value) => {
       if (settled) return;
@@ -787,7 +1139,7 @@ function tcpOpen(port, host, timeoutMs) {
 function httpGetJson(port, pathName, timeoutMs) {
   return new Promise((resolve) => {
     const req = http.get(
-      { host: "localhost", port, path: pathName, timeout: timeoutMs || 1500 },
+      { host: loopbackHost(), port, path: pathName, timeout: timeoutMs || 1500 },
       (res) => {
         let buf = "";
         res.on("data", (d) => (buf += d));
@@ -858,7 +1210,7 @@ async function startBridge() {
     );
     return { started: false, port, model, healthy: true, upstreamReady };
   }
-  if (await tcpOpen(port, "localhost", 500)) {
+  if (await tcpOpen(port, loopbackHost(), 500)) {
     console.warn(
       "[BRIDGE] port " + port + " is occupied by a process that is not the bridge — skip spawn",
     );
@@ -871,7 +1223,7 @@ async function startBridge() {
     return { started: false, port, healthy: false, error: "script_missing" };
   }
 
-  console.log("[BRIDGE] starting " + script + " on localhost:" + port + " ...");
+  console.log("[BRIDGE] starting " + script + " on " + loopbackHost() + ":" + port + " ...");
   bridgeChild = spawn(process.execPath, [script], {
     cwd: DIST_DIR,
     env: process.env,
@@ -1008,35 +1360,45 @@ async function startAll() {
       " GB free, disk=" + host.disk.free_gb + "/" + host.disk.total_gb +
       " GB free, root=" + host.root,
     );
-    console.log(
-      "[SYSTEM] ports api=" + (process.env.PORT || "5050") +
-      " grpc=" + (process.env.GRPC_PORT || "5052") +
-      " bridge=" + (process.env.BRIDGE_PORT || "11435") +
-      " mcp=3110-3123",
-    );
   } catch (err) {
     console.warn("[SYSTEM] host details unavailable:", err.message);
   }
   
-  // 3. Ensure database exists (will be created by api.js if not present)
+  // 3. Bootstrap the database before the server boots. A missing file is
+  // created with DB_BOOTSTRAP=1; an existing file is never deleted or
+  // replaced, and api.js repairs missing agents/models at boot.
+  bootstrapDatabase();
   const dbStatus = ensureDatabase();
+  reportDatabaseState("before boot");
   
   // 4. Store runtime config from env vars
   storeRuntimeConfig(envInfo);
   
   // ── Final required conditions (user-specified) ──
-  // PORT defaults to 5050 and APP_URL must point at the public app URL.
-  // Enforced even if missing from .env so the server always boots on the
+  // PORT defaults from lib/env.js and APP_URL must point at the public app
+  // URL. Enforced even if missing from .env so the server always boots on the
   // expected port / URL.
-  process.env.PORT = process.env.PORT || "5050";
+  process.env.PORT = process.env.PORT || DEFAULTS.PORT;
   // APP_URL: derive from DEPLOY_DOMAIN if not set, don't hardcode
   if (!process.env.APP_URL) {
-    const domain = process.env.DEPLOY_DOMAIN || "localhost";
+    const domain = process.env.DEPLOY_DOMAIN || "127.0.0.1";
     const port = process.env.PORT;
-    const isLocal = domain === "localhost" || domain === "localhost";
+    const isLocal =
+      domain === "localhost" || domain === "127.0.0.1" || domain === "::1";
     process.env.APP_URL = (isLocal ? "http" : "https") + "://" + domain + (isLocal ? ":" + port : "");
   }
   console.log("[ENV] Final conditions -> PORT=" + process.env.PORT + " APP_URL=" + process.env.APP_URL);
+  
+  // 4b. Edge proxy — render + validate the Caddy/nginx config from env before
+  // the gateway boots. Applying/reloading needs root and is opt-in
+  // (EDGE_APPLY=1); a render or validation failure is reported, never fatal.
+  let edgeState = null;
+  try {
+    edgeState = edgeProxy.ensureEdge({ apply: false });
+    console.log("[EDGE] " + edgeProxy.formatEdgeLine(edgeState));
+  } catch (err) {
+    console.warn("[EDGE] render skipped:", err.message);
+  }
   
   // 5. Auto-ensure config exists in the OS default directory (idempotent).
   try {
@@ -1055,7 +1417,22 @@ async function startAll() {
   } catch (err) {
     console.warn("[CONFIG] Warning — continuing without config:", err.message);
   }
-  
+
+  // 5a. Port truth after env + config.json resolution. The defaults come from
+  // lib/env.js (one source), and local MCP servers are stdio children spawned
+  // by api.js — there is no MCP port range to advertise.
+  console.log(
+    "[SYSTEM] ports api=" + (process.env.PORT || DEFAULTS.PORT) +
+    " grpc=" + (process.env.GRPC_PORT || DEFAULTS.GRPC_PORT) +
+    " bridge=" + (process.env.BRIDGE_PORT || DEFAULTS.BRIDGE_PORT) +
+    " mcp=stdio",
+  );
+
+  // 5b. systemd lifecycle — disable the unit BEFORE touching the port so a
+  // Restart=always service cannot restart-fight this launcher. It is enabled
+  // again once the system is actually running (see step 9).
+  systemdDisableUnit();
+
   // 6. Cleanup old processes
   console.log("[START ALL] Cleaning up old server processes ...");
   cleanupOldProcesses();
@@ -1090,34 +1467,237 @@ async function startAll() {
 
   // 8. Start server and run health checks
   const port = Number(process.env.PORT);
-  const host = "localhost";
-  
-  // We need to start the server and then run health checks
-  // The api.js will start the HTTP server
-  let serverStarted = false;
-  
-  // Hook into process to run health checks after a delay
-  setTimeout(async () => {
-    if (!serverStarted) {
-      console.log("[HEALTH] Running post-startup integration tests...");
-      const results = await runHealthChecks(host, port);
-      
-      if (results.failed === 0) {
-        console.log("\n[START ALL] All systems operational!");
-        console.log("[START ALL] Server is ready at http://" + host + ":" + port);
-        console.log("[START ALL] API endpoints verified and responding.\n");
-      } else {
-        console.log("\n[START ALL]  Some health checks failed — server running but may need attention");
-        console.log("[START ALL] Server is at http://" + host + ":" + port + " (check health-check-*.json for details)\n");
-      }
-      serverStarted = true;
+  const host = loopbackHost();
+
+  // 9. Wait for the listener, run the real health checks, report the DB sync,
+  // re-enable the unit and print runtime status + recent logs. The api.js
+  // logger keeps streaming live on stdout after require() below.
+  (async () => {
+    const ready = await waitFor(
+      async () => (await httpGetJson(port, "/health", 1500)).ok === true,
+      STARTUP_TIMEOUT_MS,
+      500,
+    );
+    if (!ready) {
+      console.warn(
+        "[HEALTH] server did not answer on :" + port +
+        " within " + STARTUP_TIMEOUT_MS + "ms",
+      );
     }
-  }, 4000); // Wait for server to fully boot
-  
+    console.log("[HEALTH] Running post-startup integration tests...");
+    const results = await runHealthChecks(host, port);
+    reportDatabaseState("after sync");
+
+    // The API is healthy: install/reload the edge only when the operator
+    // opted in. A failure keeps the old edge config (applyEdge restores it).
+    if (results.failed === 0 && edgeState && process.env.EDGE_APPLY === "1") {
+      try {
+        const applied = edgeProxy.applyEdge(edgeState.config, edgeState);
+        console.log("[EDGE] " + edgeProxy.formatApplyLine(applied));
+      } catch (err) {
+        console.warn("[EDGE] apply failed:", err.message);
+      }
+    }
+
+    if (results.failed === 0) {
+      console.log("\n[START ALL] All systems operational!");
+      console.log("[START ALL] Server is ready at http://" + host + ":" + port);
+      console.log("[START ALL] API endpoints verified and responding.\n");
+    } else {
+      console.log("\n[START ALL]  Some health checks failed — server running but may need attention");
+      console.log("[START ALL] Server is at http://" + host + ":" + port + " (check health-check-*.json for details)\n");
+    }
+
+    // The system is running: enable the unit for the next boot, then show
+    // the live state once and on the configured interval.
+    systemdEnableUnit();
+    await showRuntimeStatus(port);
+    if (STATUS_INTERVAL_MS > 0) {
+      const timer = setInterval(() => {
+        showRuntimeStatus(port).catch(() => {});
+      }, STATUS_INTERVAL_MS);
+      if (timer.unref) timer.unref();
+    }
+  })().catch((err) =>
+    console.warn("[HEALTH] startup verification failed:", err.message),
+  );
+
   // Start the actual server from the freshly built tree (this blocks).
   writeRuntimeMarker();
+  const logDir = resolveRuntimePaths(process.env).logDir;
+  console.log(
+    "[LOGS] live api output streams below | file=" + todayLogFile() +
+    " | structured=" + path.join(logDir, "zc.jsonl"),
+  );
   console.log("[RUNTIME] serving from dist: " + DIST_ENTRY);
   require(DIST_ENTRY);
+}
+
+// ─── Safe rebuild + restart (systemd-free) ───────────────────
+// `--build-only` refuses to replace a live dist on purpose: the running
+// process keeps its loaded modules while lazy requires would point at a tree
+// that no longer exists. This mode owns the whole safe sequence for a gateway
+// launched by this file: stop it, snapshot dist, build, verify manifest+sha,
+// restart detached, prove /health, and roll back to the previous tree if any
+// step fails.
+function liveGatewayFromMarker() {
+  try {
+    const markerPath = path.join(DIST_DIR, ".runtime.json");
+    const marker = JSON.parse(fs.readFileSync(markerPath, "utf8"));
+    if (path.resolve(String(marker.dist || "")) !== DIST_DIR) return null;
+    const pid = Number(marker.pid);
+    if (!Number.isFinite(pid) || pid <= 0) return null;
+    try { process.kill(pid, 0); } catch (_) { return null; }
+    const stat = fs.readFileSync("/proc/" + pid + "/stat", "utf8");
+    if (stat.split(" ")[2] === "Z") return null;
+    const cmd = fs.readFileSync("/proc/" + pid + "/cmdline", "utf8").replace(/\0/g, " ");
+    if (!/start\.js|api\.js/.test(cmd)) return null;
+    return { pid, marker };
+  } catch (_) {
+    return null;
+  }
+}
+
+async function stopLiveGateway(pid) {
+  console.log("[REBUILD] stopping live gateway pid=" + pid);
+  try { process.kill(pid, "SIGTERM"); } catch (err) {
+    if (err.code !== "ESRCH") console.warn("[REBUILD] SIGTERM failed: " + err.message);
+  }
+  const exited = () => {
+    try { process.kill(pid, 0); return false; } catch (_) { return true; }
+  };
+  let gone = await waitFor(exited, 20000, 250);
+  if (!gone) {
+    console.warn("[REBUILD] pid " + pid + " ignored SIGTERM; sending SIGKILL");
+    try { process.kill(pid, "SIGKILL"); } catch (_) {}
+    gone = await waitFor(exited, 5000, 200);
+  }
+  // A SIGKILL leaves the marker behind; a dead marker is ignored by the build
+  // guard, but removing it keeps the next start's state honest.
+  try { fs.unlinkSync(path.join(DIST_DIR, ".runtime.json")); } catch (_) {}
+  return gone;
+}
+
+function sha256File(file) {
+  return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+}
+
+function verifyBuiltDist() {
+  const manifestPath = path.join(DIST_DIR, "manifest.json");
+  if (!fs.existsSync(manifestPath)) return "manifest missing";
+  let manifest = null;
+  try {
+    manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  } catch (err) {
+    return "manifest unreadable: " + err.message;
+  }
+  const apiEntry = Array.isArray(manifest.files)
+    ? manifest.files.find((entry) => entry && entry.path === "api.js")
+    : null;
+  if (!apiEntry) return "manifest has no api.js entry";
+  const sourceSha = sha256File(path.join(__dirname, "api.js"));
+  const builtSha = sha256File(path.join(DIST_DIR, "api.js"));
+  if (sourceSha !== builtSha) return "api.js sha mismatch";
+  if (apiEntry.sha256 !== builtSha) return "manifest api.js sha mismatch";
+  return "";
+}
+
+function spawnGateway(logPath) {
+  fs.mkdirSync(path.dirname(logPath), { recursive: true });
+  const out = fs.openSync(logPath, "a");
+  const child = spawn(process.execPath, [__filename, "--start-all", "-s"], {
+    cwd: __dirname,
+    detached: true,
+    stdio: ["ignore", out, out],
+    env: Object.assign({}, process.env, { ZC_SKIP_BUILD: "1" }),
+  });
+  child.unref();
+  fs.closeSync(out);
+  return child.pid;
+}
+
+async function waitGatewayHealth(port, timeoutMs) {
+  return waitFor(async () => {
+    const res = await httpGetJson(port, "/health", 1500);
+    return res.ok === true && res.json && res.json.healthy === true;
+  }, timeoutMs, 500);
+}
+
+async function rebuildRestart() {
+  loadEnv();
+  const port = Number(process.env.PORT) || Number(DEFAULTS.PORT);
+  const logPath = path.join(resolveRuntimePaths(process.env).logDir, "rebuild-restart.log");
+  const live = liveGatewayFromMarker();
+  const oldPid = live ? live.pid : "none";
+  if (live) {
+    const stopped = await stopLiveGateway(live.pid);
+    if (!stopped) {
+      console.error("[REBUILD] FAILED could not stop pid=" + live.pid);
+      process.exit(1);
+    }
+    console.log("[REBUILD] stopped pid=" + live.pid);
+  } else {
+    console.log("[REBUILD] no live marker gateway; building and starting fresh");
+  }
+
+  const prev = DIST_DIR + ".prev";
+  fs.rmSync(prev, { recursive: true, force: true });
+  if (fs.existsSync(DIST_DIR)) {
+    fs.renameSync(DIST_DIR, prev);
+    console.log("[REBUILD] snapshot=" + prev);
+  }
+
+  const restore = () => {
+    try { fs.rmSync(DIST_DIR, { recursive: true, force: true }); } catch (_) {}
+    if (fs.existsSync(prev)) fs.renameSync(prev, DIST_DIR);
+  };
+
+  console.log("[REBUILD] building dist from source ...");
+  const build = spawnSync(process.execPath, [path.join(__dirname, "scripts", "build.js")], {
+    cwd: __dirname,
+    env: Object.assign({}, process.env, { BUILD_OUT: DIST_DIR }),
+    stdio: "inherit",
+  });
+  const buildError = build.status !== 0
+    ? "build exit=" + build.status
+    : verifyBuiltDist();
+  if (buildError) {
+    console.error("[REBUILD] FAILED " + buildError + " — restoring previous dist");
+    restore();
+    const rollbackPid = spawnGateway(logPath);
+    const healthy = await waitGatewayHealth(port, 60000);
+    console.error(
+      "[REBUILD] ROLLBACK " + (healthy ? "HEALTH_OK pid=" + rollbackPid : "HEALTH_FAILED"),
+    );
+    process.exit(1);
+  }
+
+  const newPid = spawnGateway(logPath);
+  console.log("[REBUILD] started pid=" + newPid + " log=" + logPath);
+  const healthy = await waitGatewayHealth(port, 60000);
+  if (!healthy) {
+    console.error("[REBUILD] FAILED health timeout — rolling back");
+    try { process.kill(newPid, "SIGTERM"); } catch (_) {}
+    restore();
+    const rollbackPid = spawnGateway(logPath);
+    const rollbackHealthy = await waitGatewayHealth(port, 60000);
+    console.error(
+      "[REBUILD] ROLLBACK " + (rollbackHealthy ? "HEALTH_OK pid=" + rollbackPid : "HEALTH_FAILED"),
+    );
+    process.exit(1);
+  }
+
+  const running = liveGatewayFromMarker();
+  const apiSha = sha256File(path.join(__dirname, "api.js"));
+  fs.rmSync(prev, { recursive: true, force: true });
+  console.log("[REBUILD] HEALTH_OK 200");
+  console.log(
+    "REBUILD_RESTART_OK old_pid=" + oldPid +
+    " new_pid=" + (running ? running.pid : newPid) +
+    " api_sha=" + apiSha +
+    " dist=" + DIST_DIR,
+  );
+  process.exit(0);
 }
 
 // ---------------------------------------------------------------------------
@@ -1132,8 +1712,9 @@ function showMenu() {
   console.log("  1) CONFIG ALL — write config to the OS default directory");
   console.log("                  Windows: %USERPROFILE%\\.zombiecoder\\");
   console.log("                  Linux  : $HOME/.zombiecoder/");
-  console.log("  2) START ALL  — rebuild dist/ from source, then boot from dist/");
-  console.log("                  (includes env detection, DB verify, health checks)");
+  console.log("  2) START ALL  — kill the env PORT owner, disable systemd,");
+  console.log("                  rebuild dist/, bootstrap DB, boot, health-check,");
+  console.log("                  enable systemd, then show status + logs");
   console.log("  0) Exit");
   console.log("");
 
@@ -1159,7 +1740,10 @@ if (args.includes("--help") || args.includes("-h")) {
   console.log("  node start.js                  interactive menu (CONFIG ALL / START ALL)");
   console.log("  node start.js --config-all -c  run CONFIG ALL (write config.json)");
   console.log("  node start.js --build-only     rebuild dist/ from source, then exit");
+  console.log("  node start.js --rebuild        stop the live gateway, rebuild, verify, restart, prove /health");
   console.log("  node start.js --start-all -s   rebuild dist/ + boot the server from dist/");
+  console.log("  node start.js --status         print live health + systemd + DB status");
+  console.log("  node start.js --tail           follow today's runtime log file");
   console.log("  node start.js --health-only    run health checks against existing server");
   process.exit(0);
 }
@@ -1170,12 +1754,31 @@ if (args.includes("--config-all") || args.includes("-c")) {
   loadEnv();
   buildDist();
   process.exit(0);
+} else if (args.includes("--rebuild")) {
+  rebuildRestart().catch((err) => {
+    console.error("[REBUILD] FATAL " + (err && err.message ? err.message : String(err)));
+    process.exit(1);
+  });
 } else if (args.includes("--start-all") || args.includes("-s")) {
   startAll();
+} else if (args.includes("--status")) {
+  loadEnv();
+  const port = Number(process.env.PORT) || Number(DEFAULTS.PORT);
+  showRuntimeStatus(port)
+    .then((ok) => {
+      process.exitCode = ok ? 0 : 1;
+    })
+    .catch((err) => {
+      console.error("[STATUS] Failed:", err.message);
+      process.exit(1);
+    });
+} else if (args.includes("--tail")) {
+  loadEnv();
+  startLogTail(true);
 } else if (args.includes("--health-only")) {
   loadEnv();
-  const port = Number(process.env.PORT) || 5050;
-  runHealthChecks("localhost", port).catch(err => {
+  const port = Number(process.env.PORT) || Number(DEFAULTS.PORT);
+  runHealthChecks(loopbackHost(), port).catch(err => {
     console.error("[HEALTH] Failed:", err.message);
     process.exit(1);
   });

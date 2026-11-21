@@ -58,15 +58,6 @@
         "--stdio"
       ],
       "note": "Universal transport adapter — stdio mode. Serves its own 9 sandboxed tools plus tools pulled from the main server."
-    },
-    {
-      "name": "skills",
-      "transport": "stdio",
-      "enabled": true,
-      "autoConnect": true,
-      "local": true,
-      "script": "external mcp/skill-mcp.js",
-      "note": "ZombieCoder skill library — local skills/skills.db, read-only."
     }
   ]
 }

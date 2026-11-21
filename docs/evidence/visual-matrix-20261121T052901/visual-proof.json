@@ -1,0 +1,21 @@
+{
+  "run_id": "20261121T052901",
+  "verified_by": "zombiecoder",
+  "method": "X11 window capture: xwd -id 0x500042e (ZC-VISUAL5) -> ffmpeg -> window.png",
+  "why": "The MCP root screenshot (screen.png) captured the browser window that was above the terminal. The terminal window was captured directly so the real output and markers are readable.",
+  "markers_visible": [
+    "HALAL-AGENT-20261121T052901",
+    "HALAL-GROQ-20261121T052901",
+    "HALAL-GEMINI-20261121T052901",
+    "HALAL-CUSTOM_3-20261121T052901",
+    "HALAL-CUSTOM_4-20261121T052901",
+    "HALAL-BRIDGE-20261121T052901"
+  ],
+  "result": "PROVIDER_VISUAL_OK",
+  "provider_pass_count": 5,
+  "provider_fail_count": 4,
+  "agent": "PASS",
+  "screen_root": "screen.png (obscured by the browser; not used as the visual proof)",
+  "terminal_window": "window.png",
+  "run_log": "run.log"
+}

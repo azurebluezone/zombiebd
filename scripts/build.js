@@ -88,7 +88,8 @@ const live = Array.from(new Set([...liveRuntimePids(), ...liveRuntimeFromMarker(
 if (live.length) {
   console.error(
     "BUILD_REFUSED dist is the live runtime (pid=" + live.join(",") +
-    "). Stop the gateway, rebuild, then start it again.",
+    "). Run: node start.js --rebuild (stop -> build -> verify -> start), " +
+    "or stop the gateway and run --build-only again.",
   );
   process.exit(1);
 }

@@ -11,7 +11,11 @@
     "start": "node start.js --start-all -s",
     "build": "node start.js --build-only",
     "health": "node start.js --health-only",
+    "status": "node start.js --status",
+    "logs": "node start.js --tail",
     "rebuild-restart": "bash scripts/rebuild-restart.sh",
-    "check:packaging": "node tests/package-install-check.js"
+    "check:packaging": "node tests/package-install-check.js",
+    "check:zero-width": "node scripts/zero-width-guard.js",
+    "check:hardening": "node tests/hardening-check.js"
   }
 }

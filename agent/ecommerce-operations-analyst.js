@@ -6,7 +6,7 @@
  */
 module.exports = {
   id: "ecommerce-operations-analyst",
-  name: "\u0987-\u0995\u09ae\u09be\u09b0\u09cd\u09b8 \u0985\u09aa\u09be\u09b0\u09c7\u09b6\u09a8\u09b8 \u0985\u09cd\u09af\u09be\u09a8\u09be\u09b2\u09bf\u09b8\u09cd\u099f",
+  name: "E-commerce Operations Analyst",
   role: "ecommerce-operations",
   expertise: "ecommerce ops, order management, inventory, logistics, analytics, ad copywriting, product catalog optimization, visitor behavior analysis",
   priority: 9,

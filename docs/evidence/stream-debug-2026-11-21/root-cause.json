@@ -1,29 +1,29 @@
 {
   "check": "stream-rootcause-check",
   "contract": "gc-mwpwzr5a",
-  "checked_at": "2026-11-21T04:41:00.625Z",
+  "checked_at": "2026-11-21T05:09:56.003Z",
   "verdict": "PASS",
   "db": {
     "path": "/home/sahon/.local/share/opencode/opencode.db",
     "read_only": true,
-    "invalid_output_rows": 218,
-    "message_id": "msg_1fc5f81aa001wU4jQiy0qj1xGs",
-    "session_id": "ses_e0a1adbf1ffeAcULAu4nVc4aqU",
-    "time_created": "2026-11-21T04:31:19.978Z",
+    "invalid_output_rows": 226,
+    "message_id": "msg_1fc80e9c4001h4J7K1vsj54RTJ",
+    "session_id": "ses_e03961a65ffeJ5xzZM8Huou9Fx",
+    "time_created": "2026-11-21T05:07:49.316Z",
     "provider": "opencode",
     "status": 200,
-    "body_length": 1380,
+    "body_length": 1379,
     "body_is_valid_json": false,
-    "concatenated_data_index": 21,
+    "concatenated_data_index": 20,
     "prefix_is_valid_json": false,
-    "body_excerpt": "{\"id\":\"chatcmpl-e42badata: {\"id\":\"zombiecoder-response-gate\",\"object\":\"chat.completion.chunk\",\"created\":1795235479,\"model\":\"zombiecoder-response-gate\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\\n\\n---\\n\\n**প্রমাণ ছাড়া উত"
+    "body_excerpt": "{\"id\":\"chatcmpl-cef1data: {\"id\":\"zombiecoder-response-gate\",\"object\":\"chat.completion.chunk\",\"created\":1795237669,\"model\":\"zombiecoder-response-gate\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\\n\\n---\\n\\n**প্রমাণ ছাড়া উত্"
   },
   "gateway": {
     "base": "http://127.0.0.1:5050",
     "model_count": 10,
     "failing_model_absent": true,
     "agent_id_present": true,
-    "sse_data_frames": 14,
+    "sse_data_frames": 11,
     "sse_invalid_frames": 0,
     "assembled_content": "STREAM_GATEWAY_OK",
     "sse_marker_present": true

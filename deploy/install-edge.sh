@@ -173,15 +173,22 @@ for svc in apache2 nginx httpd; do
 done
 
 PORT_OWNERS=""
+FOREIGN_OWNERS=""
 for _ in $(seq 1 20); do
   PORT_OWNERS="$(ss -ltnp 2>/dev/null | grep -E ':(80|443)[[:space:]]' || true)"
-  [ -z "$PORT_OWNERS" ] && break
+  # caddy is the service this script is about to restart. Its own listeners
+  # are not a conflict; apache2/nginx/httpd or any other process is.
+  FOREIGN_OWNERS="$(printf '%s\n' "$PORT_OWNERS" | grep -E ':(80|443)[[:space:]]' | grep -v 'caddy' || true)"
+  [ -z "$FOREIGN_OWNERS" ] && break
   sleep 0.25
 done
+if [ -n "$FOREIGN_OWNERS" ]; then
+  say "foreign port owner after service stop:"
+  printf '%s\n' "$FOREIGN_OWNERS" >&2
+  fail "ports 80/443 are owned by a process other than caddy"
+fi
 if [ -n "$PORT_OWNERS" ]; then
-  say "port owner after service stop:"
-  printf '%s\n' "$PORT_OWNERS" >&2
-  fail "ports 80/443 are still owned by another process"
+  say "caddy already owns :80/:443; reloading the rendered config"
 fi
 
 if ! id -u caddy >/dev/null 2>&1; then
@@ -240,8 +247,8 @@ HTTPS_CODE=""
 HTTPS_BODY=""
 HEALTH_FILE="$EDGE_TMP/edge-health.$$.json"
 for _ in $(seq 1 40); do
-  HTTP_CODE="$(curl -sS -o /dev/null -w '%{http_code}' -m 5 -H "Host: $MAIN_HOST" http://localhost/health 2>/dev/null || true)"
-  HTTPS_CODE="$(curl -k -sS -o "$HEALTH_FILE" -w '%{http_code}' -m 5 --resolve "$MAIN_HOST:443:localhost" "https://$MAIN_HOST/health" 2>/dev/null || true)"
+  HTTP_CODE="$(curl -sS -o /dev/null -w '%{http_code}' -m 5 -H "Host: $MAIN_HOST" http://127.0.0.1/health 2>/dev/null || true)"
+  HTTPS_CODE="$(curl -k -sS -o "$HEALTH_FILE" -w '%{http_code}' -m 5 --resolve "$MAIN_HOST:443:127.0.0.1" "https://$MAIN_HOST/health" 2>/dev/null || true)"
   HTTPS_BODY="$(cat "$HEALTH_FILE" 2>/dev/null || true)"
   [ "$HTTPS_CODE" = "200" ] && break
   sleep 0.5

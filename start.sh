@@ -30,9 +30,9 @@ OLLAMA_BASE_VAL="${OLLAMA_BASE_VAL:-http://localhost:11434/v1}"
 if command -v ollama >/dev/null 2>&1; then
   if ! curl -sf "${OLLAMA_BASE_VAL%/v1}/v1/models" >/dev/null 2>&1; then
     warn "ollama ইনস্টল আছে কিন্তু চলছে না → লোকাল মডেল আসবে না।"
-    warn "   চালাও: ollama serve   (বা pull করো: ollama pull llama3.2:latest)"
+    warn "   চালাও: ollama serve   (বা pull করো: ollama pull lfm3:1.7b)"
   else
-    info "✓ ollama reachable (llama3.2:latest = $("${OLLAMA_LIST:-ollama list}" --format json 2>/dev/null | grep -c llama3.2 || echo "?") )"
+    info "✓ ollama reachable (lfm3:1.7b = $("${OLLAMA_LIST:-ollama list}" --format json 2>/dev/null | grep -c llama3.2 || echo "?") )"
   fi
 fi
 

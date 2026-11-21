@@ -376,19 +376,22 @@ async function main() {
     );
     assert.ok(compactPrompt.includes("buildSystemPrompt("), "buildCompactSystemPrompt must delegate");
 
-    const ssotExcerpt = api.slice(
-      api.indexOf("function buildSSOTExcerpt"),
-      api.indexOf("function buildSyllabusExcerpt"),
+    assert.ok(
+      !api.includes("function buildSSOTExcerpt"),
+      "legacy buildSSOTExcerpt must be gone; modules/context.js owns excerpts",
     );
-    assert.ok(ssotExcerpt.includes("pickEntries("), "buildSSOTExcerpt must delegate to modules/context.js");
-    assert.ok(!ssotExcerpt.includes("slimSSOT("), "legacy slimSSOT call remains in buildSSOTExcerpt");
-
-    const syllabusExcerpt = api.slice(
-      api.indexOf("function buildSyllabusExcerpt"),
-      api.indexOf("function buildAgentSystemPrompt"),
+    assert.ok(
+      !api.includes("function buildSyllabusExcerpt"),
+      "legacy buildSyllabusExcerpt must be gone; modules/context.js owns excerpts",
     );
-    assert.ok(syllabusExcerpt.includes("pickEntries("), "buildSyllabusExcerpt must delegate to modules/context.js");
-    assert.ok(!syllabusExcerpt.includes("slimSyllabus("), "legacy slimSyllabus call remains in buildSyllabusExcerpt");
+    const contextSource = fs.readFileSync(
+      path.join(__dirname, "..", "modules", "context.js"),
+      "utf8",
+    );
+    assert.ok(
+      contextSource.includes("function pickEntries"),
+      "modules/context.js must own pickEntries",
+    );
 
     const copyDirs = build.slice(build.indexOf("const COPY_DIRS"), build.indexOf("const COPY_FILES"));
     assert.ok(copyDirs.includes('"modules"'), "scripts/build.js must copy modules/");

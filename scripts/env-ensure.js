@@ -8,7 +8,7 @@
  *
  *   node scripts/env-ensure.js
  *   node scripts/env-ensure.js --fresh
- *   node scripts/env-ensure.js --ollama-model llama3.2:latest
+ *   node scripts/env-ensure.js --ollama-model lfm3:1.7b
  *
  * Only key names are printed. Values, especially keys and tokens, never are.
  */

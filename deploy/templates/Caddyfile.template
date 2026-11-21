@@ -1,0 +1,32 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# deploy/templates/Caddyfile.template — rendered by modules/edge-proxy.js
+# ─────────────────────────────────────────────────────────────────────────────
+# Every {{PLACEHOLDER}} is filled from lib/env.js values. The rendered file is
+# literal: no runtime query can change a host or an upstream.
+#
+# Admin is loopback-only. /admin and /api/admin are answered 404 at the edge
+# and are NEVER forwarded to the API. Use http://127.0.0.1:<PORT>/admin
+# directly when you need the admin panel.
+# ─────────────────────────────────────────────────────────────────────────────
+{
+	http_port {{HTTP_PORT}}
+	https_port {{HTTPS_PORT}}
+{{ACME_GLOBAL}}
+}
+
+# Main site -> API. TLS terminates here. `tls internal` gives the configured
+# main host a self-signed certificate from Caddy's local CA, so the loopback
+# URL works offline without a public DNS name.
+https://{{MAIN_HOST}} {
+{{TLS_DIRECTIVE}}
+	route {
+		@admin path /admin* /api/admin*
+		respond @admin 404
+		reverse_proxy 127.0.0.1:{{API_PORT}} {
+			header_up Host {host}
+			header_up X-Real-IP {remote_host}
+			flush_interval -1
+		}
+	}
+}
+{{TOOL_SITES}}
