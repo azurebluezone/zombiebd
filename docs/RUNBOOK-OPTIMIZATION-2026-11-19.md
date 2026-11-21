@@ -1004,6 +1004,62 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 
 ---
 
+## 11. User-journey audit — 2026-11-21 (cold start, বাস্তব বাইট)
+
+<!-- USER_JOURNEY_AUDIT_2026_11_21 -->
+
+**প্রশ্ন:** একজন ব্যবহারকারী আজ সাইটে এসে কী করতে পারে, ইনপুট দেওয়ার পর কী পাওয়া উচিত, আর বাস্তবে কী পাচ্ছে?
+
+**পদ্ধতি:** live gateway (PID 13556, `dist/`, `5050`) + Caddy `443` + MCP HTTP + Edge TTS — কোনো mock নয়। প্রতিটি ধাপ বাস্তব HTTP/`ffprobe`/ফাইল বাইটে যাচাই; চেক `node tests/user-journey-audit-check.js`।
+
+### 11.1 চ্যাপ্টার-ধরে ব্যবহারকারীর ফল
+
+| Chapter | ব্যবহারকারী কী করে | কী পাওয়া উচিত | বাস্তবে পাওয়া গেল | রায় |
+|---|---|---|---|---|
+| §0–§1 invariants | — | এক সত্য, এক config flow | ১৩/১৪ row DONE, row 14 TODO | ✅ |
+| §3.1–§3.2 config | `.env` সেট করে server চালু | এক resolver, required/optional আলাদা | `lib/env.js` একমাত্র resolver; boot fail-fast | ✅ |
+| §3.3 tool budget | agent-কে tool দেয় | cap এক জায়গায় | `SURFACE_POLICY_OK` 10/10 | ✅ |
+| §3.4 path contract | project খোলে | server শুধু `.zombie/` লেখে | `WORKSPACE_LAYOUT_OK` 33/33 | ✅ |
+| §3.5 size budget | বড় body/tool result পাঠায় | env-driven limit, silent truncate নয় | `MAX_BODY_SIZE` ইত্যাদি live; `ATTACHMENT_MAX_BYTES` এখনো অনুপস্থিত | ⚠️ row 14 |
+| §3.6 provider pipeline | model বেছে chat করে | normalizer আগে, adapter পরে | `code-guru` → `USER_JOURNEY_OK` (200) | ✅ |
+| §3.7 transport UDS | local tool ডাকে | stdio/UDS-এ tool চলে | MCP `tools/list` = 101, `system_info` বাস্তবে চলল | ✅ |
+| §5–§6 Monu retire / OpenCode | পুরোনো builder বন্ধ | `5000` বন্ধ, শুধু `5050` | `5000`-এ listener নেই | ✅ |
+| §7–§8 install/budget/DB | নতুন মেশিনে বসায় | এক কমান্ডে install + rebuild | `REBUILD_RESTART_OK`, `PACKAGE_INSTALL_OK` | ✅ |
+| §9 quality bar | release-এর আগে যাচাই | 30-case eval | `QUALITY_EVAL_OK` 30/30 | ✅ |
+| §10.3 row 1–13 | feature ধরে ধরে ব্যবহার | প্রতিটি gate সবুজ | 13/13 DONE, contract সহ | ✅ |
+| §10.3 row 14 upload | ফাইল/ছবি/অডিও পাঠায় | upload → chat-এ ফাইল যায় | `CHAT_UPLOAD=404`; UI শুধু নাম দেখায় | ❌ TODO |
+
+### 11.2 ব্যবহারকারীর ধাপে ধাপে যাত্রা (আজকের বাস্তব ফল)
+
+1. **`GET /health`** → `200`, `healthy:true`, `version:3.2.1`, `models:268`, `agents:9`। ব্যবহারকারী হিসেবে server প্রস্তুত।
+2. **`GET /`** → `200`, `40780` bytes, sha `8ac355beb703…`; served bytes == `public/index.html` বাইট-বাই-বাইট। ফ্রন্টএন্ড আসল।
+3. **`POST /v1/chat/completions`** (`code-guru`, "Reply with exactly: USER_JOURNEY_OK") → `200`, উত্তর `USER_JOURNEY_OK`। সাধারণ চ্যাট কাজ করে।
+4. **`POST /mcp` initialize + `tools/list`** → `101` tool; **`tools/call system_info`** → `200`, `node v24.22.2`। ব্যবহারকারীর tool সত্যিই চলে।
+5. **এজেন্ট + tool** (`tools:"mcp"`, "Use system_info, reply node version") → `v24.22.2`, log-এ `MCP_CALL system_info`। এজেন্ট শুধু কথা বলে না, tool চালায়।
+6. **`https://localhost/health`** → `200`, `healthy:true`। `443` edge (Caddy `tls internal`) কাজ করে।
+7. **`POST /api/chat/upload`** (png) → `CHAT_UPLOAD=404`; `public/index.html`-এ `fileUpload` + `handleFile` আছে, কিন্তু `/api/chat/upload` call নেই — শুধু ফাইলের নাম দেখায়। **এটাই সবচেয়ে বড় ব্যবহারকারী-বিরক্তি।**
+
+### 11.3 সীমাবদ্ধতা — স্পষ্ট করে লিখিত
+
+- **`CHAT_UPLOAD=404`:** কোনো upload endpoint নেই; `provider/index.js:169` `normalizeMessages` non-text part drop করে; `provider/schema.json` message content `string|null`; `ATTACHMENT_MAX_BYTES` শুধু §3.5-এ proposed, `lib/env.js`-এ নেই। ডকুমেন্ট/ছবি/অডিও পাঠানোর দাবি এখন `UNVERIFIED`।
+- **`VHOSTS_502=7`:** `ocr`, `screen`, `tts`, `ads`, `public`, `combined`, `adapter` — সাতটি vhost-ই `502`; upstream `3110,3111,3112,3121,3122,3123,5400`-এ কেউ শোনে না। কারণ টুলগুলো stdio MCP, আলাদা HTTP service নয়। Caddyfile-এ vhost থাকলেই সেবা পাওয়া যায় না।
+- **`127.0.0.1` দিয়ে `443`:** `curl https://127.0.0.1/` TLS alert; সার্টিফিকেট `localhost` নামের জন্য। `--resolve`/hostname ছাড়া ব্যবহারকারী TLS error দেখবে।
+- **Provider health:** `/health.providers` এখন honest `unknown` (probe ছাড়া `up` দাবি করে না), কিন্তু enabled provider-এর প্রকৃত healthy অবস্থা probe চালানো পর্যন্ত `UNVERIFIED`।
+- **পুরোনো red suites (আলাদা scope):** `transport-suite` (HTTPS cert), `cwd-db-repair` (repair-log), `provider-matrix` (`toolcall=0`), `uds-e2e-check` (Gemini 502), `mcp-architecture-check` (`MCP_STDIO_ADMIN_FAIL`)। এগুলো row 1–13 gate নয়, তবে release-এ দাবি করার আগে ঠিক করতে হবে।
+- **Docs gate:** `DOCS_CURRENT_OK` 14/0, `SURFACE_POLICY_OK` 10/0, `LIVE_SERVER_INDEPENDENT_OK` 13/0, `WORKSPACE_LAYOUT_OK` 33/0, `MCP_API_INTEGRATION_OK` — সব সবুজ।
+
+### 11.4 Bengali audio brief
+
+`edge-tts 7.3.1`, voice `bn-BD-NabanitaNeural`, script `/tmp/opencode/zc-audit-script.txt`।
+
+`AUDIO=/home/sahon/Music/mp3/zc lama/zc-audit-2026-11-21.mp3` — `1,086,912` bytes, `181.15s`, ffprobe `mp3`। উপরের ফল, চ্যাপ্টার-রায় আর সীমাবদ্ধতা বাংলায় শোনানো হয়েছে।
+
+**পরের কাজ:** row 14 `CHAT_UPLOAD` — upload endpoint + `.zombie/uploads` + provider content parts + UI wiring, gate `CHAT_UPLOAD_OK`। এরপর সাত vhost: হয় HTTP service চালু, নয়তো Caddyfile থেকে সরিয়ে শুধু `localhost` রাখা।
+
+<!-- /USER_JOURNEY_AUDIT_2026_11_21 -->
+
+---
+
 ## Appendix A — Evidence table
 
 | Claim | Evidence |
