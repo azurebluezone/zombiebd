@@ -1,9 +1,9 @@
 # RUNBOOK — Single-Truth Optimization (2026-11-19)
 
 **Scope:** `~/zombiebd` এবং এই মেশিনে চলা adjacent stacks।
-**Status:** `ACTIVE` — ১২/১৪ row DONE; পরের কাজ SURFACE_POLICY।
+**Status:** `ACTIVE` — ১৩/১৪ row DONE; পরের কাজ CHAT_UPLOAD।
 **Entry point (আগে এটা পড়ো):** `docs/PLAN-2026-11-20.md` — ১০ phase, gate ও সময়সহ সংক্ষিপ্ত করণীয়; narration `/home/sahon/Music/mp3/zbd/today/zbd-plan-2026-11-20.mp3` (424.1s, 2,544,860 bytes)।
-**Closed contracts:** `gc-mwnurzwx` → `RETIRE_AUDIO_OK` (Monu retire + runbook narration); `gc-mwnvesuc` → `PLAN_AUDIO_OK` (plan doc + narration)।
+**Closed contracts:** `gc-mwnurzwx` → `RETIRE_AUDIO_OK` (Monu retire + runbook narration); `gc-mwnvesuc` → `PLAN_AUDIO_OK` (plan doc + narration); `gc-mwptx62a` → `SURFACE_POLICY_OK` (surface policy table); `gc-mwpu10ck` → `DOCS_CURRENT_OK` (row 13 release)।
 **Evidence rule:** প্রতিটি দাবির পাশে `path:line`, command output বা exit code আছে। যা probe করা হয়নি তা `UNVERIFIED`।
 **Companion audit:** `docs/AUDIT-PROVIDERS-2026-11-19.md`।
 
@@ -917,7 +917,7 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 | 10 | **N3** | PLAN/status snapshot drift ঠিক করা | `DOCS_CURRENT_OK` | ✅ DONE (`gc-mwoupmi0`) |
 | 11 | **N6** | local skill SQLite import + Markdown parser + MCP stdio | `SKILL_MCP_OK` | ✅ DONE (`gc-mwov6hty`) |
 | 12 | **SERVER_INDEPENDENCE** | server-owned `.zombie` state, read-only `.zombiecoder` adapter, bounded prompt context + 12-hex workspace id | `LIVE_SERVER_INDEPENDENT_OK` | ✅ DONE (`gc-mwoxgfl1`) |
-| 13 | **SURFACE_POLICY** | surface policy table (web-chat/mission/editor) | `SURFACE_POLICY_OK` | TODO |
+| 13 | **SURFACE_POLICY** | surface policy table (web-chat/mission/editor) | `SURFACE_POLICY_OK` | ✅ DONE (`gc-mwptx62a`) |
 | 14 | **CHAT_UPLOAD** | chat document/photo/audio upload | `CHAT_UPLOAD_OK` | TODO |
 
 **নীতি:** ১–২ একই দিনে (P0 + live config safety), ৩–৪ test truth, ৫–৬ observability, ৭–৮ release portability, ৯ quality, ১০–১৪ docs/feature. প্রতিটি আইটেম আলাদা contract + gate; এক batch-এ দুইটার বেশি নয়।
@@ -979,6 +979,14 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 - **Fix:** `modules/workspace-adapter.js` — `.zombie` server state (SSOT/syllabus/memory/sessions/.state), `.zombiecoder` read-only merge, 12-hex workspace registry; `modules/workspace.js` adapter-এ delegate + legacy migration order (plugin root syllabus থাকলে legacy duplicate, migrate নয়); `modules/syllabus.js` merged read + `.zombie` write; `modules/context.js` `buildPromptContext` (input-matched SSOT/syllabus, fingerprint, last 10 turns, active goal, workspace id); `modules/sessions.js` `.zombie/memory/sessions` + `recentTurns`; `modules/goals.js` `.zombie/.state/goals.jsonl` + `active()`; `api.js` `readSSOT` `.zombie` first/plugin fallback, initialize-এ `x-zc-workspace-id` register করে।
 - **Gate:** `LIVE_SERVER_INDEPENDENT_OK` — live gateway-এ fresh MCP initialize শুধু `.zombie/` বানায় (`.zombiecoder` নয়), 12-hex id দেয়, পরে আসল root restore করে; `SERVER_CONTEXT_OK` 37/0; `WORKSPACE_LAYOUT_OK` 33/0।
 - **Done (2026-11-20, `gc-mwoxgfl1`):** `scripts/rebuild-restart.sh --restart` → `REBUILD_RESTART_OK api_sha=5575c3644015…`; `node tests/live-server-independence-check.js` → 13/0 `LIVE_SERVER_INDEPENDENT_OK dist=1 live=1 zombie_only=1 id=12 restore=1` (probe-এ `.zombie/SSOT.md` আছে, `.zombiecoder` নেই, header id adapter-এর সাথে মেলে, `get_working_dir` → `/home/sahon/zombiebd`); `node tests/server-context-check.js` → 37/0 `SERVER_CONTEXT_OK local=1 plugin_readonly=1 merged=1 prompt=1 turns=10 goal=1 id=12 runtime=clean live=1`; `node tests/workspace-layout-check.js` → 33/0 `WORKSPACE_LAYOUT_OK`; `node tests/modules-foundation-check.js` → `MODULES_FOUNDATION_OK`; `node tests/mcp-api-integration-check.js` → `MCP_API_INTEGRATION_OK` (stale `.zombiecoder` assertion `.zombie`-এ update, plugin tree তৈরি হয় না)। Plugin tree sha before/after অপরিবর্তিত (৪ ফাইল)।
+
+#### SURFACE_POLICY — তিন surface-এর এক table
+
+- **প্রমাণ (আগে):** web-chat allowlist `modules/chat-interpreter.js:23`-এ আর privileged set `api.js:4808`-এ আলাদা দুই copy ছিল; কোনো surface table বা check ছিল না — row 13-এ শুধু নাম ছিল।
+- **Impact:** একটি surface-এর policy বদলালে অন্যটি চুপচাপ পুরোনো থাকত; docs আর runtime-এর drift ধরার উপায় ছিল না।
+- **Fix:** `modules/surface-policy.js` — `SURFACES` (web-chat allowlist, mission `in-process`, editor `admin-token`), `PRIVILEGED_TOOLS`, `WEB_CHAT_TOOLS`, `toolsFor`, `toMarkdown`; `modules/chat-interpreter.js` এখন `WEB_CHAT_TOOLS` import করে; `api.js`-এ `PRIVILEGED_MCP_TOOLS = new Set(surfacePolicy.PRIVILEGED_TOOLS)` আর `isPrivilegedMcpTool` delegate করে; `docs/SURFACE-POLICY.md`-এর table marker-এর ভিতরে module থেকেই generated।
+- **Gate:** `SURFACE_POLICY_OK` — ঠিক ৩ surface, web-chat allowlist non-privileged, mission `in-process`, editor `admin-token`, docs table module table-এর সমান, কোনো surface admin নয়।
+- **Done (2026-11-21, `gc-mwptx62a`):** `node tests/surface-policy-check.js` → 10/0 `SURFACE_POLICY_OK`; `node --check` api.js/module/chat-interpreter/test → `SYNTAX_OK`; regression `MODULES_RUNTIME_OK`, `QUALITY_EVAL_OK` 30/0; `scripts/rebuild-restart.sh --restart` → `REBUILD_RESTART_OK api_sha=7b4311aba3c8…`, live `/health` models `268`, MainPID `13556`।
 
 #### P2-02 + P2-03 — stale artifacts + no eval harness
 

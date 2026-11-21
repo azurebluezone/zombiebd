@@ -14,13 +14,15 @@
  */
 
 const { classifyIntent, normalize } = require("./intent");
+const { WEB_CHAT_TOOLS } = require("./surface-policy");
 
 const CHAT_CHANNEL = "web-chat";
 const MAX_HISTORY = 10;
 const MAX_TOOL_RESULTS = 5;
 const MAX_CONTEXT_CHARS = 4000;
 
-const CHAT_TOOL_ALLOWLIST = Object.freeze(["web_search", "get_time", "calculate"]);
+// Single source of truth: modules/surface-policy.js.
+const CHAT_TOOL_ALLOWLIST = WEB_CHAT_TOOLS;
 
 class ChatChannelError extends Error {
   constructor(detail) {

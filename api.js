@@ -142,6 +142,7 @@ const contextModule = require("./modules/context.js");
 const { pickEntries } = contextModule;
 const { buildSystemPrompt, fitPrompt, estimateTokens } = require("./modules/system-prompt.js");
 const providerModels = require("./modules/provider-models.js");
+const surfacePolicy = require("./modules/surface-policy.js");
 const chatInterpreter = require("./modules/chat-interpreter.js");
 const { createProjectMemory } = require("./modules/project-memory.js");
 const {
@@ -4805,15 +4806,10 @@ function authFromRequest(req) {
 //      clients (VS Code, curl, UDS) send no Origin header → still work.
 //   2. Token gate  — privileged tools need MCP_ADMIN_TOKEN/ADMIN_API_KEY
 //      (Bearer or x-api-key) OR a valid session/user key via authFromRequest.
-const PRIVILEGED_MCP_TOOLS = new Set([
-  "terminal", "exec", "env_get",
-  "db_query", "db_list_tables",
-  "write_file", "delete_file", "rename_file", "set_working_dir",
-  "http_request", "browse_cdp", "open_browser",
-]);
+const PRIVILEGED_MCP_TOOLS = new Set(surfacePolicy.PRIVILEGED_TOOLS);
 
 function isPrivilegedMcpTool(name) {
-  return PRIVILEGED_MCP_TOOLS.has(String(name || ""));
+  return surfacePolicy.isPrivilegedTool(name);
 }
 
 // Constant-time-ish admin token compare (hash both sides first).
