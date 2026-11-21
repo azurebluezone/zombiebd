@@ -1,7 +1,7 @@
 # RUNBOOK — Single-Truth Optimization (2026-11-19)
 
 **Scope:** `~/zombiebd` এবং এই মেশিনে চলা adjacent stacks।
-**Status:** `ACTIVE` — ১৪/১৪ row DONE; পরের কাজ row 15 `REAL_USAGE_DIR` (আসল ব্যবহারকারীর মতো আলাদা working directory + agent session audit)।
+**Status:** `ACTIVE` — ১৫/১৫ row DONE; পরের কাজ Phase B `CLIENT_E2E_OK` (Chromium CDP screenshot + editor client task), তারপর §12 roadmap-এর C–E।
 **Entry point (আগে এটা পড়ো):** `docs/PLAN-2026-11-20.md` — ১০ phase, gate ও সময়সহ সংক্ষিপ্ত করণীয়; narration `/home/sahon/Music/mp3/zbd/today/zbd-plan-2026-11-20.mp3` (424.1s, 2,544,860 bytes)।
 **Closed contracts:** `gc-mwnurzwx` → `RETIRE_AUDIO_OK` (Monu retire + runbook narration); `gc-mwnvesuc` → `PLAN_AUDIO_OK` (plan doc + narration); `gc-mwptx62a` → `SURFACE_POLICY_OK` (surface policy table); `gc-mwpu10ck` → `DOCS_CURRENT_OK` (row 13 release); `gc-mwpuupxk` → `CHAT_UPLOAD_OK` (row 14 chat attachments)।
 **Evidence rule:** প্রতিটি দাবির পাশে `path:line`, command output বা exit code আছে। যা probe করা হয়নি তা `UNVERIFIED`।
@@ -919,7 +919,11 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 | 12 | **SERVER_INDEPENDENCE** | server-owned `.zombie` state, read-only `.zombiecoder` adapter, bounded prompt context + 12-hex workspace id | `LIVE_SERVER_INDEPENDENT_OK` | ✅ DONE (`gc-mwoxgfl1`) |
 | 13 | **SURFACE_POLICY** | surface policy table (web-chat/mission/editor) | `SURFACE_POLICY_OK` | ✅ DONE (`gc-mwptx62a`) |
 | 14 | **CHAT_UPLOAD** | chat document/photo/audio upload | `CHAT_UPLOAD_OK` | ✅ DONE (`gc-mwpuupxk`) |
-| 15 | **REAL_USAGE_DIR** | আলাদা working directory + agent session + file containment audit | `REAL_USAGE_DIR_OK` | TODO |
+| 15 | **REAL_USAGE_DIR** | আলাদা working directory + agent session + file containment audit | `REAL_USAGE_DIR_OK` | ✅ DONE (`gc-mwpvfkly`) |
+| 16 | **CLIENT_E2E** | Chromium CDP UI screenshot + upload/chat; VS Code/opencode client-এ real task | `CLIENT_E2E_OK` | TODO |
+| 17 | **VHOST_TRUTH** | ৭ vhost: URL হয় `200`, নয়তো Caddyfile থেকে বাদ | `VHOST_TRUTH_OK` | TODO |
+| 18 | **SUITE_GREEN** | ৫ red suite: HTTPS fixture, repair-log, `toolcall=0`, Gemini 502, stdio admin | `SUITE_GREEN_OK` | TODO |
+| 19 | **RELEASE_READY** | full regression + rebuild/restart + docs + package + quality eval | `RELEASE_READY_OK` | TODO |
 
 **নীতি:** ১–২ একই দিনে (P0 + live config safety), ৩–৪ test truth, ৫–৬ observability, ৭–৮ release portability, ৯ quality, ১০–১৪ docs/feature. প্রতিটি আইটেম আলাদা contract + gate; এক batch-এ দুইটার বেশি নয়।
 
@@ -1068,6 +1072,81 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 <!-- /USER_JOURNEY_AUDIT_2026_11_21 -->
 
 ---
+
+## 12. ROADMAP 2026-11-21 — verified state → next phases → release outcome
+
+<!-- ROADMAP_2026_11_21 -->
+**কেন এই section:** row 14 পর্যন্ত ১৪টি gate আলাদা contract-এ শেষ হয়েছে। বাকি কাজগুলো এক ক্রমে না লিখলে “test pass = real usage” ভুলটা আবার হবে। এই section-ই next work-এর একমাত্র ক্রম; §10.3 ইতিহাস, §11 আজকের audit।
+
+### 12.1 Verified state (2026-11-21, live)
+
+| বিষয় | প্রমাণ | মান |
+|---|---|---|
+| Gateway | `GET http://127.0.0.1:5050/health` | `healthy:true`, `version:3.2.1` |
+| Models / agents | একই `/health` | `268` / `9` |
+| Dist == source | `sha256sum api.js dist/api.js` | `bdf6bd06d450…` (দুটোই এক) |
+| Done gates | §10.3 + syllabus PASS | `15/15` |
+| Chat upload | `node tests/chat-upload-check.js` | `CHAT_UPLOAD_OK` 20/0; `.zombie/uploads` + provider parts |
+| MCP tools | `tools/list` | `101` |
+| Server state | `LIVE_SERVER_INDEPENDENT_OK` | `.zombie/` server-owned, `.zombiecoder/` read-only |
+| Surface policy | `SURFACE_POLICY_OK` | web-chat / mission / editor |
+| Known red | §11.3 | ৫ suite + ৭ vhost |
+
+### 12.2 Phase map — এখন কী আছে → এই ধাপে কী → শেষে কী বের হবে
+
+| Phase | এখন কী আছে | এই ধাপে কী করব | বের হবে (outcome) | Gate |
+|---|---|---|---|---|
+| **A. Session + real dir** | `sessionDirs` Map আছে, কিন্তু MCP `set_working_dir`/HTTP শুধু global `mcpWorkingDir` বদলায়; `agent_single`/`agent_mission` random id বানায়, session persist করে না; file tools global dir ব্যবহার করে | `set_working_dir` (MCP+HTTP) session create/bind; `agent_single`/`agent_mission` session persist + `session_id` return; tool loop-এ per-session dir + write containment | আলাদা folder-এ agent সত্যিই কাজ করে, session list-এ দেখা যায়, এক folder-এর লেখা অন্য folder-এ যায় না | `REAL_USAGE_DIR_OK` ✅ DONE (`gc-mwpvfkly`) |
+| **B. Browser + editor client** | HTTP/MCP API প্রমাণিত, কিন্তু আসল Chromium/VS Code client দিয়ে কেউ চালায়নি | Chromium CDP-তে UI খুলে screenshot + upload/chat; VS Code/opencode MCP client দিয়ে ছোট task | স্ক্রিনশট + session + ফাইল — আসল client-এর প্রমাণ | `CLIENT_E2E_OK` |
+| **C. Vhost truth** | ৭টি vhost `502`; upstream `3110,3111,3112,3121,3122,3123,5400` বন্ধ | হয় stdio service-কে HTTP-তে তোলা, নয়তো Caddyfile থেকে বাদ দিয়ে শুধু `localhost` রাখা | প্রতিটি URL হয় `200`, নয়তো থাকবেই না | `VHOST_TRUTH_OK` |
+| **D. Red suites** | `transport-suite`, `cwd-db-repair`, `provider-matrix`, `uds-e2e-check`, `mcp-architecture-check` red | এক এক contract: HTTPS fixture, repair-log, `toolcall=0`, Gemini 502, stdio admin | প্রতিটি suite exit 0; না পারলে documented limitation | `SUITE_GREEN_OK` |
+| **E. Release gate** | A–D আলাদা আলাদা | full regression + `rebuild-restart` + `docs-current` + `package-install` + `quality-eval` | এক কমান্ডে release proof | `RELEASE_READY_OK` |
+
+### 12.3 Dependency order
+
+`A → B` (client needs a real session) → `C` আর `D` স্বাধীন, parallel allowed → `E` শুধু A–D শেষ হলে বা documented exception থাকলে।
+
+### 12.4 Phase A acceptance (এই contract)
+
+- MCP `set_working_dir` ও HTTP `/api/set-working-dir` → `session_id` + `working_dir` return; `sessions.json`-এ record।
+- MCP `agent_single`/`agent_mission` → session create/persist; response-এ `session_id`।
+- `read_file`/`write_file`/`list_directory`/`delete_file`/`rename_file`/`terminal` → session dir resolve; write/delete/rename session dir-এর বাইরে গেলে deny।
+- দুইটি temp dir, দুইটি session, দুইটি stub-driven agent task → প্রতিটি dir-এ নিজের ফাইল, অন্য dir-এ নয়।
+- `../escape.txt` → `Access denied: path is outside the session working directory`.
+- `/api/sessions` → দুই session + `working_dir` দেখা যায়।
+
+### 12.5 Phase A-এর বাইরে (এই contract-এ নয়)
+
+Browser CDP screenshot, VS Code/opencode client, ৭ vhost, ৫ red suite, release gate — Phase B–E; আলাদা contract।
+
+<!-- REAL_USAGE_DIR_2026_11_21 -->
+### 12.6 Phase A — DONE (2026-11-21, `gc-mwpvfkly`)
+
+**Done (2026-11-21, `gc-mwpvfkly`):** Phase A session binding + real working-directory audit।
+
+**Check:** `node tests/real-usage-dir-check.js` → `16/0` + `REAL_USAGE_DIR_OK`।
+
+**কী বদলাল (একই commit):**
+
+| জায়গা | আগে | এখন |
+|---|---|---|
+| `createSession` | `metadata`-এ workspace ছিল না | `metadata.working_dir` persist; restart-এ `getEffectiveDir` ফিরিয়ে আনে |
+| `ensureSessionForDir` | ছিল না | MCP/HTTP দুই পথেই session create/reuse + dir bind |
+| MCP `set_working_dir` | শুধু global `mcpWorkingDir` | `session_id` + `working_dir` return, `sessions.json`-এ record |
+| HTTP `/api/set-working-dir` | শুধু global dir | `session_id` return, একই session store |
+| MCP `agent_single`/`agent_mission` | throwaway UUID, persist নেই | session persist + response-এ `session_id` |
+| `executeMcpTool` | global `mcpWorkingDir` | `ctx.workingDir`; bound session-এ write/delete/rename/terminal containment |
+| `callModelWithTools` | tool ctx নেই | per-session `toolContext` pass |
+| `writeSessions` | async write → read-modify-write race | sync + atomic (tmp → rename); check প্রথম run-এ race ধরে ফেলে, fix-এর পর 16/0 |
+
+**প্রমাণ:** `docs/evidence/real-usage-2026-11-21/phase-a-check.json` — দুই workspace-এর `result.txt` content + sha256, session ids (`usage-http-a`, `usage-mcp-b`, `usage-mission`), containment `escape_denied:true`, gateway ছিল isolated `api.js` + local stub provider।
+
+**সীমা (জেনে রাখো):** containment কেবল session-bound call-এ; session ছাড়া direct MCP call আগের global behavior রাখে। Phase B-তে browser/editor client এই session id-ই ব্যবহার করবে।
+
+**পরের কাজ:** Phase B `CLIENT_E2E_OK` — Chromium CDP screenshot + upload/chat, VS Code/opencode MCP client-এ ছোট real task; তারপর C/D।
+<!-- /REAL_USAGE_DIR_2026_11_21 -->
+
+<!-- /ROADMAP_2026_11_21 -->
 
 ## Appendix A — Evidence table
 

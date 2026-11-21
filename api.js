@@ -5751,7 +5751,13 @@ function readSessions() {
 function writeSessions(sessions) {
   try {
     if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-    fs.promises.writeFile(SESSIONS_FILE, JSON.stringify(sessions, null, 2)).catch(e => log("WARN", "SESSIONS_WRITE_ASYNC_FAIL", { error: e.message }));
+    // Synchronous + atomic. The old fs.promises.writeFile let two
+    // createSession calls race: B read sessions.json before A's async write
+    // landed and then overwrote the file with only B. Session writes are rare
+    // (create, expire, flush) and the file is small, so sync is the safe trade.
+    const tmp = SESSIONS_FILE + ".tmp-" + process.pid;
+    fs.writeFileSync(tmp, JSON.stringify(sessions, null, 2));
+    fs.renameSync(tmp, SESSIONS_FILE);
   } catch (e) {
     log("ERROR", "WRITE_SESSIONS_FAILED", { error: e.message });
   }
@@ -5883,6 +5889,10 @@ function createSession(clientId, editor, ip, customId, extraMeta) {
       os_platform: extraMeta?.os_platform || "",
       client_version: extraMeta?.client_version || "",
       session_source: extraMeta?.session_source || "mcp",
+      // The user's chosen workspace. Persisted so a restart can rebuild the
+      // in-memory sessionDirs map instead of silently falling back to the
+      // server checkout.
+      working_dir: extraMeta?.working_dir || "",
       // Every session carries the immutable system identity, so an archived
       // session can never lose track of which system produced it.
       system_identity: identityMetadata(systemIdentityCore()),
@@ -5911,6 +5921,50 @@ function createSession(clientId, editor, ip, customId, extraMeta) {
     details: { client_id: clientId, editor },
     session_id: id,
   });
+  return session;
+}
+
+/**
+ * Create or reuse a session and bind its working directory.
+ *
+ * `sessionDirs` is the in-memory source for the agent tool loop; the same value
+ * is persisted in `session.metadata.working_dir` so `/api/sessions` and a
+ * restart can see it. This is the one place that turns "the user picked a
+ * folder" into "a real session owns that folder".
+ */
+function ensureSessionForDir(opts) {
+  const o = opts || {};
+  const dir = o.workingDir ? path.resolve(String(o.workingDir)) : "";
+  const wanted = o.sessionId ? String(o.sessionId).trim() : "";
+  let session = wanted ? getSession(wanted) : null;
+
+  if (session) {
+    if (dir) {
+      session.metadata = { ...(session.metadata || {}), working_dir: dir };
+      session.expires_at = new Date(Date.now() + SESSION_TTL_MS).toISOString();
+      activeSessions.set(session.id, session);
+      sessionDirs.set(session.id, dir);
+      updateSession(session.id, {
+        metadata: session.metadata,
+        expires_at: session.expires_at,
+      });
+      flushAllSessions();
+    }
+    return session;
+  }
+
+  session = createSession(
+    o.clientId || "mcp",
+    o.editor || "mcp",
+    o.ip || "",
+    wanted || crypto.randomUUID(),
+    {
+      session_source: o.source || "mcp",
+      working_dir: dir,
+      agent_id: o.agentId || "",
+    },
+  );
+  if (dir) sessionDirs.set(session.id, dir);
   return session;
 }
 
@@ -7355,6 +7409,7 @@ async function callModelWithTools(
   tools,
   tool_choice,
   providerOverride,
+  toolContext,
 ) {
   const MAX_ROUNDS = 5;
   const budget = promptBudgetFor(model);
@@ -7458,7 +7513,7 @@ async function callModelWithTools(
           typeof tc.function.arguments === "string"
             ? JSON.parse(tc.function.arguments)
             : tc.function.arguments;
-        result = await executeMcpTool(tc.function.name, args);
+        result = await executeMcpTool(tc.function.name, args, toolContext);
       } catch (err) {
         result = {
           content: [{ type: "text", text: "Tool error: " + err.message }],
@@ -7526,6 +7581,7 @@ async function callModelStreamWithTools(
   onChunk,
   tools,
   tool_choice,
+  toolContext,
 ) {
   const MAX_ROUNDS = 5;
   const budget = promptBudgetFor(model);
@@ -7619,7 +7675,7 @@ async function callModelStreamWithTools(
           typeof tc.function.arguments === "string"
             ? JSON.parse(tc.function.arguments)
             : tc.function.arguments;
-        const toolResult = await executeMcpTool(tc.function.name, args);
+        const toolResult = await executeMcpTool(tc.function.name, args, toolContext);
         text = toolResult.content?.[0]?.text || JSON.stringify(toolResult);
       } catch (err) {
         text = "Tool error: " + err.message;
@@ -8070,6 +8126,12 @@ async function phase1_initialResponse(
       [sysMsg, usrMsg],
       undefined,
       tools,
+      undefined,
+      undefined,
+      {
+        workingDir: getEffectiveDir(sessionId),
+        contained: Boolean(sessionId && sessionDirs.has(sessionId)),
+      },
     );
     response = await autoWebSearch(agent, response, userInput, context);
 
@@ -9803,6 +9865,13 @@ async function executeSingleAgent(
   projectContext,
 ) {
   const startTime = Date.now();
+  // The agent's file tools must resolve against its own session workspace,
+  // not the process-global mcpWorkingDir. `contained` turns on write/delete
+  // containment for a session that has a bound directory.
+  const toolContext = {
+    workingDir: getEffectiveDir(sessionId),
+    contained: Boolean(sessionId && sessionDirs.has(sessionId)),
+  };
   const agent = AGENTS.find((a) => a.id === agentId);
   if (!agent) return { success: false, error: "Agent not found: " + agentId };
 
@@ -9989,6 +10058,9 @@ async function executeSingleAgent(
       augmentedMessages,
       undefined,
       tools,
+      undefined,
+      undefined,
+      toolContext,
     );
     const safeResult = result || {};
     const masked = maskModelIdentity(safeResult.content || "No response");
@@ -10039,6 +10111,9 @@ async function executeSingleAgent(
     augmentedMessages,
     undefined,
     tools,
+    undefined,
+    undefined,
+    toolContext,
   );
 
   // Show error message when all providers fail
@@ -10187,10 +10262,21 @@ const CHECKOUT_ROOT = path.resolve(
 );
 let mcpWorkingDir = CHECKOUT_ROOT;
 
-// Per-session working directory: if session has a custom dir, use it
+// Per-session working directory: if session has a custom dir, use it.
+// The metadata fallback rebuilds sessionDirs after a restart without a
+// separate migration pass.
 function getEffectiveDir(sessionId) {
   if (sessionId && sessionDirs.has(sessionId)) {
     return sessionDirs.get(sessionId);
+  }
+  if (sessionId) {
+    const session = getSession(sessionId);
+    const stored = session && session.metadata && session.metadata.working_dir;
+    if (stored) {
+      const dir = path.resolve(String(stored));
+      sessionDirs.set(sessionId, dir);
+      return dir;
+    }
   }
   return mcpWorkingDir;
 }
@@ -10937,7 +11023,7 @@ function expandHome(value) {
   return expandHomePath(value);
 }
 
-function isPathSafe(targetPath) {
+function isPathSafe(targetPath, workingDir) {
   // AGENT_FS_SCOPE — env toggle for the agent's filesystem sandbox.
   //   "unrestricted" (DEFAULT): agents may touch ANY file/folder on this OS
   //     — user's explicit request (root-level access for the agent persona).
@@ -10947,10 +11033,10 @@ function isPathSafe(targetPath) {
     return true;
   }
   const resolved = path.resolve(targetPath);
-  // Allow access within the current MCP working directory (the user's workspace).
-  // When a user calls `set_working_dir`, mcpWorkingDir is updated to their workspace root.
-  // This grants access to anything under the workspace root the user explicitly chose.
-  if (mcpWorkingDir && (resolved.startsWith(mcpWorkingDir + path.sep) || resolved === mcpWorkingDir)) {
+  // Allow access within the active workspace. A session-bound agent passes its
+  // own dir; a direct MCP call keeps the global mcpWorkingDir.
+  const activeDir = workingDir ? path.resolve(workingDir) : mcpWorkingDir;
+  if (activeDir && (resolved.startsWith(activeDir + path.sep) || resolved === activeDir)) {
     return true;
   }
   // Also check the static ALLOWED_DIRS (server CWD + log/data dirs).
@@ -10974,8 +11060,30 @@ function isPathSafe(targetPath) {
   return false;
 }
 
-async function executeMcpTool(tool, args) {
+async function executeMcpTool(tool, args, ctx) {
   const id = nextMcpId++;
+  // Per-session workspace: the agent tool loop passes the session's dir. A
+  // direct MCP/UDS/WS tool call can pass `session_id` in its args instead, so
+  // the same containment applies without a second code path.
+  const ctxSessionId =
+    (ctx && ctx.sessionId ? String(ctx.sessionId) : "") ||
+    (args && (args.session_id || args.sessionId)
+      ? String(args.session_id || args.sessionId)
+      : "");
+  const workDir =
+    ctx && ctx.workingDir
+      ? path.resolve(String(ctx.workingDir))
+      : getEffectiveDir(ctxSessionId);
+  const contained = Boolean(
+    (ctx && ctx.contained && ctx.workingDir) ||
+      (ctxSessionId && sessionDirs.has(ctxSessionId)),
+  );
+  const outsideSession = (target) => {
+    if (!contained) return false;
+    const base = path.resolve(workDir);
+    const resolved = path.resolve(target);
+    return resolved !== base && !resolved.startsWith(base + path.sep);
+  };
   log("INFO", "MCP_CALL", { tool, args, id });
 
   // Admin on/off — single choke point for HTTP + UDS + SSE callers.
@@ -11019,15 +11127,28 @@ async function executeMcpTool(tool, args) {
       const readPath = expandHome(args.path || ".");
       const p = path.isAbsolute(readPath)
         ? path.resolve(readPath)
-        : path.resolve(mcpWorkingDir, readPath);
-      if (!isPathSafe(p)) {
+        : path.resolve(workDir, readPath);
+      if (outsideSession(p)) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                "Access denied: path is outside the session working directory (" +
+                workDir +
+                ")",
+            },
+          ],
+        };
+      }
+      if (!isPathSafe(p, workDir)) {
         return {
           content: [
             {
               type: "text",
               text:
                 "Access denied: path is outside allowed directories. Working dir: " +
-                mcpWorkingDir,
+                workDir,
             },
           ],
         };
@@ -11044,15 +11165,28 @@ async function executeMcpTool(tool, args) {
       const writePath = expandHome(args.path || "");
       const p = path.isAbsolute(writePath)
         ? path.resolve(writePath)
-        : path.resolve(mcpWorkingDir, writePath);
-      if (!isPathSafe(p)) {
+        : path.resolve(workDir, writePath);
+      if (outsideSession(p)) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                "Access denied: path is outside the session working directory (" +
+                workDir +
+                ")",
+            },
+          ],
+        };
+      }
+      if (!isPathSafe(p, workDir)) {
         return {
           content: [
             {
               type: "text",
               text:
                 "Access denied: path is outside allowed directories. Working dir: " +
-                mcpWorkingDir,
+                workDir,
             },
           ],
         };
@@ -11076,8 +11210,21 @@ async function executeMcpTool(tool, args) {
       }
       const cwd =
         args.cwd && typeof args.cwd === "string"
-          ? path.resolve(mcpWorkingDir || ".", expandHome(args.cwd))
-          : mcpWorkingDir || ".";
+          ? path.resolve(workDir || ".", expandHome(args.cwd))
+          : workDir || ".";
+      if (outsideSession(cwd)) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                "Access denied: path is outside the session working directory (" +
+                workDir +
+                ")",
+            },
+          ],
+        };
+      }
       const { exec } = require("child_process");
       const shell = _PLATFORM === "win32" ? "powershell.exe" : "/bin/bash";
       const shellArgs = _PLATFORM === "win32" ? ["-NoProfile", "-Command", cmd] : ["-c", cmd];
@@ -11101,8 +11248,21 @@ async function executeMcpTool(tool, args) {
       const deletePath = expandHome(args.path || "");
       const p = path.isAbsolute(deletePath)
         ? path.resolve(deletePath)
-        : path.resolve(mcpWorkingDir, deletePath);
-      if (!isPathSafe(p)) {
+        : path.resolve(workDir, deletePath);
+      if (outsideSession(p)) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                "Access denied: path is outside the session working directory (" +
+                workDir +
+                ")",
+            },
+          ],
+        };
+      }
+      if (!isPathSafe(p, workDir)) {
         return { content: [{ type: "text", text: "Access denied: path outside allowed directories: " + p }] };
       }
       if (!fs.existsSync(p)) {
@@ -11124,11 +11284,24 @@ async function executeMcpTool(tool, args) {
       const toRaw = expandHome(args.to || "");
       const fromP = path.isAbsolute(fromRaw)
         ? path.resolve(fromRaw)
-        : path.resolve(mcpWorkingDir, fromRaw);
+        : path.resolve(workDir, fromRaw);
       const toP = path.isAbsolute(toRaw)
         ? path.resolve(toRaw)
-        : path.resolve(mcpWorkingDir, toRaw);
-      if (!isPathSafe(fromP) || !isPathSafe(toP)) {
+        : path.resolve(workDir, toRaw);
+      if (outsideSession(fromP) || outsideSession(toP)) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                "Access denied: path is outside the session working directory (" +
+                workDir +
+                ")",
+            },
+          ],
+        };
+      }
+      if (!isPathSafe(fromP, workDir) || !isPathSafe(toP, workDir)) {
         return { content: [{ type: "text", text: "Access denied: path outside allowed directories" }] };
       }
       if (!fs.existsSync(fromP)) {
@@ -11142,7 +11315,7 @@ async function executeMcpTool(tool, args) {
     case "grep": {
       const query = args.query || "";
       if (!query) return { content: [{ type: "text", text: "Empty query" }] };
-      const base = mcpWorkingDir || ".";
+      const base = workDir || ".";
       const maxResults = Math.min(parseInt(args.maxResults, 10) || 50, 200);
       let re;
       try {
@@ -11188,7 +11361,7 @@ async function executeMcpTool(tool, args) {
     }
     case "glob": {
       const pattern = args.pattern || "";
-      const base = mcpWorkingDir || ".";
+      const base = workDir || ".";
       const fullPattern = path.isAbsolute(pattern)
         ? pattern
         : path.join(base, pattern);
@@ -11267,6 +11440,16 @@ async function executeMcpTool(tool, args) {
       const ssotPath = workspaceModule.ensureWorkspacePaths(newDir).ssot;
       const exists = fs.existsSync(ssotPath);
       refreshSSOT(newDir);
+      // A working directory without a session is just a global switch. Bind a
+      // real session so /api/sessions, the agent tool loop and a restart all
+      // agree on which workspace this task owns.
+      const session = ensureSessionForDir({
+        sessionId: args.session_id || args.sessionId || "",
+        workingDir: newDir,
+        clientId: args.client_id || "mcp",
+        editor: args.editor || "mcp",
+        source: "mcp",
+      });
       const reloaded = readSSOT(newDir);
       return {
         content: [
@@ -11275,6 +11458,8 @@ async function executeMcpTool(tool, args) {
             text:
               "Working directory set to: " +
               mcpWorkingDir +
+              "\nSession: " +
+              session.id +
               "\n" +
               (exists
                 ? "SSOT updated at: " + ssotPath
@@ -11286,10 +11471,17 @@ async function executeMcpTool(tool, args) {
               (reloaded ? reloaded.length + " bytes" : "unknown"),
           },
         ],
+        session_id: session.id,
+        working_dir: mcpWorkingDir,
       };
     }
     case "get_working_dir": {
-      return { content: [{ type: "text", text: mcpWorkingDir }] };
+      const sessionId = args.session_id || args.sessionId || "";
+      return {
+        content: [{ type: "text", text: getEffectiveDir(sessionId) }],
+        session_id: sessionId || null,
+        working_dir: getEffectiveDir(sessionId),
+      };
     }
     case "web_search": {
       const result = await webSearch(args.query);
@@ -11303,7 +11495,16 @@ async function executeMcpTool(tool, args) {
       return { content: [{ type: "text", text: "No results found." }] };
     }
     case "agent_mission": {
-      const sessId = args.session_id || crypto.randomUUID();
+      // Persist the session before the model runs: a random UUID that only
+      // lives in this function is not a session the user can see or resume.
+      const session = ensureSessionForDir({
+        sessionId: args.session_id,
+        workingDir: getEffectiveDir(args.session_id),
+        clientId: "mcp",
+        editor: "mcp",
+        source: "mcp",
+      });
+      const sessId = session.id;
       console.log(
         "\x1b[36m\x1b[1m  [MCP] agent_mission called — wrapping with anti-dote\x1b[0m",
       );
@@ -11319,10 +11520,20 @@ async function executeMcpTool(tool, args) {
         content: [
           { type: "text", text: result.combined || "Mission completed." },
         ],
+        session_id: sessId,
+        working_dir: getEffectiveDir(sessId),
       };
     }
     case "agent_single": {
-      const sessId = args.session_id || crypto.randomUUID();
+      const session = ensureSessionForDir({
+        sessionId: args.session_id,
+        workingDir: getEffectiveDir(args.session_id),
+        clientId: "mcp",
+        editor: "mcp",
+        source: "mcp",
+        agentId: args.agent_id || "",
+      });
+      const sessId = session.id;
       console.log(
         "\x1b[36m\x1b[1m  [MCP] agent_single called — wrapping with anti-dote\x1b[0m",
       );
@@ -11343,6 +11554,8 @@ async function executeMcpTool(tool, args) {
         content: [
           { type: "text", text: result.content || "Response generated." },
         ],
+        session_id: sessId,
+        working_dir: getEffectiveDir(sessId),
       };
     }
     case "get_memory": {
@@ -11458,15 +11671,28 @@ async function executeMcpTool(tool, args) {
       const listPath = args.path || ".";
       const p = path.isAbsolute(listPath)
         ? path.resolve(listPath)
-        : path.resolve(mcpWorkingDir, listPath);
-      if (!isPathSafe(p)) {
+        : path.resolve(workDir, listPath);
+      if (outsideSession(p)) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                "Access denied: path is outside the session working directory (" +
+                workDir +
+                ")",
+            },
+          ],
+        };
+      }
+      if (!isPathSafe(p, workDir)) {
         return {
           content: [
             {
               type: "text",
               text:
                 "Access denied: path is outside allowed directories. Working dir: " +
-                mcpWorkingDir,
+                workDir,
             },
           ],
         };
@@ -11659,8 +11885,21 @@ async function executeMcpTool(tool, args) {
       const cmd = (args && args.command) ? String(args.command) : "";
       if (!cmd.trim()) return { content: [{ type: "text", text: "Empty command" }] };
       const cwd = (args && args.cwd)
-        ? (path.isAbsolute(args.cwd) ? path.resolve(args.cwd) : path.resolve(mcpWorkingDir || ".", args.cwd))
-        : (mcpWorkingDir || ".");
+        ? (path.isAbsolute(args.cwd) ? path.resolve(args.cwd) : path.resolve(workDir || ".", args.cwd))
+        : (workDir || ".");
+      if (outsideSession(cwd)) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                "Access denied: path is outside the session working directory (" +
+                workDir +
+                ")",
+            },
+          ],
+        };
+      }
       const timeout = parseInt((args && args.timeout), 10) || parseInt(process.env.EXEC_TIMEOUT || "30000", 10);
       const maxBuffer = parseInt(process.env.EXEC_MAX_BUFFER || String(8 * 1024 * 1024), 10);
       const shell = _IS_WINDOWS
@@ -15340,15 +15579,24 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
         client: parsed.client || req.headers["x-mcp-client-name"] || "unknown",
       });
       mcpWorkingDir = resolvedDir;
+      const session = ensureSessionForDir({
+        sessionId: parsed.session_id || parsed.sessionId || "",
+        workingDir: resolvedDir,
+        clientId: parsed.client || req.headers["x-mcp-client-name"] || "http",
+        editor: parsed.editor || "http",
+        ip: req.socket.remoteAddress || "",
+        source: "http",
+      });
       const ssot = refreshSSOT(resolvedDir);
       jsonResponse(res, 200, {
         success: true,
+        session_id: session.id,
         working_dir: mcpWorkingDir,
         ssot: ssot
           ? ssot.length + " bytes generated"
           : "ssot generation failed",
         message:
-          "Working directory set. SSOT auto-generated. Call /api/mcp-clients to see connected clients.",
+          "Working directory set. Session bound. Call /api/sessions to see it.",
       });
       return;
     }
@@ -15427,6 +15675,7 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
           provider: s.provider || "",
           messages: s.messages || 0,
           status: s.status,
+          working_dir: (s.metadata && s.metadata.working_dir) || "",
           agent_memory_files: agentCount,
           agent_memory_entries: memCount,
           global_memory_entries: globalMemCount,
@@ -16613,6 +16862,11 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
           temperature,
           streamCallback,
           toolsForStream,
+          undefined,
+          {
+            workingDir: getEffectiveDir(sessionId),
+            contained: Boolean(sessionId && sessionDirs.has(sessionId)),
+          },
         );
         if (!streamResult || !streamResult.success) {
           if (!fullContent) {

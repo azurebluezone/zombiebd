@@ -1,0 +1,32 @@
+{
+  "generated_at": "2026-11-21T04:04:24.095Z",
+  "check": "node tests/real-usage-dir-check.js",
+  "marker": "REAL_USAGE_DIR_OK",
+  "passed": 16,
+  "failed": 0,
+  "gateway": "isolated api.js on a free port with a local tool-calling stub",
+  "sessions": {
+    "http": "usage-http-a",
+    "mcp": "usage-mcp-b",
+    "mission": "usage-mission"
+  },
+  "workspaces": [
+    {
+      "dir": "/tmp/opencode/real-usage-29722/workspace-a",
+      "file": "result.txt",
+      "content": "SESSION_A_OK\n",
+      "sha256": "f4faa5f66715a6877bd310062a3c7d26702b81843fd96872e5ccc0e7092f8c6c"
+    },
+    {
+      "dir": "/tmp/opencode/real-usage-29722/workspace-b",
+      "file": "result.txt",
+      "content": "SESSION_B_OK\n",
+      "sha256": "aba66b6b33edfbbf2a4703dd211cc0bbb24ae9255dd327814be2297ba5ce97cd"
+    }
+  ],
+  "containment": {
+    "escape_denied": true,
+    "marker": "Access denied: path is outside the session working directory"
+  },
+  "session_write_race": "writeSessions is now synchronous + atomic; two createSession calls no longer overwrite each other"
+}
