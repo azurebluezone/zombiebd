@@ -144,6 +144,7 @@ const { buildSystemPrompt, fitPrompt, estimateTokens } = require("./modules/syst
 const providerModels = require("./modules/provider-models.js");
 const surfacePolicy = require("./modules/surface-policy.js");
 const chatInterpreter = require("./modules/chat-interpreter.js");
+const chatUpload = require("./modules/chat-upload.js");
 const { createProjectMemory } = require("./modules/project-memory.js");
 const {
   getIdentity,
@@ -1091,6 +1092,7 @@ function loadCustomProviders() {
       ...(cfg.maxPromptChars ? { maxPromptChars: cfg.maxPromptChars } : {}),
       ...(cfg.maxTools !== undefined ? { maxTools: cfg.maxTools } : {}),
       ...(cfg.contextWindow ? { contextWindow: cfg.contextWindow } : {}),
+      ...(cfg.media ? { media: true } : {}),
     };
     loaded++;
     console.log(
@@ -13114,6 +13116,36 @@ function readBody(req, maxBytes = MAX_BODY_SIZE) {
   });
 }
 
+/**
+ * Binary sibling of readBody for uploads. Returns the real bytes and the
+ * declared size; an oversized body is consumed but never buffered.
+ */
+function readBodyBuffer(req, maxBytes = MAX_BODY_SIZE) {
+  return new Promise((resolve) => {
+    const chunks = [];
+    let size = 0;
+    let tooLarge = false;
+    req.on("data", (c) => {
+      size += c.length;
+      if (size > maxBytes) {
+        tooLarge = true;
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on("end", () =>
+      resolve({
+        data: tooLarge ? Buffer.alloc(0) : Buffer.concat(chunks),
+        size,
+        tooLarge,
+      }),
+    );
+    req.on("error", () =>
+      resolve({ data: Buffer.alloc(0), size, tooLarge: true, error: true }),
+    );
+  });
+}
+
 function getCorsOrigin(reqOrigin) {
   if (!reqOrigin) return "";
   return isOriginAllowed(reqOrigin) ? reqOrigin : "";
@@ -13880,7 +13912,7 @@ const handleHttpRequest = async (req, res) => {
   );
   res.setHeader(
     "Access-Control-Allow-Headers",
-    "Origin, X-Requested-With, Content-Type, Accept, Authorization, X-Session-Id, X-Verify-Token, X-Working-Dir",
+    "Origin, X-Requested-With, Content-Type, Accept, Authorization, X-Session-Id, X-Verify-Token, X-Working-Dir, X-File-Name",
   );
   res.setHeader("Access-Control-Allow-Credentials", "true");
   res.setHeader("Access-Control-Max-Age", "86400");
@@ -15216,6 +15248,76 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
     // ─── POST /api/set-working-dir ──────────────────────────
     // Non-MCP endpoint for zombieBridge to set working directory and auto-generate SSOT.
     // Simpler than formatting a full MCP JSON-RPC message.
+    // ─── POST /api/chat/upload ─────────────────────────────────
+    // One bounded binary attachment. The browser sends the raw file bytes;
+    // the name travels in X-File-Name, the type in Content-Type. Storage is
+    // <project>/.zombie/uploads/<sha256>.<ext> with a JSON sidecar.
+    if (url === "/api/chat/upload" && method === "POST") {
+      const maxBytes = sizeBudget.limit("ATTACHMENT_MAX_BYTES");
+      const declared = parseInt(req.headers["content-length"] || "0", 10);
+      if (Number.isFinite(declared) && declared > maxBytes) {
+        jsonResponse(res, 413, {
+          error: "ATTACHMENT_TOO_LARGE",
+          message:
+            "attachment is " + declared + " bytes; limit is " + maxBytes,
+        });
+        return;
+      }
+      const body = await readBodyBuffer(req, maxBytes);
+      if (body.tooLarge) {
+        jsonResponse(res, 413, {
+          error: "ATTACHMENT_TOO_LARGE",
+          message:
+            "attachment exceeds ATTACHMENT_MAX_BYTES (" + maxBytes + " bytes)",
+        });
+        return;
+      }
+      let name = String(req.headers["x-file-name"] || "attachment");
+      try {
+        name = decodeURIComponent(name);
+      } catch (_) {
+        /* keep the raw header */
+      }
+      try {
+        const saved = chatUpload.saveUpload({
+          root: PROJECT_ROOT,
+          data: body.data,
+          mime: req.headers["content-type"] || "application/octet-stream",
+          name,
+          maxBytes,
+        });
+        log("INFO", "CHAT_UPLOAD", {
+          id: saved.id.slice(0, 12),
+          kind: saved.kind,
+          bytes: saved.bytes,
+          deduped: saved.deduped,
+        });
+        jsonResponse(res, 201, {
+          ok: true,
+          id: saved.id,
+          name: saved.name,
+          mime: saved.mime,
+          kind: saved.kind,
+          bytes: saved.bytes,
+          deduped: saved.deduped,
+        });
+      } catch (e) {
+        if (e instanceof chatUpload.AttachmentError) {
+          jsonResponse(res, e.status, {
+            error: e.code,
+            message: e.message,
+          });
+          return;
+        }
+        log("WARN", "CHAT_UPLOAD_FAIL", { error: e.message });
+        jsonResponse(res, 500, {
+          error: "ATTACHMENT_STORE_FAILED",
+          message: e.message,
+        });
+      }
+      return;
+    }
+
     if (url === "/api/set-working-dir" && method === "POST") {
       // SECURITY (2026-10-08): was unauthenticated AND cross-origin-open.
       // It assigns the global mcpWorkingDir, which every later read_file /
@@ -15549,6 +15651,63 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
             ascii(chatPlan.allowedTools.join(",")) || "none",
           );
           res.setHeader("x-zc-chat-web", chatPlan.usedWebSearch ? "1" : "0");
+        }
+      }
+
+      // ── CHAT ATTACHMENTS ──────────────────────────────────
+      // ids reference .zombie/uploads; documents become text, photos/audio
+      // become provider parts. Mission is text-only and rejects media.
+      const attachmentIds =
+        parsed.attachments ||
+        parsed.attachment_ids ||
+        parsed.attachmentIds ||
+        [];
+      if (Array.isArray(attachmentIds) && attachmentIds.length) {
+        try {
+          const uploads = chatUpload.resolveAttachments(
+            PROJECT_ROOT,
+            attachmentIds,
+          );
+          const userIndex = messages.reduce(
+            (last, m, index) => (m.role === "user" ? index : last),
+            -1,
+          );
+          if (userIndex >= 0) {
+            const existing = messages[userIndex].content;
+            const base = Array.isArray(existing)
+              ? existing
+                  .map((part) =>
+                    typeof part === "string"
+                      ? part
+                      : (part && part.text) || "",
+                  )
+                  .filter(Boolean)
+                  .join("\n")
+              : String(existing || "");
+            if (model === "mission" || model === "agent/mission") {
+              const text = chatUpload.missionText(uploads);
+              messages[userIndex] = {
+                ...messages[userIndex],
+                content: (base ? base + "\n\n" : "") + text,
+              };
+            } else {
+              messages[userIndex] = {
+                ...messages[userIndex],
+                content: [
+                  { type: "text", text: base },
+                  ...chatUpload.buildAttachmentParts(uploads),
+                ],
+              };
+            }
+          }
+        } catch (e) {
+          const status =
+            e instanceof chatUpload.AttachmentError ? e.status : 500;
+          jsonResponse(res, status, {
+            error: e.code || "ATTACHMENT_FAILED",
+            message: e.message,
+          });
+          return;
         }
       }
 
@@ -17039,7 +17198,27 @@ window.__ADMIN_CONFIG = ${JSON.stringify({
         return;
       }
 
-      const userInput = parsed.input || parsed.query || parsed.prompt || "";
+      let userInput = parsed.input || parsed.query || parsed.prompt || "";
+      const missionAttachmentIds =
+        parsed.attachments || parsed.attachment_ids || [];
+      if (Array.isArray(missionAttachmentIds) && missionAttachmentIds.length) {
+        try {
+          const uploads = chatUpload.resolveAttachments(
+            PROJECT_ROOT,
+            missionAttachmentIds,
+          );
+          const text = chatUpload.missionText(uploads);
+          if (text) userInput = (userInput ? userInput + "\n\n" : "") + text;
+        } catch (e) {
+          const status =
+            e instanceof chatUpload.AttachmentError ? e.status : 500;
+          jsonResponse(res, status, {
+            error: e.code || "ATTACHMENT_FAILED",
+            message: e.message,
+          });
+          return;
+        }
+      }
       const tools = sanitizeTools(parsed.tools, parsed.model);
       let sessionId = parsed.session_id;
 

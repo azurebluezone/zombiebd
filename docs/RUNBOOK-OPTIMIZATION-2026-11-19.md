@@ -1,9 +1,9 @@
 # RUNBOOK — Single-Truth Optimization (2026-11-19)
 
 **Scope:** `~/zombiebd` এবং এই মেশিনে চলা adjacent stacks।
-**Status:** `ACTIVE` — ১৩/১৪ row DONE; পরের কাজ CHAT_UPLOAD।
+**Status:** `ACTIVE` — ১৪/১৪ row DONE; পরের কাজ row 15 `REAL_USAGE_DIR` (আসল ব্যবহারকারীর মতো আলাদা working directory + agent session audit)।
 **Entry point (আগে এটা পড়ো):** `docs/PLAN-2026-11-20.md` — ১০ phase, gate ও সময়সহ সংক্ষিপ্ত করণীয়; narration `/home/sahon/Music/mp3/zbd/today/zbd-plan-2026-11-20.mp3` (424.1s, 2,544,860 bytes)।
-**Closed contracts:** `gc-mwnurzwx` → `RETIRE_AUDIO_OK` (Monu retire + runbook narration); `gc-mwnvesuc` → `PLAN_AUDIO_OK` (plan doc + narration); `gc-mwptx62a` → `SURFACE_POLICY_OK` (surface policy table); `gc-mwpu10ck` → `DOCS_CURRENT_OK` (row 13 release)।
+**Closed contracts:** `gc-mwnurzwx` → `RETIRE_AUDIO_OK` (Monu retire + runbook narration); `gc-mwnvesuc` → `PLAN_AUDIO_OK` (plan doc + narration); `gc-mwptx62a` → `SURFACE_POLICY_OK` (surface policy table); `gc-mwpu10ck` → `DOCS_CURRENT_OK` (row 13 release); `gc-mwpuupxk` → `CHAT_UPLOAD_OK` (row 14 chat attachments)।
 **Evidence rule:** প্রতিটি দাবির পাশে `path:line`, command output বা exit code আছে। যা probe করা হয়নি তা `UNVERIFIED`।
 **Companion audit:** `docs/AUDIT-PROVIDERS-2026-11-19.md`।
 
@@ -918,7 +918,8 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 | 11 | **N6** | local skill SQLite import + Markdown parser + MCP stdio | `SKILL_MCP_OK` | ✅ DONE (`gc-mwov6hty`) |
 | 12 | **SERVER_INDEPENDENCE** | server-owned `.zombie` state, read-only `.zombiecoder` adapter, bounded prompt context + 12-hex workspace id | `LIVE_SERVER_INDEPENDENT_OK` | ✅ DONE (`gc-mwoxgfl1`) |
 | 13 | **SURFACE_POLICY** | surface policy table (web-chat/mission/editor) | `SURFACE_POLICY_OK` | ✅ DONE (`gc-mwptx62a`) |
-| 14 | **CHAT_UPLOAD** | chat document/photo/audio upload | `CHAT_UPLOAD_OK` | TODO |
+| 14 | **CHAT_UPLOAD** | chat document/photo/audio upload | `CHAT_UPLOAD_OK` | ✅ DONE (`gc-mwpuupxk`) |
+| 15 | **REAL_USAGE_DIR** | আলাদা working directory + agent session + file containment audit | `REAL_USAGE_DIR_OK` | TODO |
 
 **নীতি:** ১–২ একই দিনে (P0 + live config safety), ৩–৪ test truth, ৫–৬ observability, ৭–৮ release portability, ৯ quality, ১০–১৪ docs/feature. প্রতিটি আইটেম আলাদা contract + gate; এক batch-এ দুইটার বেশি নয়।
 
@@ -988,6 +989,14 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 - **Gate:** `SURFACE_POLICY_OK` — ঠিক ৩ surface, web-chat allowlist non-privileged, mission `in-process`, editor `admin-token`, docs table module table-এর সমান, কোনো surface admin নয়।
 - **Done (2026-11-21, `gc-mwptx62a`):** `node tests/surface-policy-check.js` → 10/0 `SURFACE_POLICY_OK`; `node --check` api.js/module/chat-interpreter/test → `SYNTAX_OK`; regression `MODULES_RUNTIME_OK`, `QUALITY_EVAL_OK` 30/0; `scripts/rebuild-restart.sh --restart` → `REBUILD_RESTART_OK api_sha=7b4311aba3c8…`, live `/health` models `268`, MainPID `13556`।
 
+#### CHAT_UPLOAD — bounded chat attachments
+
+- **প্রমাণ (আগে):** `public/index.html`-এ `fileUpload` + `handleFile` ছিল, কিন্তু শুধু ফাইলের নাম দেখাত; `/api/chat/upload` ছিল না (`404`); `/v1/chat/completions` শুধু JSON পড়ত; `provider/index.js:169` `normalizeMessages` non-text part drop করত; `provider/schema.json` message content `string|null`; `lib/env.js`-এ `ATTACHMENT_MAX_BYTES` ছিল না।
+- **Impact:** ব্যবহারকারী ছবি/ডকুমেন্ট/অডিও দিলে কিছুই পৌঁছাত না; model জানতও না একটি ফাইল ছিল।
+- **Fix:** `modules/chat-upload.js` — ১১ type (txt/md/csv/json, png/jpeg/webp/gif, mp3/wav/ogg), sha256 id, `.zombie/uploads/<id>.<ext>` + JSON sidecar, dedupe, `ATTACHMENT_TYPE`/`ATTACHMENT_TOO_LARGE`/`ATTACHMENT_LIMIT`; `api.js` — `readBodyBuffer`, `POST /api/chat/upload` (201, 415, 413), `/v1/chat/completions` ও `/api/mission`-এ `attachments` resolve, mission-এ media reject `ATTACHMENT_SINGLE_AGENT_ONLY`; `provider/index.js` — `normalizeMessages(messages, media)` media-capable provider-এ `image_url`/`input_audio` রাখে, text-only provider-এ explicit omission marker; `provider/schema.json` `contentPart` + array content; `provider/custom.js` `CUSTOM_PROVIDER_N_MEDIA=true`; `public/index.html` — attach-এ upload, chip, `attachments` ids পাঠায়, file-only message allowed।
+- **Gate:** `CHAT_UPLOAD_OK` — module storage/dedupe/reject, live gateway 201/415/413, real stub provider-এ `image_url`+`input_audio`, text-only provider-এ flattened text, mission reject, UI wiring।
+- **Done (2026-11-21, `gc-mwpuupxk`):** `node tests/chat-upload-check.js` → 20/0 `CHAT_UPLOAD_OK` (module 9, provider boundary 2, live gateway 9); live upload `live-note.txt` → `201 id=b6e3ba51d9c8… bytes=24`; live `code-guru` chat with that attachment → `200`, উত্তর `LIVE_UPLOAD_MARKER_7f3a` (অর্থাৎ ডকুমেন্ট সত্যিই model-এ পৌঁছেছে); `scripts/rebuild-restart.sh --restart` → `REBUILD_RESTART_OK api_sha=c94b04f18da4…`, live `/health` `268` models / `9` agents; `docs-current-check` 14/0 `DOCS_CURRENT_OK`।
+
 #### P2-02 + P2-03 — stale artifacts + no eval harness
 
 - **প্রমাণ:** `logs/` 44MB, `.zombiecoder/.state/backups/` 40MB / 127 files, `dist/` rebuild ছাড়া stale হতে পারে; কোনো deterministic eval suite নেই, শুধু manual probe।
@@ -1027,7 +1036,7 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 | §7–§8 install/budget/DB | নতুন মেশিনে বসায় | এক কমান্ডে install + rebuild | `REBUILD_RESTART_OK`, `PACKAGE_INSTALL_OK` | ✅ |
 | §9 quality bar | release-এর আগে যাচাই | 30-case eval | `QUALITY_EVAL_OK` 30/30 | ✅ |
 | §10.3 row 1–13 | feature ধরে ধরে ব্যবহার | প্রতিটি gate সবুজ | 13/13 DONE, contract সহ | ✅ |
-| §10.3 row 14 upload | ফাইল/ছবি/অডিও পাঠায় | upload → chat-এ ফাইল যায় | `CHAT_UPLOAD=404`; UI শুধু নাম দেখায় | ❌ TODO |
+| §10.3 row 14 upload | ফাইল/ছবি/অডিও পাঠায় | upload → chat-এ ফাইল যায় | audit time-এ `CHAT_UPLOAD=404`; row 14-এ resolved (`CHAT_UPLOAD_OK`) | ✅ DONE |
 
 ### 11.2 ব্যবহারকারীর ধাপে ধাপে যাত্রা (আজকের বাস্তব ফল)
 
@@ -1041,7 +1050,7 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 
 ### 11.3 সীমাবদ্ধতা — স্পষ্ট করে লিখিত
 
-- **`CHAT_UPLOAD=404`:** কোনো upload endpoint নেই; `provider/index.js:169` `normalizeMessages` non-text part drop করে; `provider/schema.json` message content `string|null`; `ATTACHMENT_MAX_BYTES` শুধু §3.5-এ proposed, `lib/env.js`-এ নেই। ডকুমেন্ট/ছবি/অডিও পাঠানোর দাবি এখন `UNVERIFIED`।
+- **`CHAT_UPLOAD=404` (audit time; row 14-এ resolved):** তখন কোনো upload endpoint ছিল না; `normalizeMessages` non-text part drop করত; `provider/schema.json` content `string|null`; `ATTACHMENT_MAX_BYTES` শুধু §3.5-এ proposed ছিল। এখন `POST /api/chat/upload` + `CHAT_UPLOAD_OK` আছে; ডকুমেন্ট/ছবি/অডিওর দাবি row 14 Done block-এ প্রমাণিত।
 - **`VHOSTS_502=7`:** `ocr`, `screen`, `tts`, `ads`, `public`, `combined`, `adapter` — সাতটি vhost-ই `502`; upstream `3110,3111,3112,3121,3122,3123,5400`-এ কেউ শোনে না। কারণ টুলগুলো stdio MCP, আলাদা HTTP service নয়। Caddyfile-এ vhost থাকলেই সেবা পাওয়া যায় না।
 - **`127.0.0.1` দিয়ে `443`:** `curl https://127.0.0.1/` TLS alert; সার্টিফিকেট `localhost` নামের জন্য। `--resolve`/hostname ছাড়া ব্যবহারকারী TLS error দেখবে।
 - **Provider health:** `/health.providers` এখন honest `unknown` (probe ছাড়া `up` দাবি করে না), কিন্তু enabled provider-এর প্রকৃত healthy অবস্থা probe চালানো পর্যন্ত `UNVERIFIED`।
@@ -1054,7 +1063,7 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 
 `AUDIO=/home/sahon/Music/mp3/zc lama/zc-audit-2026-11-21.mp3` — `1,086,912` bytes, `181.15s`, ffprobe `mp3`। উপরের ফল, চ্যাপ্টার-রায় আর সীমাবদ্ধতা বাংলায় শোনানো হয়েছে।
 
-**পরের কাজ:** row 14 `CHAT_UPLOAD` — upload endpoint + `.zombie/uploads` + provider content parts + UI wiring, gate `CHAT_UPLOAD_OK`। এরপর সাত vhost: হয় HTTP service চালু, নয়তো Caddyfile থেকে সরিয়ে শুধু `localhost` রাখা।
+**পরের কাজ (audit time):** row 14 `CHAT_UPLOAD` — এখন DONE (`gc-mwpuupxk`)। এরপর row 15 `REAL_USAGE_DIR` — আলাদা working directory-তে agent session তৈরি, ছোট task, file containment ও fingerprint যাচাই; সাত vhost: হয় HTTP service, নয়তো Caddyfile থেকে বাদ।
 
 <!-- /USER_JOURNEY_AUDIT_2026_11_21 -->
 

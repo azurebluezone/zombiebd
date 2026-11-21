@@ -230,17 +230,21 @@ async function main() {
     return "tools=" + tools.length + " system_info=ok";
   });
 
-  await check("upload endpoint is 404 and the UI is name-only", async () => {
-    const res = await request("POST", "/api/chat/upload", Buffer.from("x"), {
-      "content-type": "image/png",
-      "x-file-name": "x.png",
+  await check("audit recorded the upload gap; the endpoint now rejects unsupported types", async () => {
+    const text = fs.readFileSync(RUNBOOK, "utf8");
+    const start = text.indexOf("<!-- USER_JOURNEY_AUDIT_2026_11_21 -->");
+    const end = text.indexOf("<!-- /USER_JOURNEY_AUDIT_2026_11_21 -->");
+    assert(text.slice(start, end).includes("CHAT_UPLOAD=404"), "historical gap marker missing");
+    const res = await request("POST", "/api/chat/upload", Buffer.from("MZ"), {
+      "content-type": "application/x-msdownload",
+      "x-file-name": "x.exe",
     });
-    assert(res.status === 404, "upload status=" + res.status);
+    assert(res.status === 415, "upload status=" + res.status);
     const index = fs.readFileSync(path.join(ROOT, "public/index.html"), "utf8");
     assert(index.includes('id="fileUpload"'), "file input missing");
     assert(index.includes("function handleFile"), "handleFile missing");
-    assert(!index.includes("/api/chat/upload"), "UI already calls an upload endpoint");
-    return "upload=404 fileInput=present apiCall=absent";
+    assert(index.includes("/api/chat/upload"), "UI does not call the upload endpoint");
+    return "historical=404 current=415 fileInput=present apiCall=present";
   });
 
   await check("https://localhost/health is 200", async () => {
@@ -269,7 +273,7 @@ async function main() {
     return "closed=" + ports.join(",");
   });
 
-  await check("runbook records the audit and row 14 TODO", async () => {
+  await check("runbook records the audit and row 14 status", async () => {
     const text = fs.readFileSync(RUNBOOK, "utf8");
     assert(text.includes("<!-- USER_JOURNEY_AUDIT_2026_11_21 -->"), "audit start marker missing");
     assert(text.includes("<!-- /USER_JOURNEY_AUDIT_2026_11_21 -->"), "audit end marker missing");
@@ -279,8 +283,8 @@ async function main() {
     assert(block.includes("CHAT_UPLOAD=404"), "CHAT_UPLOAD=404 missing");
     assert(block.includes("VHOSTS_502=7"), "VHOSTS_502=7 missing");
     assert(/AUDIO=.*zc-audit-2026-11-21\.mp3/.test(block), "AUDIO path missing");
-    assert(/^\|\s*14\s*\|.*CHAT_UPLOAD.*\|\s*TODO\s*\|/m.test(text), "row 14 is not TODO");
-    return "markers=present row14=TODO";
+    assert(/^\|\s*14\s*\|.*CHAT_UPLOAD.*\|.*(TODO|DONE)/m.test(text), "row 14 missing");
+    return "markers=present row14=present";
   });
 
   await check("Edge TTS audio is a real MP3 longer than 60s", () => {

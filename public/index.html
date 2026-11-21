@@ -441,6 +441,7 @@ let currentChatId = null;
 let isStreaming = false;
 let abortController = null;
 let agents = [];
+let pendingAttachments = [];
 
 // ═══ INIT ═══
 document.addEventListener('DOMContentLoaded', init);
@@ -531,27 +532,34 @@ async function loadAgents() {
 function sendMessage() {
   const input = document.getElementById('chatInput');
   const msg = input.value.trim();
-  if (!msg || isStreaming) return;
+  const attachments = pendingAttachments.map((item) => item.id);
+  if ((!msg && attachments.length === 0) || isStreaming) return;
 
   const chat = getCurrentChat();
   if (!chat) return;
 
+  const display = msg || 'See the attached file.';
+  const attachmentNote = pendingAttachments.length
+    ? '\n\n📎 ' + pendingAttachments.map((item) => item.name).join(', ')
+    : '';
+
   // Add user message
-  addMessage(chat, { role: 'user', content: msg });
+  addMessage(chat, { role: 'user', content: display + attachmentNote });
   input.value = '';
   document.getElementById('sendBtn').disabled = true;
   input.style.height = 'auto';
-  updateChatTitle(chat, msg);
+  updateChatTitle(chat, display);
   saveChats();
 
   // Show typing
   showTyping();
 
   // Call server
-  callAgent(chat, msg);
+  callAgent(chat, display, attachments);
+  clearFile();
 }
 
-async function callAgent(chat, msg) {
+async function callAgent(chat, msg, attachments) {
   isStreaming = true;
   abortController = new AbortController();
 
@@ -564,13 +572,13 @@ async function callAgent(chat, msg) {
     if (selected && selected.startsWith('single:')) {
       const agentId = selected.replace('single:', '');
       // Single agent mode: POST /v1/chat/completions
-      body = createChatBody(msg, agentId, streamEnabled);
+      body = createChatBody(msg, agentId, streamEnabled, attachments);
     } else if (selected) {
       // Specific agent in mission mode
-      body = createMissionBody(msg, [selected], streamEnabled);
+      body = createMissionBody(msg, [selected], streamEnabled, attachments);
     } else {
       // All agents (mission)
-      body = createMissionBody(msg, null, streamEnabled);
+      body = createMissionBody(msg, null, streamEnabled, attachments);
     }
 
     const url = selected && !selected.startsWith('single:') && selected !== ''
@@ -614,22 +622,24 @@ async function callAgent(chat, msg) {
   }
 }
 
-function createChatBody(msg, agentId, stream) {
+function createChatBody(msg, agentId, stream, attachments) {
   return {
     channel: 'web-chat',
     model: agentId || 'code-guru',
     messages: [{ role: 'user', content: msg }],
+    attachments: attachments || [],
     temperature: parseFloat(config.temperature),
     max_tokens: parseInt(config.maxTokens),
     stream: stream
   };
 }
 
-function createMissionBody(msg, agents, stream) {
+function createMissionBody(msg, agents, stream, attachments) {
   return {
     channel: 'web-chat',
     input: msg,
     agents: agents || [],
+    attachments: attachments || [],
     mode: agents && agents.length > 0 ? 'single' : 'mission',
     session_id: currentChatId || ('chat_' + Date.now()),
     stream: stream
@@ -986,17 +996,38 @@ function autoResize(el) {
   el.style.height = Math.min(el.scrollHeight, 200) + 'px';
 }
 
-function handleFile(e) {
+async function handleFile(e) {
   const file = e.target.files[0];
-  if (file) {
-    document.getElementById('fileName').textContent = file.name + ' (' + (file.size/1024).toFixed(1) + ' KB)';
-    document.getElementById('filePreview').style.display = 'flex';
+  if (!file) return;
+  const nameEl = document.getElementById('fileName');
+  document.getElementById('filePreview').style.display = 'flex';
+  nameEl.textContent = file.name + ' — uploading…';
+  try {
+    const res = await fetch(config.serverUrl + '/api/chat/upload', {
+      method: 'POST',
+      headers: {
+        'Content-Type': file.type || 'application/octet-stream',
+        'X-File-Name': encodeURIComponent(file.name)
+      },
+      body: file
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.message || data.error || ('HTTP ' + res.status));
+    }
+    pendingAttachments = [data];
+    nameEl.textContent = data.name + ' (' + (data.bytes / 1024).toFixed(1) + ' KB)';
+  } catch (err) {
+    pendingAttachments = [];
+    nameEl.textContent = 'Upload failed: ' + err.message;
   }
 }
 
 function clearFile() {
+  pendingAttachments = [];
   document.getElementById('fileUpload').value = '';
   document.getElementById('filePreview').style.display = 'none';
+  document.getElementById('fileName').textContent = '';
 }
 
 // ═══ SIDEBAR ═══

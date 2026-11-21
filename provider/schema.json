@@ -24,12 +24,27 @@
       },
       "additionalProperties": true
     },
+    "contentPart": {
+      "type": "object",
+      "description": "One OpenAI multipart content part. Only media-capable providers receive these; text-only providers get flattened text.",
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["text", "image_url", "input_audio"] },
+        "text": { "type": "string" },
+        "image_url": { "type": "object", "additionalProperties": true },
+        "input_audio": { "type": "object", "additionalProperties": true }
+      },
+      "additionalProperties": true
+    },
     "message": {
       "type": "object",
       "required": ["role"],
       "properties": {
         "role": { "enum": ["system", "user", "assistant", "tool"] },
-        "content": { "type": ["string", "null"] },
+        "content": {
+          "type": ["string", "null", "array"],
+          "items": { "$ref": "#/$defs/contentPart" }
+        },
         "reasoning_content": { "type": ["string", "null"] },
         "tool_calls": { "type": "array", "items": { "$ref": "#/$defs/toolCall" } },
         "tool_call_id": { "type": "string" },

@@ -99,6 +99,7 @@ function fromEnv(id, env) {
   const maxPromptChars = parseInt(read(n, "MAX_PROMPT_CHARS", source) || "", 10);
   const maxTools = parseInt(read(n, "MAX_TOOLS", source) || "", 10);
   const contextWindow = parseInt(read(n, "CONTEXT_WINDOW", source) || "", 10);
+  const media = String(read(n, "MEDIA", source) || "").toLowerCase() === "true";
 
   return Object.assign(
     {
@@ -116,6 +117,7 @@ function fromEnv(id, env) {
       modelsStr: models,
       enabled: enabledFromEnv(n, source),
       custom: true,
+      ...(media ? { media: true } : {}),
     },
     Number.isFinite(timeout) && timeout > 0 ? { timeout } : {},
     Number.isFinite(streamTimeout) && streamTimeout > 0 ? { streamTimeout } : {},

@@ -161,13 +161,13 @@ function configForId(id) {
 // ─── Message content normalization ─────────────────────────────────────
 // OpenAI-compatible clients send multipart content as arrays:
 //   content: [{ type: "text", text: "hi" }, { type: "image_url", ... }]
-// The boundary contract (provider/schema.json) accepts only string|null
-// for message.content, so multipart arrays are flattened to their text
-// parts BEFORE request validation and adapter calls. Non-text parts
-// (images/files) are dropped — this gateway is text-only. Messages whose
-// content is already a string or null pass through untouched.
-function normalizeMessages(messages) {
+// A media-capable provider receives the parts unchanged. A text-only provider
+// gets the text parts plus an explicit omission marker, so the model knows an
+// attachment existed instead of silently losing it. Messages whose content is
+// already a string or null pass through untouched.
+function normalizeMessages(messages, mediaEnabled) {
   if (!Array.isArray(messages)) return messages;
+  const media = mediaEnabled === true;
   return messages.map(function (m) {
     if (!m || typeof m !== "object") return m;
 
@@ -187,13 +187,34 @@ function normalizeMessages(messages) {
     delete out.thinking;
 
     if (!Array.isArray(out.content)) return out;
+    if (media) {
+      out.content = out.content
+        .filter(function (p) {
+          return (
+            p &&
+            (typeof p === "string" ||
+              p.type === "text" ||
+              p.type === "image_url" ||
+              p.type === "input_audio")
+          );
+        })
+        .map(function (p) {
+          return typeof p === "string" ? { type: "text", text: p } : p;
+        });
+      return out;
+    }
     out.content = out.content
-      .filter(function (p) {
-        return p && (typeof p === "string" || p.type === "text");
-      })
       .map(function (p) {
-        return typeof p === "string" ? p : p.text || "";
+        if (typeof p === "string") return p;
+        if (!p) return "";
+        if (p.type === "text") return p.text || "";
+        return (
+          "[attachment omitted: provider has no media support (" +
+          (p.type || "unknown") +
+          ")]"
+        );
       })
+      .filter(Boolean)
       .join("\n");
     return out;
   });
@@ -208,7 +229,8 @@ async function chatImpl(opts) {
   const cfg = resolveConfig(opts.config || opts.providerId);
   const adapter = adapterFor(cfg);
   const providerId = cfg.id || opts.providerId || adapter.id;
-  const messages = normalizeMessages(opts.messages);
+  const caps = capabilitiesFor(cfg, providerId, opts.model);
+  const messages = normalizeMessages(opts.messages, caps.media);
 
   let tools = opts.tools;
   const model = opts.apiModel || opts.model;
@@ -328,7 +350,8 @@ async function chatStreamImpl(opts, onDelta) {
   const cfg = resolveConfig(opts.config || opts.providerId);
   const adapter = adapterFor(cfg);
   const providerId = cfg.id || opts.providerId || adapter.id;
-  const messages = normalizeMessages(opts.messages);
+  const caps = capabilitiesFor(cfg, providerId, opts.model);
+  const messages = normalizeMessages(opts.messages, caps.media);
 
   let tools = opts.tools;
   const model = opts.apiModel || opts.model;
