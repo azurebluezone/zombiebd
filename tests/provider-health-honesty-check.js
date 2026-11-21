@@ -377,6 +377,20 @@ async function liveCheck() {
     }
     pass("isolated gateway healthy");
 
+    // Admin routes require the ADMIN_TOKEN and a live panel session. Mint the
+    // same zc_panel cookie the browser gets from GET /admin/zombie, then send
+    // it with every admin request.
+    const panel = await httpText(port, "/admin/zombie", "GET", null, 15000);
+    const setCookie = panel.headers["set-cookie"];
+    const panelCookie = (Array.isArray(setCookie) ? setCookie[0] : String(setCookie || ""))
+      .split(";")[0];
+    assert.ok(
+      panelCookie.startsWith("zc_panel="),
+      "panel cookie missing (status=" + panel.status + ")",
+    );
+    auth.cookie = panelCookie;
+    pass("panel session minted");
+
     await expectAsync("fresh providers are unknown, not healthy", async () => {
       const providers = health.providers;
       assert.ok(providers && typeof providers === "object", "providers block missing");

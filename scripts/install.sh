@@ -259,8 +259,10 @@ trust_local_ca() {
 
 render_tools_manifest() {
   [ -s deploy/tools.json ] || fail "deploy/tools.json missing"
-  "$NODE_BIN" -e 'const j=require("./deploy/tools.json");if(!Array.isArray(j.tools)||j.tools.length===0)process.exit(1)' \
-    || fail "deploy/tools.json is empty"
+  # Local MCP servers are stdio children of the gateway, so an empty list of
+  # standalone HTTP tool hosts is valid (see the file's own _comment).
+  "$NODE_BIN" -e 'const j=require("./deploy/tools.json");if(!Array.isArray(j.tools))process.exit(1)' \
+    || fail "deploy/tools.json has no tools array"
   ok "tools manifest present"
 }
 

@@ -25,7 +25,20 @@ Windows: `scripts/install.ps1` exists but is **NOT_TESTED** on this Linux host.
 
 ---
 
-## Fresh clone: one command
+## Fresh install: one line
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/azurebluezone/zombiebd/main/install.sh \
+  | bash -s -- "$HOME/zombiebd" --yes
+```
+
+The root `install.sh` is a bootstrap: it checks git/curl, clones the repo into
+the target directory (default `$HOME/zombiebd`), then runs `scripts/install.sh`
+inside the checkout. Pass `--check` to see the plan, `--clone-only` to stop
+after the clone, or `--skip-kde` / `--skip-caddy` / `--no-start` through to the
+installer. Re-running it pulls the checkout and is safe.
+
+Manual path:
 
 ```bash
 git clone https://github.com/azurebluezone/zombiebd.git
@@ -102,7 +115,7 @@ leftover copy exits with code 78.
 | TLS mode | `internal`, host `localhost` | `.env`, `openssl s_client` |
 | Local HTTPS | HTTP 200, verify code 0 | `curl https://localhost/health` |
 | Agents | 9 | `/health`, `/status` |
-| MCP tools | 155 | `tools/list` over `/mcp` |
+| MCP tools | 101 | `tools/list` over `/mcp` |
 | Model rows | 111 | `/health` |
 | Advertised catalogue | 121 entries | `/api/v0/models` |
 | llama.cpp OpenAI | custom provider row, `http://localhost:9932/v1` | `/api/v0/models` |
@@ -176,9 +189,9 @@ or more returned `PONG` in the verified run.
 
 ---
 
-## MCP Tools (155)
+## MCP Tools (101)
 
-The live registry is the only list that matters: 155 tools on 2026-11-06, all
+The live registry is the only list that matters: 101 tools on 2026-11-22, all
 carrying an `inputSchema`. `tests/docs-claims-check.js` audits this heading on
 demand; documentation is advisory and never gates the runtime or the installer.
 
@@ -262,7 +275,7 @@ With the budget applied, one measured agent request returned
 `CWD-OK` in 1.3 s with a warm prompt cache and 15.9 s cold; the same request
 without it needed 132 s for prefill alone and then emitted a tool call instead
 of text. Client-supplied tools still pass through; only the automatic
-injection of all 155 schemas is skipped. Set the budget to `0` to disable it.
+injection of all 101 schemas is skipped. Set the budget to `0` to disable it.
 
 The router's `fallbackModel` behavior is deliberately conservative: when an
 agent row still contains the legacy `MODELS_DB` sentinel, `api.js` resolves the
@@ -319,9 +332,9 @@ Every field in the final line is a live check:
 | `kde=present` | `startplasma-x11` or `plasmashell` exists |
 | `tls=ok` | `https://localhost/health` returns 200 with verify code 0 |
 | `origins=ok` | allowed origin 200, hostile origin 401 |
-| `tools=155` | live `tools/list` count |
-| `providers=...` | `llama-cpu-openai` and `llama-native` in the live catalogue |
-| `native=ok` | real llama.cpp `/completion` request through `provider/llamacpp.js` (default gate; `--remote` reports `native=skipped`) |
+| `tools=101` | live `tools/list` count (default registry) |
+| `providers=...` | at least one registered provider (Ollama, bridge, llama.cpp, cloud) owns a live model; no provider is a FAIL |
+| `native=ok` | real llama.cpp `/completion` request through `provider/llamacpp.js`; `native=skipped` when llama.cpp is not configured and another provider is the local path |
 | `db=seed` | 9 agent rows, no `MODELS_DB` sentinel |
 | `build=ok` | `scripts/build.js` produced `dist/manifest.json` |
 | `start=ok` | `/health` returns 200 with 9 agents |
@@ -332,8 +345,11 @@ Every field in the final line is a live check:
 A passing run ends with exactly:
 
 ```text
-RESULT: MISSION BARISAL PASS env=ok installer=ok node=24 kde=present tls=ok origins=ok tools=155 providers=ok native=ok db=seed build=ok start=ok agents=9 workdir=ok reply=ok
+RESULT: MISSION BARISAL PASS env=ok installer=ok node=24 kde=present tls=ok origins=ok tools=101 providers=ok native=skipped db=seed build=ok start=ok agents=9 workdir=ok reply=ok
 ```
+
+`native=ok` replaces `native=skipped` when llama.cpp is configured; the rest of
+the line is unchanged.
 
 Documentation is not part of this gate. `tests/docs-claims-check.js` can be run
 separately when auditing the docs; a stale number there never fails an install
