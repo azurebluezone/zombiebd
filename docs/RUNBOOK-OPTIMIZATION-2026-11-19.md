@@ -186,7 +186,7 @@ OPENCODE_ENABLED=false
 
 **Fix:** provider health একটি explicit state machine (`unknown → up / degraded / down`) — boot-এ `unknown`, probe/success/failure ছাড়া `up` নয়; success probe error মুছে দেয়; `/health.providers` প্রতিটি provider-এর `status`, `lastProbeAt`, `lastSuccessAt`, `lastFailureAt`, `lastError`, `consecutiveFailures` দেয়।
 
-**Proof (2026-11-25):** `node tests/provider-health-honesty-check.js` → `PROVIDER_HEALTH_OK`। Live `/health`: `custom_3` = `up` (probe 17:39:26Z), `gemini` = `degraded` + `lastError:"http_503: … high demand"`, বাকি untouched provider = `unknown` — কোনোটি মিথ্যে `up` নয়।
+**Proof (2026-11-25):** `node tests/provider-health-honesty-check.js` → `PROVIDER_HEALTH_OK`। Live `/health` (পাসের মুহূর্তে): `custom_3` = `up`, `gemini` = `degraded` + `lastError:"http_503: … high demand"`, বাকি untouched provider = `unknown`। TTL 60s পার হলে ওই state `stale`/`unknown`-এ যায় — পুরোনো success-কে চিরকাল `up` বলা হয় না, তাই কোনোটি মিথ্যে `up` নয়।
 
 #### P0-09 — চলমান gateway `dist/start.js`, root `api.js` নয় — ✅ SOLVED (2026-11-20)
 
@@ -1089,7 +1089,7 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 | `https://localhost/health` → `200` | `000`; `https://127.0.0.1/health` → `200` (একটাই vhost) |
 | ৭টি vhost `502` | live Caddyfile-এ ওই ৭টি vhost নেই; `ss`-এ 3110–3123/5400 listener নেই |
 | ৫টি red suite | ৫/৫ exit 0 বা documented skip (§13) |
-| provider health honest কিন্তু unverified | probe-ভিত্তিক: `custom_3=up`, `gemini=degraded` (upstream 503), বাকি `unknown` |
+| provider health honest কিন্তু unverified | probe-ভিত্তিক (পাসের মুহূর্তে): `custom_3=up`, `gemini=degraded` (upstream 503), বাকি `unknown`; TTL 60s পরে `stale` |
 | Monu stack + `llm-heal` active | retired copy; unit নেই; `5000`/`11436` বন্ধ |
 <!-- /USER_JOURNEY_AUDIT_2026_11_21 -->
 

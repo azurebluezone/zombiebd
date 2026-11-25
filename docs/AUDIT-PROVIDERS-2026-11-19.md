@@ -332,7 +332,7 @@ curl -s -X POST http://127.0.0.1:5050/mcp -H "authorization: Bearer $MCP_ADMIN_T
 | Gateway / version | `5050` healthy, `3.2.1` |
 | Models / agents | `591` / `9` |
 | MCP tools | `101` (`tools/list`) |
-| Enabled providers | 13; probe-ভিত্তিক `up` শুধু `custom_3`; `gemini` degraded (503); বাকি `unknown` |
+| Enabled providers | 11; probe-ভিত্তিক `up` শুধু `custom_3`; `gemini` degraded (503); TTL 60s পরে সবই `stale`/`unknown` — কেউ মিথ্যে `up` নয় |
 | Dist | source `api.js` == `dist/api.js` (`9314b489…`) |
 | Edge | `https://127.0.0.1/health` → `200`; একটাই vhost |
 
