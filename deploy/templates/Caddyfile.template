@@ -7,12 +7,6 @@
 # Admin is loopback-only. /admin and /api/admin are answered 404 at the edge
 # and are NEVER forwarded to the API. Use http://127.0.0.1:<PORT>/admin
 # directly when you need the admin panel.
-#
-# Retired tool vhosts (2026-11-25): ocr, screen, tts, ads, public, combined,
-# adapter. Their upstreams never listened because those tools are stdio MCP
-# children, not HTTP services. modules/edge-proxy.js filters these names even
-# if a stale deploy/tools.json entry reappears; tests/vhost-truth-check.js
-# proves each rendered host is either HTTP 200 or absent.
 # ─────────────────────────────────────────────────────────────────────────────
 {
 	http_port {{HTTP_PORT}}
