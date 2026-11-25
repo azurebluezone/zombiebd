@@ -10,8 +10,9 @@
  *      and invalid skill MCP are gone from runtime code;
  *   2. the generated editor config anchors the UDS under APP_ROOT, never
  *      under dist/data;
- *   3. the gateway boots with no admin UI directory, keeps serving /health
- *      and /api/admin/*, and a curl-equivalent POST mutates the real SQLite DB;
+ *   3. the gateway boots with no admin UI directory, keeps serving /health,
+ *      and the optional panel mints the session cookie that admin/curl writes
+ *      need (token alone is not enough);
  *   4. an admin/curl-added HTTP MCP with a bearer token is discovered, its
  *      token is sent upstream, and it is persisted encrypted in SQLite.
  *
@@ -115,7 +116,7 @@ function httpJson(port, requestPath, method, body, headers, timeoutMs) {
           } catch (_) {
             /* keep null */
           }
-          resolve({ status: res.statusCode, json, text });
+          resolve({ status: res.statusCode, json, text, headers: res.headers });
         });
       },
     );
@@ -127,6 +128,19 @@ function httpJson(port, requestPath, method, body, headers, timeoutMs) {
     if (payload) req.write(payload);
     req.end();
   });
+}
+
+async function panelCookie(port) {
+  const admin = await httpJson(port, "/admin", "GET");
+  assert.strictEqual(admin.status, 200, "panel status=" + admin.status);
+  const raw = admin.headers && admin.headers["set-cookie"];
+  const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
+  const cookie = list
+    .map((value) => String(value).split(";")[0])
+    .filter(Boolean)
+    .join("; ");
+  assert.ok(cookie, "panel did not set a session cookie");
+  return cookie;
 }
 
 async function waitHealth(port, timeoutMs) {
@@ -381,9 +395,9 @@ check(".env.example and lib/env.js drop the retired local ports", () => {
       assert.ok(row.tools > 0, "tools=" + row.tools);
     });
 
-    await checkAsync("admin UI absence returns 404 without breaking health", async () => {
-      const admin = await httpJson(port, "/admin", "GET");
-      assert.strictEqual(admin.status, 404, "status=" + admin.status);
+    await checkAsync("optional admin panel serves and mints a session cookie", async () => {
+      const cookie = await panelCookie(port);
+      assert.ok(cookie, "empty cookie");
       const again = await httpJson(port, "/health", "GET");
       assert.strictEqual(again.status, 200);
     });
@@ -393,8 +407,15 @@ check(".env.example and lib/env.js drop the retired local ports", () => {
       assert.strictEqual(res.status, 401, "status=" + res.status);
     });
 
+    await checkAsync("a bare token cannot drive admin writes", async () => {
+      const res = await httpJson(port, "/api/admin/agents", "GET", null, {
+        "x-admin-token": ADMIN_TOKEN,
+      });
+      assert.strictEqual(res.status, 401, "status=" + res.status);
+    });
+
     await checkAsync("curl-equivalent admin POST writes the SQLite DB", async () => {
-      const headers = { "x-admin-token": ADMIN_TOKEN };
+      const headers = { "x-admin-token": ADMIN_TOKEN, cookie: await panelCookie(port) };
       const write = await httpJson(
         port,
         "/api/admin/agents",
@@ -423,7 +444,7 @@ check(".env.example and lib/env.js drop the retired local ports", () => {
     const remoteUrl = "http://127.0.0.1:" + stub.port + "/mcp";
 
     await checkAsync("admin/curl adds an HTTP MCP and stores it encrypted", async () => {
-      const headers = { "x-admin-token": ADMIN_TOKEN };
+      const headers = { "x-admin-token": ADMIN_TOKEN, cookie: await panelCookie(port) };
       const added = await httpJson(
         port,
         "/api/mcp-remote/add",
@@ -456,7 +477,7 @@ check(".env.example and lib/env.js drop the retired local ports", () => {
     });
 
     await checkAsync("admin/curl removes the HTTP MCP and updates the DB", async () => {
-      const headers = { "x-admin-token": ADMIN_TOKEN };
+      const headers = { "x-admin-token": ADMIN_TOKEN, cookie: await panelCookie(port) };
       const removed = await httpJson(
         port,
         "/api/mcp-remote/remove",

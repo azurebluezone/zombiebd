@@ -300,4 +300,41 @@ curl -s -X POST http://127.0.0.1:5050/mcp -H "authorization: Bearer $MCP_ADMIN_T
 ~/llm-heal.sh status --verbose
 ```
 
+---
+
+## 12. পুনঃযাচাই — ২০২৬-১১-২৫ (live)
+
+**কেন:** §1–§10 হলো 2026-11-19-এর audit। এরপর P0-01/P0-07/P0-08 ও Monu retirement বাস্তবে বদলেছে; এই section পুরোনো finding-গুলোর বর্তমান অবস্থা বলে। যেখানে §1–§10-এর সঙ্গে অমিল, এখানেই সত্য।
+
+| Finding (2026-11-19) | 2026-11-25 অবস্থা | প্রমাণ |
+|---|---|---|
+| `MAX_TOOLS_LIMIT=25` slice, TTS/OCR অদৃশ্য | **FIXED** — `lib/tool-budget.js` একমাত্র resolver; `MCP_TOOL_BUDGET_MAX=24`, pinned `tts__tts_speak,ocr__ocr_image` | `node tests/tool-budget-check.js` → `35/35 TOOL_BUDGET_OK` |
+| `provider/tools.prepare()` `maxTools` মানে না | **FIXED** — `capTools()` একই সীমা দুই path-এ প্রয়োগ করে | একই test: `prepare(capped) caps at 5` |
+| bridge-এর 60s ডিফল্ট, ollama 20 মিনিট | **FIXED** — `lib/provider-timeout.js` এক bridge deadline; gateway = upstream + grace | `node tests/bridge-timeout-check.js` → `BRIDGE_TIMEOUT_OK` |
+| provider health optimistic `healthy:true`, পুরোনো error | **FIXED** — `unknown → up/degraded/down`, probe timestamp + error clear | `node tests/provider-health-honesty-check.js` → `PROVIDER_HEALTH_OK`; live `/health.providers` |
+| Monu দ্বিতীয় stack + `llm-heal` watchdog | **REMOVED** — unit নেই, 5000/11436 বন্ধ, retired copy | `systemctl --user is-active llm-heal` → `inactive`; `ss -ltnp` |
+| Gemini মৃত মডেল `2.5-*` | **OPEN (তথ্য হালনাগাদ)** — catalog-এ এখনো পুরোনো নাম; 2.5 → 502 retired, `3.5-flash` কাজ করে কিন্তু মাঝে মাঝে 503 high-demand | `curl` 2.5 → `no longer available`; uds-e2e Gemini response |
+| Groq 8000 TPM, বড় prompt-এ 413 | **OPEN** — 24-tool budget-এ ছোট prompt ঠিক, কিন্তু বড় ইতিহাস/টুলে 413 হতে পারে | এই pass-এ বড় prompt দিয়ে re-probe করা হয়নি |
+| `AGENT_FS_SCOPE=unrestricted` | **OPEN (P3)** — ইচ্ছাকৃত; prompt-injection ঝুঁকি জানা | `.env:33`, api.js path guard |
+
+### 12.1 নতুন finding — intent ranking requested tool বাদ দিচ্ছিল
+
+§3-এর মূল diagnosis (ক্যাটালগ কাটা) ঠিক ছিল, কিন্তু 24-tool budget-এর পরেও একটি দ্বিতীয় bug ছিল: `lib/tool-budget.js`-এর `scoreTool()` নাম-মিল আর description-মিলকে সমান ওজন দিত। ফলে লম্বা description-ওয়ালা `browse_cdp`, `read_ssot` ইত্যাদি "use the read_file tool … list_directory" অনুরোধে আসল `read_file`/`list_directory`-এর আগে বসে যেত; প্রতি call-এ মাত্র ৫টি tool fit করত, তাই মডেল টুল দুটোই পেত না এবং "tools are not available" উত্তর দিত।
+
+**Fix (2026-11-25):** নামের মিলে ৫ গুণ ওজন, পুরো tool-name-এর exact match-এ +২০; wrapper (`universal-adapter__*`) এখন canonical টুলের নিচে। নতুন regression check: "explicit tool name outranks description keyword noise"।
+
+**Live proof:** একই `code-guru` অনুরোধে আগে `TOOL_BUDGET sent=5` (read_file নেই) → এখন `sent=10` (`read_file`, `list_directory` সহ), মডেল ফাইল পড়ে `ZC-live777` ফিরিয়ে দিল। `node tests/uds-e2e-check.js` → `27 pass / 0 fail / 1 skip` (`UDS E2E PASS`)।
+
+### 12.2 বর্তমান snapshot (live)
+
+| Field | Value |
+|---|---|
+| Gateway / version | `5050` healthy, `3.2.1` |
+| Models / agents | `591` / `9` |
+| MCP tools | `101` (`tools/list`) |
+| Enabled providers | 13; probe-ভিত্তিক `up` শুধু `custom_3`; `gemini` degraded (503); বাকি `unknown` |
+| Dist | source `api.js` == `dist/api.js` (`9314b489…`) |
+| Edge | `https://127.0.0.1/health` → `200`; একটাই vhost |
+
+**যাচাই কমান্ড:** `node tests/tool-budget-check.js`, `node tests/provider-health-honesty-check.js`, `node tests/uds-e2e-check.js`, `curl -s http://127.0.0.1:5050/health`।
 **অডিও:** `~/Music/mp3/zbd/today/` — এই রিপোর্টের বাংলা narration, Edge TTS (`bn-BD-NabanitaNeural`)। MCP `tts__tts_speak` পথটি `probe.mp3` দিয়ে প্রমাণিত; পূর্ণ narration-টি একই Edge TTS ইঞ্জিন/ভয়েসের Python API দিয়ে তৈরি, কারণ CLI intermittently `NoAudioReceived` (service throttle) দেয় এবং MCP wrapper-এর 60s cap-এ লম্বা চাঙ্ক মারে।

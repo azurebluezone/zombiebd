@@ -1,7 +1,7 @@
 # RUNBOOK — Single-Truth Optimization (2026-11-19)
 
 **Scope:** `~/zombiebd` এবং এই মেশিনে চলা adjacent stacks।
-**Status:** `ACTIVE` — ১৫/১৫ row DONE; পরের কাজ Phase B `CLIENT_E2E_OK` (Chromium CDP screenshot + editor client task), তারপর §12 roadmap-এর C–E।
+**Status:** `ACTIVE` — ১৫/১৫ মূল row + row 18 `SUITE_GREEN` DONE (2026-11-25); পরের কাজ row 16 `CLIENT_E2E_OK` (Chromium CDP screenshot + editor client task), তারপর row 17 `VHOST_TRUTH_OK` ও row 19 `RELEASE_READY_OK`।
 **Entry point (আগে এটা পড়ো):** `docs/PLAN-2026-11-20.md` — ১০ phase, gate ও সময়সহ সংক্ষিপ্ত করণীয়; narration `/home/sahon/Music/mp3/zbd/today/zbd-plan-2026-11-20.mp3` (424.1s, 2,544,860 bytes)।
 **Closed contracts:** `gc-mwnurzwx` → `RETIRE_AUDIO_OK` (Monu retire + runbook narration); `gc-mwnvesuc` → `PLAN_AUDIO_OK` (plan doc + narration); `gc-mwptx62a` → `SURFACE_POLICY_OK` (surface policy table); `gc-mwpu10ck` → `DOCS_CURRENT_OK` (row 13 release); `gc-mwpuupxk` → `CHAT_UPLOAD_OK` (row 14 chat attachments)।
 **Evidence rule:** প্রতিটি দাবির পাশে `path:line`, command output বা exit code আছে। যা probe করা হয়নি তা `UNVERIFIED`।
@@ -153,15 +153,19 @@ OPENCODE_ENABLED=false
 
 **Proof:** `node tests/bridge-discovery-check.js` → `BRIDGE_DISCOVERY_OK` (7 checks: loopback spellings, env single source, self-reference for 127.0.0.1/localhost/[::1], alias dedupe, explicit-only candidates, source/config grep, and a real bridge with `BRIDGE_PROBE_DEFAULTS=1` + no config reporting `upstreams=[]`). Regression: `node tests/env-loader-check.js` → `ENV_LOADER_OK`, `node tests/bridge-timeout-check.js` → `BRIDGE_TIMEOUT_OK`, `node tests/path-resolver-check.js` → `PATH_RESOLVER_OK`, `node tests/agent-provider-ssot-check.js` → `AGENT_PROVIDER_SSOT_OK`, `node tests/tool-budget-check.js` → `TOOL_BUDGET_OK`, `node scripts/check-env.js` → `ENV_OK services=17`. UDS e2e bridge checks pass; its 3 remaining failures are pre-existing environment checks (dist-vs-root UDS path, Gemini 400, OpenCode disabled).
 
-#### P0-06 — Monu Builder দ্বিতীয় stack, watchdog দিয়ে জীবিত
+#### P0-06 — Monu Builder দ্বিতীয় stack, watchdog দিয়ে জীবিত — ✅ SOLVED (2026-11-25)
 
-- `systemctl --user is-enabled llm-heal.service` → `enabled`; `is-active` → `active`
-- Unit `APP_DIR=/home/sahon/monu_the_builder`
-- `ss -ltnp` → `127.0.0.1:5000` (pid 2335), `127.0.0.1:11436` (pid 2384)
-- `bash ~/llm-heal.sh status` → `bridge processes 2 own=1`
-- `~/monu_the_builder/.env:10` → `APP_URL=https://z.infiniteearningzone.com`
-- `/etc/caddy/Caddyfile` → শুধু `127.0.0.1:5050` vhost; `5000` নেই
-- `llm-heal.sh` help line 20 — `stop` শুধু watchdog থামায়, stack চলে
+**Before (2026-11-19):** `llm-heal.service` enabled+active, `APP_DIR=/home/sahon/monu_the_builder`, listeners `127.0.0.1:5000` (pid 2335) ও `:11436` (pid 2384), `~/monu_the_builder/.env:10` → `APP_URL=https://z.infiniteearningzone.com`। একই ollama-কে দুই bridge ভাগ করছিল।
+
+**After (live, 2026-11-25):**
+
+- `systemctl --user is-enabled llm-heal.service` → `No such file or directory`; `is-active` → `inactive`
+- `ls -d /home/sahon/monu_the_builder*` → শুধু `/home/sahon/monu_the_builder.retired-2026-11-19`
+- `ss -ltnp` → `5050` (gateway), `11435` (bridge), `11434` (ollama); `5000`/`11436`-এ কেউ শোনে না
+- `/etc/caddy/Caddyfile` → একটাই vhost `https://127.0.0.1`
+- watchdog আর নেই, তাই `llm-heal.sh stop`-এর ফাঁদও নেই
+
+**Monu push:** সম্পন্ন — `retire/2026-11-19` = `cb394e764908f51e2ac57422c9d10f9d6ba8cf63` (local = remote), contract `gc-mwnurzwx` PASS; retired copy লোকাল আর্কাইভ হিসেবেও আছে।
 
 #### P0-07 — Timeout mismatch — ✅ SOLVED (2026-11-20)
 
@@ -176,12 +180,13 @@ OPENCODE_ENABLED=false
 
 **Proof:** `node tests/bridge-timeout-check.js` → `BRIDGE_TIMEOUT_OK` (27 checks: static wiring, precedence and invalid-env fallback, bridge `upstream < gateway`, real HTTP request/stream timeouts driven by cfg and resolver env). Regression: `node tests/local-tool-cap.test.js` A6 PASS (43 passed; only the two pre-existing A1/D15 failures remain), `node tests/env-loader-check.js` → `ENV_LOADER_OK`, `node tests/tool-budget-check.js` → `TOOL_BUDGET_OK`, `node scripts/check-env.js` → `ENV_OK services=17`.
 
-#### P0-08 — “Online” মিথ্যা; DB-তে পুরোনো error আটকে থাকে
+#### P0-08 — “Online” মিথ্যা; DB-তে পুরোনো error আটকে থাকে — ✅ SOLVED (2026-11-22, `gc-mwoi9t5a`)
 
-- `api.js:12941` — নতুন provider `healthy: true`
-- `api.js:12955-12964` — success-এ `healthy=true`, `lastError=null`
-- `api.js:12996-13005` — 60s পর probe ছাড়াই `healthy=true`
-- `api.js:13227-13234` — `last_error = COALESCE(excluded.last_error, last_error)`
+**Before:** `api.js:12941` নতুন provider-কে `healthy: true` দিত; `12955-12964` success-এ `lastError=null`; `12996-13005` 60s পর probe ছাড়াই আবার `healthy=true`; `13227-13234` DB-তে `last_error = COALESCE(excluded.last_error, last_error)` — তাই পুরোনো লাল লেখা কখনো মোছা হয়নি।
+
+**Fix:** provider health একটি explicit state machine (`unknown → up / degraded / down`) — boot-এ `unknown`, probe/success/failure ছাড়া `up` নয়; success probe error মুছে দেয়; `/health.providers` প্রতিটি provider-এর `status`, `lastProbeAt`, `lastSuccessAt`, `lastFailureAt`, `lastError`, `consecutiveFailures` দেয়।
+
+**Proof (2026-11-25):** `node tests/provider-health-honesty-check.js` → `PROVIDER_HEALTH_OK`। Live `/health`: `custom_3` = `up` (probe 17:39:26Z), `gemini` = `degraded` + `lastError:"http_503: … high demand"`, বাকি untouched provider = `unknown` — কোনোটি মিথ্যে `up` নয়।
 
 #### P0-09 — চলমান gateway `dist/start.js`, root `api.js` নয় — ✅ SOLVED (2026-11-20)
 
@@ -922,7 +927,7 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 | 15 | **REAL_USAGE_DIR** | আলাদা working directory + agent session + file containment audit | `REAL_USAGE_DIR_OK` | ✅ DONE (`gc-mwpvfkly`) |
 | 16 | **CLIENT_E2E** | Chromium CDP UI screenshot + upload/chat; VS Code/opencode client-এ real task | `CLIENT_E2E_OK` | TODO |
 | 17 | **VHOST_TRUTH** | ৭ vhost: URL হয় `200`, নয়তো Caddyfile থেকে বাদ | `VHOST_TRUTH_OK` | TODO |
-| 18 | **SUITE_GREEN** | ৫ red suite: HTTPS fixture, repair-log, `toolcall=0`, Gemini 502, stdio admin | `SUITE_GREEN_OK` | TODO |
+| 18 | **SUITE_GREEN** | ৫ red suite: HTTPS fixture, repair-log, `toolcall=0`, Gemini 502, stdio admin | `SUITE_GREEN_OK` | ✅ DONE (`gc-mwq7s1e2`) |
 | 19 | **RELEASE_READY** | full regression + rebuild/restart + docs + package + quality eval | `RELEASE_READY_OK` | TODO |
 
 **নীতি:** ১–২ একই দিনে (P0 + live config safety), ৩–৪ test truth, ৫–৬ observability, ৭–৮ release portability, ৯ quality, ১০–১৪ docs/feature. প্রতিটি আইটেম আলাদা contract + gate; এক batch-এ দুইটার বেশি নয়।
@@ -1060,10 +1065,10 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 ### 11.3 সীমাবদ্ধতা — স্পষ্ট করে লিখিত
 
 - **`CHAT_UPLOAD=404` (audit time; row 14-এ resolved):** তখন কোনো upload endpoint ছিল না; `normalizeMessages` non-text part drop করত; `provider/schema.json` content `string|null`; `ATTACHMENT_MAX_BYTES` শুধু §3.5-এ proposed ছিল। এখন `POST /api/chat/upload` + `CHAT_UPLOAD_OK` আছে; ডকুমেন্ট/ছবি/অডিওর দাবি row 14 Done block-এ প্রমাণিত।
-- **`VHOSTS_502=7`:** `ocr`, `screen`, `tts`, `ads`, `public`, `combined`, `adapter` — সাতটি vhost-ই `502`; upstream `3110,3111,3112,3121,3122,3123,5400`-এ কেউ শোনে না। কারণ টুলগুলো stdio MCP, আলাদা HTTP service নয়। Caddyfile-এ vhost থাকলেই সেবা পাওয়া যায় না।
-- **`127.0.0.1` দিয়ে `443`:** `curl https://127.0.0.1/` TLS alert; সার্টিফিকেট `localhost` নামের জন্য। `--resolve`/hostname ছাড়া ব্যবহারকারী TLS error দেখবে।
+- **`VHOSTS_502=7` (audit time; 2026-11-25-এ বাদ):** `ocr`, `screen`, `tts`, `ads`, `public`, `combined`, `adapter` — সাতটি vhost-ই `502`; upstream `3110,3111,3112,3121,3122,3123,5400`-এ কেউ শোনে না। কারণ টুলগুলো stdio MCP, আলাদা HTTP service নয়। Caddyfile-এ vhost থাকলেই সেবা পাওয়া যায় না।
+- **`443` edge (2026-11-25-এ সংশোধিত):** `curl https://127.0.0.1/health` → `200` (`tls internal` সার্টিফিকেট IP SAN সহ)। `https://localhost/health` → `000`, কারণ live Caddyfile-এ `localhost` vhost নেই — এটা TLS ব্যর্থতা নয়, vhost absent।
 - **Provider health:** `/health.providers` এখন honest `unknown` (probe ছাড়া `up` দাবি করে না), কিন্তু enabled provider-এর প্রকৃত healthy অবস্থা probe চালানো পর্যন্ত `UNVERIFIED`।
-- **পুরোনো red suites (আলাদা scope):** `transport-suite` (HTTPS cert), `cwd-db-repair` (repair-log), `provider-matrix` (`toolcall=0`), `uds-e2e-check` (Gemini 502), `mcp-architecture-check` (`MCP_STDIO_ADMIN_FAIL`)। এগুলো row 1–13 gate নয়, তবে release-এ দাবি করার আগে ঠিক করতে হবে।
+- **পুরোনো red suites — 2026-11-25-এ সব green:** `transport-suite`, `cwd-db-repair`, `provider-matrix`, `uds-e2e-check`, `mcp-architecture-check` — প্রতিটি exit 0; upstream-নির্ভর skip-গুলো §13-এ লেখা। কোনো known-red নেই।
 - **Docs gate:** `DOCS_CURRENT_OK` 14/0, `SURFACE_POLICY_OK` 10/0, `LIVE_SERVER_INDEPENDENT_OK` 13/0, `WORKSPACE_LAYOUT_OK` 33/0, `MCP_API_INTEGRATION_OK` — সব সবুজ।
 
 ### 11.4 Bengali audio brief
@@ -1074,6 +1079,18 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 
 **পরের কাজ (audit time):** row 14 `CHAT_UPLOAD` — এখন DONE (`gc-mwpuupxk`)। এরপর row 15 `REAL_USAGE_DIR` — আলাদা working directory-তে agent session তৈরি, ছোট task, file containment ও fingerprint যাচাই; সাত vhost: হয় HTTP service, নয়তো Caddyfile থেকে বাদ।
 
+### 11.5 পুনঃযাচাই — 2026-11-25 (live, একই gateway)
+
+উপরের §11.1–§11.4 হলো 2026-11-21-এর snapshot। নিচের পার্থক্যগুলোই এখন সত্য:
+
+| দাবি (2026-11-21) | 2026-11-25 live প্রমাণ |
+|---|---|
+| `/health.models = 268` | `591` (`GET /health`) |
+| `https://localhost/health` → `200` | `000`; `https://127.0.0.1/health` → `200` (একটাই vhost) |
+| ৭টি vhost `502` | live Caddyfile-এ ওই ৭টি vhost নেই; `ss`-এ 3110–3123/5400 listener নেই |
+| ৫টি red suite | ৫/৫ exit 0 বা documented skip (§13) |
+| provider health honest কিন্তু unverified | probe-ভিত্তিক: `custom_3=up`, `gemini=degraded` (upstream 503), বাকি `unknown` |
+| Monu stack + `llm-heal` active | retired copy; unit নেই; `5000`/`11436` বন্ধ |
 <!-- /USER_JOURNEY_AUDIT_2026_11_21 -->
 
 ---
@@ -1088,14 +1105,15 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 | বিষয় | প্রমাণ | মান |
 |---|---|---|
 | Gateway | `GET http://127.0.0.1:5050/health` | `healthy:true`, `version:3.2.1` |
-| Models / agents | একই `/health` | `268` / `9` |
-| Dist == source | `sha256sum api.js dist/api.js` | `bdf6bd06d450…` (দুটোই এক) |
-| Done gates | §10.3 + syllabus PASS | `15/15` |
+| Models / agents | একই `/health` | `591` / `9` |
+| Dist == source | `sha256sum api.js dist/api.js` | `9314b489…` (দুটোই এক) |
+| Done gates | §10.3 + syllabus PASS | ১৬ (row 1–15 + 18) |
 | Chat upload | `node tests/chat-upload-check.js` | `CHAT_UPLOAD_OK` 20/0; `.zombie/uploads` + provider parts |
 | MCP tools | `tools/list` | `101` |
 | Server state | `LIVE_SERVER_INDEPENDENT_OK` | `.zombie/` server-owned, `.zombiecoder/` read-only |
 | Surface policy | `SURFACE_POLICY_OK` | web-chat / mission / editor |
-| Known red | §11.3 | ৫ suite + ৭ vhost |
+| Edge | `curl https://127.0.0.1/health` | `200`; একটাই vhost (`tls internal`) |
+| Suites | §13 | ৫/৫ exit 0 বা documented skip; কোনো known-red নেই |
 
 ### 12.2 Phase map — এখন কী আছে → এই ধাপে কী → শেষে কী বের হবে
 
@@ -1103,8 +1121,8 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 |---|---|---|---|---|
 | **A. Session + real dir** | `sessionDirs` Map আছে, কিন্তু MCP `set_working_dir`/HTTP শুধু global `mcpWorkingDir` বদলায়; `agent_single`/`agent_mission` random id বানায়, session persist করে না; file tools global dir ব্যবহার করে | `set_working_dir` (MCP+HTTP) session create/bind; `agent_single`/`agent_mission` session persist + `session_id` return; tool loop-এ per-session dir + write containment | আলাদা folder-এ agent সত্যিই কাজ করে, session list-এ দেখা যায়, এক folder-এর লেখা অন্য folder-এ যায় না | `REAL_USAGE_DIR_OK` ✅ DONE (`gc-mwpvfkly`) |
 | **B. Browser + editor client** | HTTP/MCP API প্রমাণিত, কিন্তু আসল Chromium/VS Code client দিয়ে কেউ চালায়নি | Chromium CDP-তে UI খুলে screenshot + upload/chat; VS Code/opencode MCP client দিয়ে ছোট task | স্ক্রিনশট + session + ফাইল — আসল client-এর প্রমাণ | `CLIENT_E2E_OK` |
-| **C. Vhost truth** | ৭টি vhost `502`; upstream `3110,3111,3112,3121,3122,3123,5400` বন্ধ | হয় stdio service-কে HTTP-তে তোলা, নয়তো Caddyfile থেকে বাদ দিয়ে শুধু `localhost` রাখা | প্রতিটি URL হয় `200`, নয়তো থাকবেই না | `VHOST_TRUTH_OK` |
-| **D. Red suites** | `transport-suite`, `cwd-db-repair`, `provider-matrix`, `uds-e2e-check`, `mcp-architecture-check` red | এক এক contract: HTTPS fixture, repair-log, `toolcall=0`, Gemini 502, stdio admin | প্রতিটি suite exit 0; না পারলে documented limitation | `SUITE_GREEN_OK` |
+| **C. Vhost truth** | live Caddyfile-এ এখন একটাই vhost `https://127.0.0.1` (200); ৭টি 502 vhost বাদ, `localhost` alias নেই | বাদ দেওয়াটা template/renderer-এ pinned রাখা এবং একটি gate দিয়ে প্রমাণ করা | প্রতিটি URL হয় `200`, নয়তো absent — gate script বাকি | `VHOST_TRUTH_OK` |
+| **D. Red suites** | পাঁচটাই এখন exit 0 (§13): HTTPS fixture SAN, registry-before-persona, honest provider skip, transient Gemini 503, panel-session admin | এক এক contract: HTTPS fixture, repair-log, `toolcall=0`, Gemini 503, stdio admin | প্রতিটি suite exit 0; upstream-নির্ভর ক্ষেত্রে documented skip | `SUITE_GREEN_OK` ✅ DONE (`gc-mwq7s1e2`) |
 | **E. Release gate** | A–D আলাদা আলাদা | full regression + `rebuild-restart` + `docs-current` + `package-install` + `quality-eval` | এক কমান্ডে release proof | `RELEASE_READY_OK` |
 
 ### 12.3 Dependency order
@@ -1235,3 +1253,46 @@ Browser CDP screenshot, VS Code/opencode client, ৭ vhost, ৫ red suite, relea
 
 **পরের ধাপ:** Phase 0 baseline — শুধু ব্যবহারকারী “শুরু করো” বললে (`git tag pre-single-truth-2026-11-20`, test baseline, `data/models.db` backup; কোনো code বদল নয়)। তারপর Phase 2 (OpenCode paid-only) → Phase 3 (config single truth)। Phase 3+ শুরু করার আগে `lib/env.js` contract freeze; নাহলে path/tool/DB একসাথে বদলে debugging কঠিন হবে।
 **Monu push:** সম্পন্ন — `retire/2026-11-19` = `cb394e764908f51e2ac57422c9d10f9d6ba8cf63` (local = remote), contract `gc-mwnurzwx` PASS (`RETIRE_AUDIO_OK`)।
+
+---
+
+## 13. SUITE_GREEN pass — 2026-11-25 (row 18)
+
+**Done (2026-11-25, `gc-mwq7s1e2`):** §11.3-এর পাঁচটি red suite এক-এক root cause ধরে ঠিক করা হয়েছে; প্রতিটি এখন exit 0, আর যেখানে পরিবেশ/upstream সত্যিই দেয় না সেখানে test নিজেই `SKIP` লেখে — pass সাজিয়ে নয়।
+
+### 13.1 পাঁচ suite — কারণ ও ফল
+
+| Suite | Root cause (path) | Fix | Result |
+|---|---|---|---|
+| `transport-suite` | `tests/transport-suite.js` HTTPS fixture: `openssl -addext subjectAltName=DNS:localhost,IP:localhost` — openssl `IP:localhost` প্রত্যাখ্যান করে (`bad ip address`) | SAN `IP:127.0.0.1` | `ALL TRANSPORTS PASS (http, https, uds, stdio, grpc, normalizer)`, exit 0 |
+| `cwd-db-repair-check` | `api.js` boot-এ `syncAgentPersonas()` আগে চলত, `ensureAgentsRegistry()` পরে; persona path আগে ৪টি agent insert করায় repair-log `AGENTS_REPAIRED=false added4=false` | boot order: registry আগে, persona পরে; `added=N` এখন insert path থেকেই আসে | `CWD DB PASS … repaired=4`, exit 0 |
+| `provider-matrix-check` | `toolcall=0`-কে সব model-এ hard fail ধরা হতো, যদিও `llama-cpu` unreachable, `ollama-cloud` 402, `lfm3` tool call করে না | unreachable/no-tool-call আলাদা `SKIP`; matrix counts `served = models - unreachable` | `PROVIDER MATRIX PASS … skipped=7`, exit 0 |
+| `uds-e2e-check` | Gemini upstream 503 "high demand"-কে 502 hard fail ধরা হতো; এবং agent এক tool-অনুরোধে `read_file`/`list_directory` পেত না (§13.2) | bounded 3 retry on 503/429/timeout, তারপর honest `SKIP`; permanent 502 (retired model) এখনো fail | `27 pass / 0 fail / 1 skip`, `UDS E2E PASS` |
+| `mcp-architecture-check` | test পুরোনো contract ধরত: `/admin` absent (404), admin write শুধু token-এ | panel এখন `/admin` 200 + session cookie; write-এ token **এবং** panel session; bare token 401 — test বাস্তব contract-এ update | `checks=22 pass=22`, `MCP_STDIO_ADMIN_OK` |
+
+### 13.2 দ্বিতীয় root cause — intent ranking requested tool বাদ দিত
+
+`uds-e2e`-র agent tool call `UNVERIFIED — the read_file and list_directory tools are not available` ফেরত দিচ্ছিল, যদিও MCP-তে দুটোই কাজ করে। কারণ `lib/tool-budget.js`-এর `scoreTool()` নাম ও description-মিলকে সমান ওজন দিত; `browse_cdp`/`read_ssot`-এর লম্বা description-এ generic শব্দ (file, read, directory) মিলে তারা `read_file`-এর আগে বসত। 45s prefill cap-এ প্রতি call-এ মাত্র ৫টি tool fit করত, তাই requested tool দুটোই বাদ পড়ত।
+
+**Fix:** নামের মিলে ৫× ওজন, পুরো tool-name exact match-এ +২০; regression check যোগ হয়েছে (`explicit tool name outranks description keyword noise`)। `node tests/tool-budget-check.js` → `35/35 TOOL_BUDGET_OK`। Live `TOOL_BUDGET sent=5` → `sent=10` (`read_file`, `list_directory` সহ); একই `code-guru` অনুরোধে ফাইল পড়ে `ZC-live777` ফিরল।
+
+### 13.3 সীমা — যেটা claim করা হয়নি
+
+- `provider-matrix`-এর ৭টি `SKIP`: `llama-cpu` (9932 unreachable), `ollama-cloud` (402 credits), `ollama-local`-এর `lfm3:1.7b` (উত্তর দেয়, tool call করে না)। এগুলো এই pass-এ ঠিক হয়নি; test শুধু তাদের আলাদা করে দেখায়।
+- `uds-e2e`-তে Gemini এই run-এ attempt 2-এ 200 পেয়েছে; upstream আবার 503 দিলে test `SKIP` লেখবে, 502 permanent হলে fail করবে।
+- OpenCode `OPENCODE_ENABLED=false` (admin-disabled) — deliberate skip, error নয়।
+- `dist` rebuild + restart হয়েছে (`REBUILD_RESTART_OK`, sha `9314b489…`), কিন্তু docs gate push-নির্ভর; commit/push আলাদা ধাপ।
+
+### 13.4 প্রমাণ কমান্ড
+
+```bash
+node tests/transport-suite.js            # exit 0, ALL TRANSPORTS PASS
+node tests/cwd-db-repair-check.js        # exit 0, repaired=4
+node tests/provider-matrix-check.js      # exit 0, skipped=7
+node tests/uds-e2e-check.js              # exit 0, 27/0/1
+node tests/mcp-architecture-check.js     # exit 0, 22/22
+node tests/tool-budget-check.js          # exit 0, 35/35
+bash scripts/rebuild-restart.sh --restart # REBUILD_RESTART_OK
+```
+
+**পরের কাজ:** row 16 `CLIENT_E2E_OK` (আসল Chromium/editor client), row 17 `VHOST_TRUTH_OK` (gate script; live-এ ৭ vhost ইতিমধ্যে absent), row 19 `RELEASE_READY_OK`।

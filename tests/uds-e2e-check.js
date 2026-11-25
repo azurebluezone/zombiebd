@@ -400,18 +400,44 @@ async function main() {
   );
   let geminiDetail = "no gemini model in /api/v1/models";
   let geminiOk = false;
+  let geminiTransient = false;
   if (geminiModel) {
-    const gemini = await uds("/v1/chat/completions", {
-      model: geminiModel.id,
-      messages: [{ role: "user", content: "Reply with exactly: PROVIDER-OK" }],
-      max_tokens: 24,
-      temperature: 0,
-    });
-    geminiOk = gemini.status === 200 && /PROVIDER-OK/.test(contentOf(gemini.json));
-    geminiDetail = "model=" + geminiModel.id + " status=" + gemini.status +
-      " content=" + JSON.stringify(contentOf(gemini.json).slice(0, 50));
+    // Gemini 503 ("high demand") is an upstream state, not a gateway defect:
+    // retry a bounded number of times, then record the limitation instead of
+    // failing the whole UDS gate. Permanent errors (model retired, auth) still
+    // fail. The 000/timeout path is transient too, so it is retried.
+    for (let attempt = 1; attempt <= 3 && !geminiOk; attempt += 1) {
+      const gemini = await uds("/v1/chat/completions", {
+        model: geminiModel.id,
+        messages: [{ role: "user", content: "Reply with exactly: PROVIDER-OK" }],
+        max_tokens: 24,
+        temperature: 0,
+      });
+      const text = contentOf(gemini.json);
+      const errText = String(
+        (gemini.json && gemini.json.error && gemini.json.error.message) || gemini.error || "",
+      );
+      geminiOk = gemini.status === 200 && /PROVIDER-OK/.test(text);
+      geminiDetail = "model=" + geminiModel.id + " attempt=" + attempt +
+        " status=" + gemini.status + " content=" + JSON.stringify(text.slice(0, 50));
+      if (geminiOk) break;
+      // 503/429 and a socket timeout are upstream states. 502 stays
+      // permanent unless the body names a transient cause (a retired model
+      // is also 502 and must fail loudly).
+      geminiTransient = gemini.status === 503 || gemini.status === 429 ||
+        gemini.status === 0 ||
+        /high demand|overloaded|try again later|\b503\b|timeout/i.test(errText);
+      if (!geminiTransient) break;
+      await sleep(1500 * attempt);
+    }
   }
-  check("Gemini live reply over UDS", geminiOk, geminiDetail);
+  if (geminiOk) {
+    check("Gemini live reply over UDS", true, geminiDetail);
+  } else if (geminiTransient) {
+    skipCheck("Gemini live reply over UDS", "upstream transient: " + geminiDetail);
+  } else {
+    check("Gemini live reply over UDS", false, geminiDetail);
+  }
 
   // 7. OpenCode: a real reply or an honestly recorded upstream quota block.
   // An admin-disabled provider is a deliberate state, not a failure: report

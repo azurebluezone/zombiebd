@@ -186,6 +186,40 @@ check(
   ranked.tools.map((tool) => tool.function.name).join(","),
 );
 
+// An explicitly named tool must beat a chatty description: the live catalog
+// used to rank browse_cdp/read_ssot above read_file because their long
+// descriptions repeat generic intent words, so "use read_file" never reached
+// the model. (Regression: uds-e2e agent tool call.)
+const exactName = withEnv({ MCP_TOOL_BUDGET_PIN: "" }, () =>
+  toolBudget.resolveToolBudget({
+    tools: [
+      {
+        type: "function",
+        function: {
+          name: "browse_cdp",
+          description: "read file directory list content exact reply tool",
+          parameters: { type: "object", properties: {} },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "read_file",
+          description: "Read a file",
+          parameters: { type: "object", properties: {} },
+        },
+      },
+    ],
+    intent: "use the read_file tool on the file",
+    timeoutMs: 60000,
+  }),
+);
+check(
+  "explicit tool name outranks description keyword noise",
+  exactName.tools.length > 0 && exactName.tools[0].function.name === "read_file",
+  exactName.tools.map((tool) => tool.function.name).join(","),
+);
+
 // ─── 3. Real catalog bytes/prefill ───────────────────────────────────────
 function extractMcpTools(source) {
   const lines = source.split("\n");

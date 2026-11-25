@@ -117,6 +117,7 @@ const {
   sanitizeForModel,
   sanitizeForWrite,
 } = require("./lib/text-integrity.js");
+const { isLoopbackHost, normalizeHost } = require("./lib/net.js");
 const { chooseUsableModel } = require("./lib/model-choice.js");
 const { loadAgentFiles, getAgentById, listAgentIds, resolveAgentModel } = require("./agent");
 const systemInfo = require("./lib/system-info.js");
@@ -1717,14 +1718,9 @@ function providerDisplayName(id, p) {
 function isLoopbackUrl(raw) {
   try {
     const u = new URL(String(raw || ""));
-    const host = String(u.hostname || "").toLowerCase();
-    return (
-      host === "localhost" ||
-      host === "::1" ||
-      host === "[::1]" ||
-      /^127(?:\.\d{1,3}){3}$/.test(host) ||
-      u.protocol === "unix:"
-    );
+    // Unix sockets are local by construction; every network host goes through
+    // the one shared loopback definition (lib/net.js).
+    return u.protocol === "unix:" || isLoopbackHost(u.hostname);
   } catch (_) {
     return false;
   }
@@ -4080,15 +4076,8 @@ function log(level, category, data, consoleOnly) {
 const MCP_SOCKET_IDENTITY = new WeakMap();
 
 function isLoopbackAddress(value) {
-  const addr = String(value || "").trim().toLowerCase();
-  return (
-    addr === "localhost" ||
-    addr === "127.0.0.1" ||
-    addr === "::1" ||
-    addr === "::ffff:localhost" ||
-    addr === "::ffff:127.0.0.1" ||
-    addr === "0:0:0:0:0:0:0:1"
-  );
+  const addr = normalizeHost(value).replace(/^::ffff:/, "");
+  return addr === "localhost" || isLoopbackHost(addr);
 }
 
 // Bind/probe address for optional listeners. A wildcard bind is not a
@@ -4849,7 +4838,7 @@ function mcpAuthFromHeaders(req) {
 // client = allowed; every Origin must match an exact origin derived from
 // APP_URL, MAIN_HOST and deploy/tools.json. There is no wildcard and no
 // unconditional loopback bypass.
-function isOriginAllowed(origin) {
+function isOriginAllowed(origin, req) {
   const value = String(origin || "").trim();
   if (!value) return true;
 
@@ -4880,14 +4869,45 @@ function isOriginAllowed(origin) {
     }
   }
 
-  return candidates.has(parsed.origin);
+  if (candidates.has(parsed.origin)) return true;
+
+  // Self-origin: the admin UI is served by this same process on
+  // http://127.0.0.1:<port>, so its Origin can never appear in APP_URL
+  // (which is the public https name). Without this, write_file/delete_file
+  // from the admin UI were logged as MCP_GATE_DENIED.
+  //
+  // Narrow on purpose: BOTH the Origin and the Host header must be a loopback
+  // literal. A DNS-rebinding page sends Host: <attacker-domain> with
+  // Origin: http://<attacker-domain>, so a plain host comparison would have
+  // opened exactly the hole this file's gate exists to close. Loopback
+  // literals cannot be rebound. The loopback rule itself lives in
+  // lib/net.js; this block must not keep a private copy.
+  const originHostname = String(parsed.hostname || "").toLowerCase();
+  const requestHost = String(
+    (req && req.headers && req.headers.host) || "",
+  ).trim();
+  if (isLoopbackHost(originHostname) && requestHost) {
+    try {
+      const reqUrl = new URL("http://" + requestHost);
+      if (
+        isLoopbackHost(reqUrl.hostname) &&
+        reqUrl.host === parsed.host
+      ) {
+        return true;
+      }
+    } catch (_) {
+      /* malformed Host: fall through to reject */
+    }
+  }
+
+  return false;
 }
 
 function mcpOriginAllowed(req) {
   const h = (req && req.headers) || {};
   const origin = String(h["origin"] || "");
   if (!origin) return true;
-  return isOriginAllowed(origin);
+  return isOriginAllowed(origin, req);
 }
 
 // Origin-only guard for endpoints that legitimate NATIVE clients (VS Code
@@ -11729,6 +11749,11 @@ function handleMCP(req, res) {
       log("WARN", "MCP_HEADER_REJECTED", {
         client: clientNameFromHeader || "unknown",
         errors: headerCheck.errors.map((error) => error.code),
+        // The code alone cannot be acted on: 15 rejections sat in the log with
+        // no value to compare against. Field + value make it diagnosable.
+        detail: headerCheck.errors.map(
+          (error) => error.field + "=" + String(error.value || "").slice(0, 80),
+        ),
       });
       jsonResponse(res, 400, {
         jsonrpc: "2.0",
@@ -18125,13 +18150,18 @@ async function init() {
   // PHASE A: seed agents table from PERSONAS.md on first boot (idempotent),
   // then load DB-first. PERSONAS.md remains as fallback for ids not in DB.
   seedAgentsFromPersonas();
+  // Guarantee the file registry BEFORE persona repair: ensureAgentsRegistry owns
+  // the insert path and its AGENTS_REPAIRED log (added=N). syncAgentPersonas
+  // runs second and owns only the persona===expertise repair. The reverse order
+  // let the sync insert missing rows silently, so a partial DB was repaired but
+  // never reported the documented AGENTS_REPAIRED signal.
+  await ensureAgentsRegistry();
   // Repair the known persona===expertise corruption before the DB-first load.
   // Admin-edited personas are left untouched; model/priority/enabled are not
   // part of this repair.
   if (MODELS_DB) {
     agentsModule.syncAgentPersonas(MODELS_DB, loadAgentFiles(), { log });
   }
-  await ensureAgentsRegistry();
   // Project memory: import legacy ctx_*.json once, then every archive goes to
   // the SQLite project_memory table (WAL). JSON session memory is untouched.
   try {

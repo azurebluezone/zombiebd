@@ -550,7 +550,7 @@ async function main() {
         "-keyout", path.join(TMP, "key.pem"),
         "-out", path.join(TMP, "cert.pem"),
         "-days", "1", "-subj", "/CN=localhost",
-        "-addext", "subjectAltName=DNS:localhost,IP:localhost",
+        "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1",
       ],
       { stdio: "pipe" },
     );
