@@ -1295,4 +1295,22 @@ node tests/tool-budget-check.js          # exit 0, 35/35
 bash scripts/rebuild-restart.sh --restart # REBUILD_RESTART_OK
 ```
 
-**পরের কাজ:** row 16 `CLIENT_E2E_OK` (আসল Chromium/editor client), row 17 `VHOST_TRUTH_OK` (gate script; live-এ ৭ vhost ইতিমধ্যে absent), row 19 `RELEASE_READY_OK`।
+**পরের কাজ:** row 16 `CLIENT_E2E_OK` (আসল Chromium/editor client), row 17 `VHOST_TRUTH_OK` (gate script; live-এ ৭ vhost ইতিমধ্যে absent), row 19 `RELEASE_READY_OK` — বিস্তারিত §14।
+
+---
+
+## 14. খোলা কাজ — 2026-11-25 snapshot
+
+§13-এর পাঁচ suite green হলেও release-ready নয়। নিচের table-ই একমাত্র খোলা কাজের তালিকা; এর বাইরে "সব সবুজ" দাবি করা যাবে না। প্রতিটি row আলাদা contract/gate চায়।
+
+| # | খোলা কাজ | বর্তমান অবস্থা ও প্রমাণ (2026-11-25) | পরের ধাপ | Gate |
+|---|---|---|---|---|
+| 1 | **Row 16 — CLIENT_E2E** | আসল Chromium-এ UI screenshot, upload/chat, editor client task — কোনোটাই চালানো হয়নি; `CLIENT_E2E_OK` output নেই। Live UI `http://127.0.0.1:5050/`-এ আছে। | Live UI খুলে screenshot + ফাইল upload + attachment-সহ chat; editor/opencode client-এ একটি আসল task; তারপর `CLIENT_E2E_OK` print | `CLIENT_E2E_OK` |
+| 2 | **Row 17 — VHOST_TRUTH** | `/etc/caddy/Caddyfile:20`-এ একটাই vhost `https://127.0.0.1`; `curl -k https://127.0.0.1/health` → `200`, `https://localhost/health` → `000`; ৭টি পুরোনো 502 vhost live-এ নেই, `5000`/`11436` listener নেই। কিন্তু কোনো gate script এখনো লেখা হয়নি। | `tests/vhost-truth-check.js`: live Caddyfile + `deploy/templates/Caddyfile.template` render করে প্রতিটি host-এর জন্য "200 অথবা absent" assert; root-only হলে explicit SKIP | `VHOST_TRUTH_OK` |
+| 3 | **Gemini catalog drift** | `gemini-2.5-flash`/`gemini-2.5-pro` upstream-এ retire (`no longer available to new users`); `gemini-3.5-flash` কাজ করে কিন্তু মাঝে মাঝে `503 high demand`। DB/.env-এ পুরোনো নাম এখনো থাকতে পারে। | Live model list থেকে retired নাম prune/alias; `uds-e2e`-র transient retry অক্ষত রেখে পুনরায় probe | `PROVIDER_MATRIX`/`UDS E2E` |
+| 4 | **Groq TPM** | বড় prompt দিয়ে re-probe করা হয়নি; 8000 TPM-এ 24-tool budget + লম্বা history `413` দিতে পারে। ছোট prompt-এ সমস্যা দেখা যায়নি। | ~6–8k token history + 24 tools দিয়ে Groq-এ একটি probe; `413` এলে per-provider budget/prompt trim ঠিক করে retest | provider gate |
+| 5 | **`AGENT_FS_SCOPE=unrestricted`** | `.env`-এ ইচ্ছাকৃত unrestricted (P3); prompt-injection হলে session dir-এর বাইরে write হতে পারে। Path guard/tool resolver আলাদা। | সিদ্ধান্ত: default session-scoped করা, নাহলে ঝুঁকিটি লিখিতভাবে accept করে authoring tools-এ path guard রাখা | P3 decision |
+| 6 | **`provider-matrix`-এর ৭ skip** | `llama-cpu` ৩টি (`127.0.0.1:9932` ECONNREFUSED), `ollama-cloud` ৩টি (HTTP 402, credits নেই), `ollama-local` ১টি (`lfm3:1.7b` উত্তর দেয় কিন্তু tool call করে না)। এগুলো ঠিক হয়নি; test honest `SKIP` লেখে। | `llama-cpu` চালু/নিষ্ক্রিয় করো; `ollama-cloud`-এ credits অথবা disable; tool-capable local model ব্যবহার করো | `PROVIDER MATRIX` |
+| 7 | **Row 19 — RELEASE_READY** | Full regression + rebuild/restart + docs + package + quality eval একসাথে চালানো হয়নি; row 16/17 ছাড়া release দাবি করা যাবে না। | ১–৬ শেষ হলে পুরো sweep + package + quality eval; তারপর `RELEASE_READY_OK` | `RELEASE_READY_OK` |
+
+**নিয়ম:** উপরের যেকোনো row "DONE" হতে হলে আলাদা contract id + command output/exit code লাগবে; শুধু "চেষ্টা করেছি" বা upstream-এর অজুহাতে pass ঘোষণা নয়।
