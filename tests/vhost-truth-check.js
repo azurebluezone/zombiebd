@@ -92,8 +92,15 @@ function health(host, timeoutMs) {
   check("active host 127.0.0.1 is not retired", edge.isRetiredToolHost("127.0.0.1") === false);
   check("prefix lookalike is not retired", edge.isRetiredToolHost("ocr-live.example.test") === false);
 
-  const template = fs.readFileSync(path.join(ROOT, "deploy", "templates", "Caddyfile.template"), "utf8");
-  check("template documents all seven retired hosts", RETIRED.every((h) => template.includes(h)), "template header");
+  const runbook = fs.readFileSync(
+    path.join(ROOT, "docs", "RUNBOOK-OPTIMIZATION-2026-11-19.md"),
+    "utf8",
+  );
+  check(
+    "runbook documents all seven retired hosts",
+    RETIRED.every((h) => runbook.includes(h)),
+    "runbook §17",
+  );
 
   const config = edge.resolveEdgeConfig({ root: ROOT, env: Object.assign({}, process.env, { TOOL_BASE_DOMAIN: "edge.example.test" }) });
   config.tools = RETIRED.map((name) => ({ name, hostEnv: "", subdomain: name, portEnv: "STALE_" + name.toUpperCase() + "_PORT" }));
