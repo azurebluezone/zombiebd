@@ -1,7 +1,7 @@
 # RUNBOOK — Single-Truth Optimization (2026-11-19)
 
 **Scope:** `~/zombiebd` এবং এই মেশিনে চলা adjacent stacks।
-**Status:** `ACTIVE` — ১৫/১৫ মূল row + row 18 `SUITE_GREEN` DONE (2026-11-25); পরের কাজ row 16 `CLIENT_E2E_OK` (Chromium CDP screenshot + editor client task), তারপর row 17 `VHOST_TRUTH_OK` ও row 19 `RELEASE_READY_OK`।
+**Status:** `ACTIVE` — ১৫/১৫ মূল row + row 18 `SUITE_GREEN` DONE (2026-11-25); পরের কাজ row 16 `CLIENT_E2E_OK` (Chromium CDP screenshot + editor client task), তারপর row 17 `VHOST_TRUTH_OK` ও row 19 `RELEASE_READY_OK`। ২৬ নভেম্বরের ময়না তদন্তে নতুন ঝুঁকি §15-এ; সেখানেও release দাবি করা হয়নি।
 **Entry point (আগে এটা পড়ো):** `docs/PLAN-2026-11-20.md` — ১০ phase, gate ও সময়সহ সংক্ষিপ্ত করণীয়; narration `/home/sahon/Music/mp3/zbd/today/zbd-plan-2026-11-20.mp3` (424.1s, 2,544,860 bytes)।
 **Closed contracts:** `gc-mwnurzwx` → `RETIRE_AUDIO_OK` (Monu retire + runbook narration); `gc-mwnvesuc` → `PLAN_AUDIO_OK` (plan doc + narration); `gc-mwptx62a` → `SURFACE_POLICY_OK` (surface policy table); `gc-mwpu10ck` → `DOCS_CURRENT_OK` (row 13 release); `gc-mwpuupxk` → `CHAT_UPLOAD_OK` (row 14 chat attachments)।
 **Evidence rule:** প্রতিটি দাবির পাশে `path:line`, command output বা exit code আছে। যা probe করা হয়নি তা `UNVERIFIED`।
@@ -1314,3 +1314,42 @@ bash scripts/rebuild-restart.sh --restart # REBUILD_RESTART_OK
 | 7 | **Row 19 — RELEASE_READY** | Full regression + rebuild/restart + docs + package + quality eval একসাথে চালানো হয়নি; row 16/17 ছাড়া release দাবি করা যাবে না। | ১–৬ শেষ হলে পুরো sweep + package + quality eval; তারপর `RELEASE_READY_OK` | `RELEASE_READY_OK` |
 
 **নিয়ম:** উপরের যেকোনো row "DONE" হতে হলে আলাদা contract id + command output/exit code লাগবে; শুধু "চেষ্টা করেছি" বা upstream-এর অজুহাতে pass ঘোষণা নয়।
+
+---
+
+## 15. নতুন ঝুঁকি ও সিদ্ধান্ত — ২০২৬-১১-২৬ (ময়না তদন্ত)
+
+§14-এর ৭টি row অপরিবর্তিত। এই section-এ ২৫ নভেম্বর রাতের forensic audit-এর নতুন ফল — কোনটা এই pass-এ বন্ধ, কোনটা শুধু লিখিত। বিস্তারিত `path:line` + code-path `docs/AUDIT-APIJS-2026-11-23.md` §17।
+
+| # | বিষয় | প্রমাণ | অবস্থা ও পরের ধাপ | Gate |
+|---|---|---|---|---|
+| 1 | **r2t `[[TOOL:exec]]` default-enabled ছিল** — request body-র marker থেকে shell, কোনো admin token নেই | `api.js:19454` (আগে `|| "true"`), executor `:19611-19620`; `.env:160` `R2T_ENABLED=false` | **FIXED** — এখন শুধু exact `true` opt-in; `R2T_TRACE_OK 15/15`। বাকি: `.env.example`-এ `false` ডিফল্ট + shared edge-এ enable না করার নোট | `R2T_DEFAULT_OFF_OK` |
+| 2 | **`/api/mission` privileged tool চালায় admin token ছাড়া** — surface policy-তে `in-process` | `modules/surface-policy.js:52-62`; `api.js:16969-16974` optional auth; no-header `{ok:null}` `:4732` | **OPEN** — loopback-only agent feature, কিন্তু browser/other local process-এর blast radius। সিদ্ধান্ত: privileged tool থাকলে admin token বাধ্যতামূলক, নাহলে L3-এ explicit accept | `MISSION_PRIVILEGE_OK` |
+| 3 | **`AGENT_FS_SCOPE=unrestricted` default + terminal guard শুধু cwd** | `api.js:10539` default; `:10743-10762` `outsideSession(cwd)` → `bash -c cmd`; `restricted`-ও `$HOME` allow | **OPEN / accepted** — `cd / && cat /etc/passwd` guard পাশ কাটায়; unrestricted-এ guard নেই। সিদ্ধান্ত: default session-scoped, unrestricted শুধু explicit opt-in; shell আলাদা OS user-এ চালানো | `FS_SCOPE_DECISION` |
+| 4 | **Admin auth hardening** — fail-open switch, cookie-তে `Secure` নেই, প্রথম token compare `===` | `api.js:4794-4801`, `:4804-4811`; `lib/admin-session.js:54-61` | **OPEN** — `ADMIN_ALLOW_UNAUTHENTICATED` production-এ নিষিদ্ধ; HTTPS হলে cookie `Secure`; `got === want` সরিয়ে constant-time only | `ADMIN_AUTH_HARDENING_OK` |
+| 5 | **api.js-এ দ্বিতীয় normalizer/intent/session implementation** — ২৮৭+১৮১+২৭৭ = ৭৪৫ লাইন | `api.js:6373-6659`, `:7736-7916`, `:5794-6070`; canonical `normalizer/index.js`, `modules/intent.js`, `modules/sessions.js` | **OPEN** — module import থাকলেও api.js ওই path-এ canonical ব্যবহার করে না; golden-output test সহ একীভূত করা। line count নয়, duplicate behaviour মাপা হবে | `NORMALIZER_SINGLE_PATH_OK` |
+| 6 | **Legacy UDS branch canonical gateway-এর পাশে** | `api.js:18319-18406`; `transport/uds-gateway.js`; scripts `dist-verify.sh`, `p4-verify.sh`, `agent-transport-e2e.js` এখনো legacy path ব্যবহার করে | **OPEN** — scripts migrate করে branch delete; এখনই delete করলে gate scripts ভাঙবে | `UDS_SINGLE_PATH_OK` |
+| 7 | **Provider breaker ও MCP future protocol** — model-scoped 404 পুরো provider poison করত; `2026-07-28` প্রতি call-এ 400 | live `PROVIDER_UNHEALTHY …http_404 gemini-2.5-pro` 17:40:28; `MCP_HEADER_REJECTED …2026-07-28` ৫২টি 17:30–17:34 | **FIXED + LIVE VERIFIED (2026-11-26 00:37)** — `lib/provider-failure.js` + `modules/mcp-protocol.js`; `2026-07-28` → 200 + `MCP_PROTOCOL_FORWARD`; malformed `2026-13-99` → 400; Gemini 2.5 404-এ `PROVIDER_MODEL_SCOPED_FAILURE`, নতুন `PROVIDER_UNHEALTHY` নেই | `PROVIDER_SCOPE_LIVE_OK`, `MCP_FORWARD_LIVE_OK` |
+| 8 | **Log truth ও noise** — chat entry route ব্যর্থ হলেও `status:200`; `PROVIDER_SKIP_DOWN` প্রতি request-এ ৫০+ লাইন | `api.js` `CHAT_ACCEPTED`; `PROVIDER_SKIP_DOWN` once-per-provider; live count `574` (পুরোনো) | **FIXED + LIVE VERIFIED (2026-11-26 00:37)** — `CHAT_ACCEPTED` live log-এ আছে; `PROVIDER_SKIP_DOWN` count `574`-এ স্থির (restart-এর পরে নতুন লাইন নেই) | `LOG_TRUTH_OK` |
+| 9 | **NOTE-STORE dual-instance warning** | `logs/systemd-err.log`: `Another instance is using /home/sahon/zombiebd/dist/data`; current lock `data/.note-store.lock` pid `59007`, একমাত্র live gateway | **NOT A BUG NOW** — bridge child একই data dir-এ note-store load করলে warning দেয়; lock pid live। ভবিষ্যতে bridge-কে note-store থেকে সরানো বা lock owner আলাদা করা | — |
+
+### 15.1 এই pass-এ ছোট runtime fix (restart-এর পরে live)
+
+- `stripMissionChatArtifacts()` — stream/non-stream-এ হুবহু duplicate ৫-regex chain এক জায়গায়; `node --check api.js` exit 0।
+- `noteForwardProtocol()` — MCP future-date notice module-এ; ৫২টি reject-এর কারণ এখন forward-compat।
+- `lib/provider-failure.js` — 400/404-model provider health-এ গণ্য হয় না; 503/429 হয়। `PROVIDER_HEALTH_OK 17/17`।
+- `R2T_ENABLED` opt-in — `R2T_TRACE_OK 15/15`।
+- `provider-panel-ops-check` panel cookie bootstrap — `PROVIDER_PANEL_OPS_OK 18/18`।
+
+### 15.2 প্রমাণ কমান্ড
+
+```bash
+node --check api.js
+node tests/api-module-wiring-check.js      # API_MODULE_WIRING_OK pass=11
+node tests/mcp-api-integration-check.js   # MCP_API_INTEGRATION_OK
+node tests/provider-health-honesty-check.js # PROVIDER_HEALTH_OK 17/17
+node tests/provider-panel-ops-check.js    # PROVIDER_PANEL_OPS_OK 18/18
+node tests/r2t-trace-check.js             # R2T_TRACE_OK 15/15
+```
+
+**নিয়ম:** row 1-এর `FIXED` source + test; `.env`-এ `false` থাকায় enabled exploitable path এখনো test করা হয়নি। row 7, 8 live log-এ `LIVE_VERIFIED`। row 2–6-এর কোনোটা এই pass-এ ঠিক করা হয়নি।

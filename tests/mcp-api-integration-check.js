@@ -119,6 +119,17 @@ async function main() {
     assert.strictEqual(badVersion.ok, false);
     assert.ok(badVersion.errors.some((error) => error.code === "ZC_MCP_VERSION"));
 
+    // opencode sends a date newer than anything this server implements after
+    // negotiating an older version. Accept it (and mark why) instead of
+    // stranding every subsequent tool call with a 400.
+    const future = mcp.validateMcpHeaders({ "mcp-protocol-version": "2026-07-28" });
+    assert.strictEqual(future.ok, true);
+    assert.strictEqual(future.forwardProtocol, true);
+    assert.deepStrictEqual(future.errors, []);
+
+    const malformed = mcp.validateMcpHeaders({ "mcp-protocol-version": "2026-13-99" });
+    assert.strictEqual(malformed.ok, false);
+
     const badSession = mcp.validateMcpHeaders({ "mcp-session-id": "bad id!" });
     assert.strictEqual(badSession.ok, false);
     assert.ok(badSession.errors.some((error) => error.code === "ZC_MCP_SESSION"));

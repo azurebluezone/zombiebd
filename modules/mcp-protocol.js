@@ -16,8 +16,13 @@
  *      unknown client is `null`, never a guessed profile.
  *
  *   3. Header + workspace bootstrap. `validateMcpHeaders` rejects a version
- *      header we do not implement, a malformed session id, and an Accept that
- *      cannot receive JSON. `bootstrapWorkspace` resolves the client workspace
+ *      header older than the oldest supported release, a malformed session id,
+ *      and an Accept that cannot receive JSON. A date NEWER than the newest
+ *      supported release is accepted with `forwardProtocol: true`: clients such
+ *      as opencode send a future date after negotiating an older version, and
+ *      the JSON-RPC methods here are additive, so hard-failing strands the
+ *      editor. The response still names a version this server implements.
+ *      `bootstrapWorkspace` resolves the client workspace
  *      (roots → header → env → cwd) and creates the `.zombiecoder/` layout on
  *      first connect, so an editor never has to call `set_working_dir` just to
  *      get a working directory.
@@ -58,6 +63,18 @@ const HEADER_CLIENT_NAME = "x-mcp-client-name";
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
 const JSON_ACCEPT_PATTERN = /(application\/json|\*\/\*)/i;
+const PROTOCOL_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+// ISO dates compare lexicographically. A newer date is forward-compatible; an
+// unknown OLD date is not, because required fields may have been removed since.
+function isForwardProtocolVersion(version) {
+  if (!PROTOCOL_DATE_PATTERN.test(version)) return false;
+  // Reject impossible dates such as 2026-13-99 before comparing strings.
+  const parsed = Date.parse(version + "T00:00:00Z");
+  if (!Number.isFinite(parsed)) return false;
+  if (new Date(parsed).toISOString().slice(0, 10) !== version) return false;
+  return version > SUPPORTED_PROTOCOL_VERSIONS[0];
+}
 
 /**
  * Editor profiles. `match` patterns are tested against the client name,
@@ -183,14 +200,40 @@ function detectEditor(clientInfo, headers) {
  * @returns {{ok: boolean, errors: Array, protocolVersion: string,
  *            sessionId: string, accept: string, clientDir: string}}
  */
+// The forward-compat notice is emitted once per client+version, not once per
+// request: a broken client can send hundreds of tool calls in a minute.
+const _forwardProtocolLogged = new Set();
+
+function noteForwardProtocol(check, clientName) {
+  if (!check || !check.forwardProtocol) return null;
+  const key = (clientName || "unknown") + "|" + check.protocolVersion;
+  if (_forwardProtocolLogged.has(key) || _forwardProtocolLogged.size >= 100) {
+    return null;
+  }
+  _forwardProtocolLogged.add(key);
+  return {
+    client: clientName || "unknown",
+    requested: check.protocolVersion,
+    negotiated: PROTOCOL_VERSION,
+    note: "accepted; response names a supported version",
+  };
+}
 function validateMcpHeaders(headers) {
   const errors = [];
   const protocolVersion = headerValue(headers, HEADER_PROTOCOL);
   const sessionId = headerValue(headers, HEADER_SESSION);
   const accept = headerValue(headers, HEADER_ACCEPT);
   const clientDir = headerValue(headers, HEADER_CLIENT_DIR);
+  const forwardProtocol =
+    !!protocolVersion &&
+    !SUPPORTED_PROTOCOL_VERSIONS.includes(protocolVersion) &&
+    isForwardProtocolVersion(protocolVersion);
 
-  if (protocolVersion && !SUPPORTED_PROTOCOL_VERSIONS.includes(protocolVersion)) {
+  if (
+    protocolVersion &&
+    !SUPPORTED_PROTOCOL_VERSIONS.includes(protocolVersion) &&
+    !forwardProtocol
+  ) {
     errors.push({
       code: "ZC_MCP_VERSION",
       field: "MCP-Protocol-Version",
@@ -219,6 +262,10 @@ function validateMcpHeaders(headers) {
     ok: errors.length === 0,
     errors,
     protocolVersion,
+    // True when the client named a date newer than this server implements.
+    // The call is accepted, but the negotiated version in the response is
+    // still one of SUPPORTED_PROTOCOL_VERSIONS.
+    forwardProtocol,
     sessionId,
     accept,
     clientDir,
@@ -353,6 +400,7 @@ module.exports = {
   negotiateProtocolVersion,
   detectEditor,
   validateMcpHeaders,
+  noteForwardProtocol,
   sessionIdFor,
   bootstrapWorkspace,
   buildInitializeResult,

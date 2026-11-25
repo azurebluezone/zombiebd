@@ -403,6 +403,15 @@ async function liveCheck() {
     }
     pass("isolated gateway healthy");
 
+    // The admin contract is credential AND panel cookie (lib/admin-session.js).
+    // Mint the cookie the same way a browser does before calling admin APIs.
+    const panelPage = await httpText(port, "/admin/zombie", "GET", null, 10000);
+    assert.strictEqual(panelPage.status, 200, "panel page status=" + panelPage.status);
+    const setCookie = String(panelPage.headers["set-cookie"] || "");
+    assert.ok(setCookie.startsWith("zc_panel="), "panel cookie missing: " + setCookie);
+    auth.cookie = setCookie.split(";")[0];
+    pass("panel session cookie established");
+
     let providers = await listProviders();
     expect("the baseline priority list is unique and gap-free", () => {
       const priorities = providers.map((p) => p.priority).sort((a, b) => a - b);

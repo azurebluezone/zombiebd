@@ -29,6 +29,7 @@ const net = require("net");
 const path = require("path");
 const { spawn, spawnSync } = require("child_process");
 const { DatabaseSync } = require("node:sqlite");
+const { isModelScopedProviderError } = require("../lib/provider-failure.js");
 
 const ROOT = path.resolve(__dirname, "..");
 const TMP = path.join("/tmp/opencode", "health-honesty-" + process.pid);
@@ -175,6 +176,20 @@ const apiSource = fs.readFileSync(apiPath, "utf8");
     });
     assert.strictEqual(result.status, 0, String(result.stderr || "").slice(0, 240));
   });
+
+  // A model-scoped 400/404 must not count toward the provider-wide breaker;
+  // a 500/503 still must. This is the 2026-11-25 Gemini 2.5 404 regression.
+  for (const [name, status, message, want] of [
+    ["400 is model scoped", 400, "context length exceeded", true],
+    ["404 retired model is model scoped", 404, "models/gemini-2.5-flash is no longer available to new users", true],
+    ["404 generic endpoint is provider scoped", 404, "Not Found", false],
+    ["503 is provider scoped", 503, "high demand", false],
+    ["429 is provider scoped", 429, "rate limited", false],
+  ]) {
+    await expectAsync(name, async () => {
+      assert.strictEqual(isModelScopedProviderError(status, message), want);
+    });
+  }
 
   await liveCheck();
 })()

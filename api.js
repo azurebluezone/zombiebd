@@ -212,6 +212,7 @@ function loadAdminPage(options) {
 const toolRegister = require("./provider/tools");
 const toolBudget = require("./lib/tool-budget.js");
 const sizeBudget = require("./lib/size-budget.js");
+const { isModelScopedProviderError } = require("./lib/provider-failure.js");
 
 // The DB mutation routes get the live helpers through one context object.
 // Getters keep the DB handle and agent list current without this module
@@ -3104,9 +3105,11 @@ function resolveProvider(model, exactOnly) {
     // make every model it happens to list unusable. It stays enabled in the
     // DB and recovers by itself after HEALTH_CONFIG.RECOVERY_COOLDOWN_MS.
     if (!isProviderHealthy(id)) {
+      // One line per provider, not one per model. resolveProvider scans the
+      // whole catalog, so logging inside the model loop emitted 50+ identical
+      // lines for a single unhealthy provider on every request.
       log("INFO", "PROVIDER_SKIP_DOWN", {
         provider: id,
-        model,
         reason: "unhealthy",
       });
       continue;
@@ -7151,10 +7154,21 @@ function callModel(
             });
             return;
           }
-          markProviderFailure(
-            providerId,
-            (r.statusCode ? "http_" + r.statusCode + ": " : "network_error: ") + errMsg,
-          );
+          const failureReason =
+            (r.statusCode ? "http_" + r.statusCode + ": " : "network_error: ") + errMsg;
+          if (isModelScopedProviderError(r.statusCode, errMsg)) {
+            // The provider is alive; it just does not serve THIS model (e.g. a
+            // retired Gemini id). Do not trip the provider-wide breaker and
+            // strand every other model the provider still serves.
+            log("WARN", "PROVIDER_MODEL_SCOPED_FAILURE", {
+              provider: providerId,
+              model,
+              status: r.statusCode || null,
+              error: String(errMsg).slice(0, 200),
+            });
+          } else {
+            markProviderFailure(providerId, failureReason);
+          }
           const nextProvider = findNextProvider(model, providerId);
           if (nextProvider) {
             log("WARN", "PROVIDER_FALLBACK", {
@@ -11771,6 +11785,12 @@ function handleMCP(req, res) {
       return;
     }
 
+    const forwardNotice = mcpProtocol.noteForwardProtocol(
+      headerCheck,
+      clientNameFromHeader,
+    );
+    if (forwardNotice) log("INFO", "MCP_PROTOCOL_FORWARD", forwardNotice);
+
     if (method === "initialize") {
       const clientName =
         params?.clientInfo?.name || clientNameFromHeader || "unknown";
@@ -12353,6 +12373,21 @@ function maskModelIdentity(text) {
   return cleaned;
 }
 
+// The mission route used to carry this five-regex cleanup twice (stream and
+// non-stream), byte-for-byte. One helper keeps both paths identical.
+function stripMissionChatArtifacts(text) {
+  if (!text) return text;
+  return String(text)
+    .replace(/The user asked "[^"]*" which is Bengali for "[^"]*"\n\n?/g, "")
+    .replace(/I need to check the (?:agents'|agent) reports\.?\s*\n?/g, "")
+    .replace(/Let me (?:search|check|verify|look|read|see)[^.]*\.?\s*\n?/g, "")
+    .replace(/Since the user is asking in Bengali, I should answer in Bengali\.?\s*\n?/g, "")
+    .replace(
+      /^((?:Code Guru|Bug Hunter|Security|Performance|Doc King|QA Tyrant|\u09ae\u09a8\u09c1|\u099c\u09c1\u09af\u09bc\u09c7\u09b2|\u09ac\u09c3\u09b7\u09cd\u099f\u09bf|\u09b0\u09be\u09b6\u09c7\u09a6|\u09b9\u09be\u09b2\u09bf\u09ae|\u09ae\u099c\u09a8\u09c1).{0,50}(started|gave|says|mentioned|noted|pointed out)).{0,200}\n/gim,
+      "",
+    )
+    .trim();
+}
 // 
 //  GOAL VERIFICATION — Type Safety Before Output
 // 
@@ -12703,6 +12738,7 @@ function markProviderSuccess(providerId) {
   trackProviderUsage(providerId, false); // memory mirror
   recordProviderStat(providerId, true, null); // SQLite (survives restart)
 }
+
 
 function markProviderFailure(providerId, errorMsg) {
   const health = getProviderHealth(providerId);
@@ -15473,11 +15509,12 @@ const handleHttpRequest = async (req, res) => {
         }
       }
 
-      log("INFO", "REQUEST", {
+      // Accepted, not finished: a JSON-RPC/HTTP 200 here was a lie when the
+      // proxy later returned 503 (PROXY_ALL_PROVIDERS_DOWN). The real outcome
+      // is recorded by recordRequestLog() after the handler completes.
+      log("INFO", "CHAT_ACCEPTED", {
         method,
         url,
-        status: 200,
-        elapsed: 0,
         model,
         session: sessionId.slice(0, 8),
         messages: messages.length,
@@ -15656,28 +15693,7 @@ const handleHttpRequest = async (req, res) => {
           // Extra safety: strip any remaining thinking artifacts
           let finalCombined = result.combined || "";
           if (finalCombined) {
-            finalCombined = finalCombined
-              .replace(
-                /The user asked "[^"]*" which is Bengali for "[^"]*"\n\n?/g,
-                "",
-              )
-              .replace(
-                /I need to check the (?:agents'|agent) reports\.?\s*\n?/g,
-                "",
-              )
-              .replace(
-                /Let me (?:search|check|verify|look|read|see)[^.]*\.?\s*\n?/g,
-                "",
-              )
-              .replace(
-                /Since the user is asking in Bengali, I should answer in Bengali\.?\s*\n?/g,
-                "",
-              )
-              .replace(
-                /^((?:Code Guru|Bug Hunter|Security|Performance|Doc King|QA Tyrant|\u09ae\u09a8\u09c1|\u099c\u09c1\u09af\u09bc\u09c7\u09b2|\u09ac\u09c3\u09b7\u09cd\u099f\u09bf|\u09b0\u09be\u09b6\u09c7\u09a6|\u09b9\u09be\u09b2\u09bf\u09ae|\u09ae\u099c\u09a8\u09c1).{0,50}(started|gave|says|mentioned|noted|pointed out)).{0,200}\n/gim,
-                "",
-              )
-              .trim();
+            finalCombined = stripMissionChatArtifacts(finalCombined);
           }
           const finalChunk = {
             id: sseId,
@@ -15731,28 +15747,7 @@ const handleHttpRequest = async (req, res) => {
         // Extra safety: strip any remaining thinking artifacts
         let cleanCombined = result.combined || "";
         if (cleanCombined) {
-          cleanCombined = cleanCombined
-            .replace(
-              /The user asked "[^"]*" which is Bengali for "[^"]*"\n\n?/g,
-              "",
-            )
-            .replace(
-              /I need to check the (?:agents'|agent) reports\.?\s*\n?/g,
-              "",
-            )
-            .replace(
-              /Let me (?:search|check|verify|look|read|see)[^.]*\.?\s*\n?/g,
-              "",
-            )
-            .replace(
-              /Since the user is asking in Bengali, I should answer in Bengali\.?\s*\n?/g,
-              "",
-            )
-            .replace(
-              /^((?:Code Guru|Bug Hunter|Security|Performance|Doc King|QA Tyrant|\u09ae\u09a8\u09c1|\u099c\u09c1\u09af\u09bc\u09c7\u09b2|\u09ac\u09c3\u09b7\u09cd\u099f\u09bf|\u09b0\u09be\u09b6\u09c7\u09a6|\u09b9\u09be\u09b2\u09bf\u09ae|\u09ae\u099c\u09a8\u09c1).{0,50}(started|gave|says|mentioned|noted|pointed out)).{0,200}\n/gim,
-              "",
-            )
-            .trim();
+          cleanCombined = stripMissionChatArtifacts(cleanCombined);
         }
 
         jsonResponse(res, result.success ? 200 : 500, {
@@ -19411,7 +19406,9 @@ init();
 //    request pipeline and the rest of the server keeps working.
 //
 //  Env flags (true/false switches read from environment):
-//    R2T_ENABLED  - "true" (default local) runs r2t; "false" bypasses.
+//    R2T_ENABLED  - opt-in only: "true" runs r2t; absent/false bypasses.
+//    Default was true until 2026-11-25: a fresh checkout executed
+//    [[TOOL:exec]] from the request body with no admin gate.
 //    R2T_MODULE   - custom path to the r2t module (default below).
 //    R2T_PORT     - passed through to the module (port for its server).
 //    R2T_URL      - open compatible URL the module talks to. When the
@@ -19456,7 +19453,8 @@ async function executeR2tRequest(requestModel, messages, opts = {}) {
     );
 
   // 1) Env gate — cPanel-safe switch.
-  const enabled = String(process.env.R2T_ENABLED || "true") !== "false";
+  const enabled =
+    String(process.env.R2T_ENABLED || "").toLowerCase() === "true";
   if (!enabled) {
     r2tEngine = "disabled";
     log("INFO", "R2T_DISABLED", { env: "R2T_ENABLED=false" });
