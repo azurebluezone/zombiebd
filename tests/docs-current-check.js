@@ -164,7 +164,7 @@ function runbookRows(text) {
     const next = table.find((row) => !row.done);
     if (!next) {
       assert(plan.includes("`RELEASE_READY_OK`"), "PLAN does not mention RELEASE_READY_OK");
-      assert(/(?:১৯|19)\/19|ALL ROWS DONE|সব row DONE/i.test(plan), "PLAN does not record the closed backlog");
+      assert(/(?:১৯|19)\/(?:১৯|19)|ALL ROWS DONE|সব row DONE/i.test(plan), "PLAN does not record the closed backlog");
       return "all " + table.length + " rows DONE";
     }
     assert(plan.includes(next.gate), "PLAN does not mention " + next.gate);

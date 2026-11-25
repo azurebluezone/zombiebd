@@ -1,0 +1,49 @@
+=== release readiness gate === 39 regression gates ===
+PASS rebuild check :: exit=0 REBUILD_CHECK_OK api_sha=45582d63e7a36519cc82d304acb95662b2e85c112bc19d5322e61498c28639e2 dist=/tmp/opencode/zc-rebuild-check-mEGJyN
+PASS api.js syntax :: exit=0 
+PASS module syntax :: files=69 bad=
+PASS agent-tools-check :: exit=0 PASS agent=customer-experience-specialist bound=24 stream=15 probe=get_working_dir actor=customer-experience-specialist | PASS agent=ecommerce-operations-analyst bound=24 stream=24 probe=get_working_dir actor=ecommerce-operations-analyst | RESULT: AGENT TOOLS PASS agents=9 catalog=101 bound=24 probes=9
+PASS all-transports-check :: exit=0 RESULT: ALL TRANSPORTS PASS count=13 model=mission | (node:178689) [DEP0123] DeprecationWarning: Setting the TLS ServerName to an IP address is not permitted by RFC 6066. This will be ignored in a future version. | (Use `node --trace-deprecation ...` to show where the warning was created)
+PASS api-module-wiring-check :: exit=0 PASS bridge discovery contract still passes | PASS audit report records a wiring decision for all eight modules | RESULT: API_MODULE_WIRING_OK pass=11 fail=0
+PASS bootstrap-check :: exit=0 BOOTSTRAP_OK
+PASS bootstrap-e2e-check :: exit=0 BOOTSTRAP_E2E_OK
+PASS chat-upload-check :: exit=0 CHAT_UPLOAD_OK
+PASS client-e2e-check :: exit=0 CLIENT_E2E_OK pass=21 fail=0
+PASS config-trace-check :: exit=0 CONFIG_TRACE_OK
+PASS cwd-db-repair-check :: exit=0 PASS repair-ids restored=4 | PASS repair-api count=9 | RESULT: CWD DB PASS cwd=/tmp agents=9 repaired=4 db=/home/sahon/zombiebd/.verify/cwd-db-179645/data/models.db
+PASS dedupe-check :: exit=0 PASS final-guard-check still reports FINAL_GUARD_OK  [exit=0] | PASS live gateway /health answers 200  [status=200] | RESULT: DEDUPE_OK pass=11 fail=0
+PASS docs-current-check :: exit=0 DOCS_CURRENT_OK
+PASS edge-proxy-check :: exit=0 EDGE_PROXY_OK
+PASS env-loader-check :: exit=0 ENV_LOADER_OK
+PASS final-guard-check :: exit=0 PASS the MP3 is recent (30 days)  [2026-11-21T11:51:53.257Z] | PASS node tests/hardening-check.js still reports HARDENING_OK  [exit=0] | RESULT: FINAL_GUARD_OK pass=16 fail=0
+PASS fs-scope-decision-check :: exit=0 FS_SCOPE_DECISION_OK pass=6 fail=0
+PASS hardening-check :: exit=0 PASS edge /api/admin answers 404  [status=404] | PASS edge /health answers 200  [status=200] | RESULT: HARDENING_OK pass=29 fail=0
+PASS live-server-independence-check :: exit=0 LIVE_SERVER_INDEPENDENT_OK dist=1 live=1 zombie_only=1 id=12 restore=1
+PASS mcp-api-integration-check :: exit=0 MCP_API_INTEGRATION_OK
+PASS mcp-architecture-check :: exit=0 MCP_STDIO_ADMIN_OK
+PASS mission-privilege-check :: exit=0 MISSION_PRIVILEGE_OK pass=6 fail=0
+PASS normalizer-single-path-check :: exit=0 NORMALIZER_SINGLE_PATH_OK pass=8 fail=0
+PASS package-install-check :: exit=0 PACKAGE_INSTALL_OK
+PASS portability-check :: exit=0 PORTABILITY_OK
+PASS provider-health-honesty-check :: exit=0 PROVIDER_HEALTH_OK
+PASS quality-eval-check :: exit=0 QUALITY_EVAL_OK
+PASS r2t-default-off-check :: exit=0 R2T_DEFAULT_OFF_OK pass=4 fail=0
+PASS r2t-trace-check :: exit=0 R2T_TRACE_OK
+PASS real-usage-dir-check :: exit=0 REAL_USAGE_DIR_OK
+PASS schema-compile-check :: exit=0 PASS .env still resolves AGENT_MODEL — got "gemini-lite" | SKIP live provider response (SCHEMA_CHECK_LIVE is not 1) | RESULT: SCHEMA COMPILE PASS defs=10 accept=4 reject=13 compile_reject=4 env=.env,.env.example live=skipped
+PASS session-memory-sqlite-check :: exit=0 MEMORY_SQLITE_OK
+PASS skill-mcp-check :: exit=0 SKILL_MCP_OK local=1 active=256 tools=2 search=cdp-operations card=cdp-operations readonly=1
+PASS start-lifecycle-check :: exit=0 START_LIFECYCLE_OK
+PASS surface-policy-check :: exit=0 SURFACE_POLICY_OK
+PASS system-identity-check :: exit=0 SYSTEM_IDENTITY_OK
+PASS tool-budget-check :: exit=0 TOOL_BUDGET_OK
+PASS uds-fallback-check :: exit=0 PASS foreign primary socket untouched | ──────────────────────────────────────────────────────────── | RESULT: 9 passed, 0 failed
+PASS uds-single-path-check :: exit=0 UDS_SINGLE_PATH_OK pass=5 fail=0
+PASS vhost-truth-check :: exit=0 VHOST_TRUTH_OK pass=27 fail=0 skip=0
+PASS workspace-layout-check :: exit=0 WORKSPACE_LAYOUT_OK
+PASS source == dist api.js :: source=45582d63e7a3 dist=45582d63e7a3
+PASS live health :: status=200 healthy=true version=3.2.1
+PASS live models/agents :: models=591 agents=9
+---
+RELEASE_READY_OK pass=45 fail=0
+EXIT=0
