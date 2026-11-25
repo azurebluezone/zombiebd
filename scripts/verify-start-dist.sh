@@ -57,7 +57,6 @@ env \
   BRIDGE_PORT="$((PORT + 3))" \
   UDS="$TMP/mcp.sock" \
   UDS_PATH="$TMP/mcp.sock" \
-  OPENAI_UDS_PATH="$TMP/openai.sock" \
   UDS_OPENAI=0 \
   DATA_DIR="$TMP/data" \
   LOG_DIR="$TMP/logs" \

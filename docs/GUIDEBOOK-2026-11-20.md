@@ -48,7 +48,7 @@
 
 1. ক্লায়েন্ট → **Caddy** (`https://localhost`) → **gateway 5050**।
 2. gateway agent + model বেছে নেয় → **provider adapter** (openai / anthropic / vscode / opencode / bridge)।
-3. provider-এর উত্তর → **normalizer** (`api.js:6310`) → এক OpenAI-compatible shape।
+3. provider-এর উত্তর → **normalizer** (`normalizer/index.js`, api adapter `normalizer/api-response.js`) → এক OpenAI-compatible shape।
 4. agent টুল চাইলে gateway **MCP ক্যাটালগ** থেকে টুল বাছাই করে; কিন্তু বাছাইয়ের আগেই ক্যাটালগ **25**-এ কাটা হয় (`api.js:4922`)।
 5. টুল কল MCP সার্ভারে যায় (যেমন `tts__tts_speak` → port `3112`) → ফল ফেরত।
 6. উত্তর stream হয়ে ক্লায়েন্টে; খরচ/লেটেন্সি `request_log`-এ।
@@ -97,7 +97,7 @@
 
 ### 2.5 ওয়ার্কিং ডিরেক্টরির বাইরে কোনগুলো কাজ করে
 
-`AGENT_FS_SCOPE=unrestricted` (`.env:33`; কোড `api.js:10991-10999`) — অর্থাৎ sandbox ডিফল্টেই বন্ধ।
+এই machine-এর `.env`-এ `AGENT_FS_SCOPE=unrestricted` (explicit operator choice); code default এখন `session` (`lib/fs-scope.js`), তাই নতুন install sandbox-সহ শুরু হয়।`
 
 | টুল | সীমা | বাইরে? | প্রমাণ |
 |---|---|---|---|
@@ -155,7 +155,7 @@ exit: 0 healthy/repaired, 1 broken, 2 usage
 | 6 | health অতিরিক্ত আশাবাদী | `api.js:12941`, `:12955`, `:12996-13005` |
 | 7 | `last_error` COALESCE-এ মুছে যায় না | `api.js:13227-13234` |
 | 8 | body/frame/history default hardcoded | `api.js:235`, `provider/transport.js:34`, `api.js:251` |
-| 9 | normalizer + R2T builtin fallback অস্পষ্ট | `api.js:6310`, `:19574-19581` |
+| 9 | normalizer + R2T builtin fallback | single path `normalizer/index.js`; R2T fallback trace `R2T_TRACE_OK` |
 
 ### P2 — portability / hygiene
 

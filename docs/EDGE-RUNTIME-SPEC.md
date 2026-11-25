@@ -302,8 +302,9 @@ Windows: `scripts/install.ps1` exists; it is **NOT_TESTED** on this Linux host.
   serves both newline-delimited MCP JSON-RPC and OpenAI HTTP, demultiplexed by the
   first bytes. Directory `0700`; socket `0660`; only the bound path is removed on
   shutdown, and only when its inode still belongs to this process.
-- `UDS_OPENAI=0` keeps the socket MCP-only. `UDS_PATH` / `OPENAI_UDS_PATH` remain
-  legacy test inputs and are not part of the production contract.
+- `UDS_OPENAI=0` keeps the socket MCP-only. `UDS_PATH` (and numbered
+  `UDS_PATH_N`) are canonical aliases. `OPENAI_UDS_PATH` and the second
+  OpenAI socket are removed; one gateway owns both protocols.
 - Windows fallback is TCP on `UDS_PORT` (`localhost` only).
 - DB path comes from `DB_SQLITE_PATH`, default `data/models.db`.
 - First boot creates all tables and seeds agents from `agent/*.js`.

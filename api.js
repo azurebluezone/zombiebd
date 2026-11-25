@@ -123,6 +123,9 @@ const { loadAgentFiles, getAgentById, listAgentIds, resolveAgentModel } = requir
 const systemInfo = require("./lib/system-info.js");
 const { verifySessionWithDomain } = require("./lib/session-verify.js");
 const { classifyDbError } = require("./lib/db-guard.js");
+const adminAuth = require("./lib/admin-auth.js");
+const fsScope = require("./lib/fs-scope.js");
+const missionPrivilege = require("./lib/mission-privilege.js");
 const {
   loadProcessEnv,
   SERVICE_PORTS,
@@ -356,9 +359,8 @@ if (UDS_PATHS.length === 0) {
   UDS_PATHS.push(path.resolve(PROJECT_ROOT, DEFAULTS.UDS));
 }
 const UDS_PATH = UDS_PATHS[0];
-let udsServer = null; // legacy MCP-only UDS server
+let udsServer = null; // legacy MCP-only UDS server (Windows TCP fallback)
 let udsGateway = null; // unified MCP + OpenAI HTTP over one UDS
-let openaiUdsServer = null; // legacy separate OpenAI HTTP over UDS
 
 // Every model served by the gateway is reachable through the single inbound
 // UDS, so model lists carry an explicit transport tag. Clients use it to show
@@ -367,8 +369,7 @@ function udsModelFields() {
   const listening =
     process.platform !== "win32" &&
     ((udsGateway && udsGateway.listening) ||
-      (udsServer && udsServer.listening) ||
-      (openaiUdsServer && openaiUdsServer.server && openaiUdsServer.server.listening));
+      (udsServer && udsServer.listening));
   return listening ? { transport: "uds", transportLabel: "UDS model" } : {};
 }
 // Socket ownership is tracked by inode, not by path. On a restart the old
@@ -378,8 +379,6 @@ function udsModelFields() {
 let udsBoundIno = 0;
 let udsBoundPath = "";
 let udsFallbackUsed = false;
-let openaiUdsPath = "";
-let openaiUdsIno = 0;
 let httpsServer = null; // optional in-process TLS listener
 let grpcServer = null; // HTTP/2 + protobuf transport
 
@@ -4756,21 +4755,12 @@ function isPrivilegedMcpTool(name) {
   return surfacePolicy.isPrivilegedTool(name);
 }
 
-// Constant-time-ish admin token compare (hash both sides first).
+// Constant-time admin token compare (hash both sides, one helper).
 function mcpAdminTokenOk(provided) {
   if (!provided) return false;
   const want = process.env.MCP_ADMIN_TOKEN || process.env.ADMIN_API_KEY || "";
   if (!want) return false; // no token configured → deny, never fail-open
-  try {
-    const a = sha256Hex(String(provided));
-    const b = sha256Hex(want);
-    if (a.length !== b.length) return false;
-    let diff = 0;
-    for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-    return diff === 0;
-  } catch (_) {
-    return false;
-  }
+  return adminAuth.constantTimeEqual(provided, want);
 }
 
 // SECURITY (2026-10-08) — MODULE-SCOPE admin guard.
@@ -4791,18 +4781,26 @@ function mcpAdminTokenOk(provided) {
 function adminAuthorized(req) {
   const want = process.env.ADMIN_TOKEN;
   if (!want) {
-    const openByChoice = process.env.ADMIN_ALLOW_UNAUTHENTICATED === "true";
+    const openByChoice = adminAuth.allowUnauthenticated(process.env);
+    if (process.env.ADMIN_ALLOW_UNAUTHENTICATED === "true" && !openByChoice) {
+      log("WARN", "ADMIN_AUTH_FLAG_IGNORED", {
+        reason:
+          "ADMIN_ALLOW_UNAUTHENTICATED is ignored in production; admin routes stay closed.",
+      });
+    }
     if (!openByChoice) {
       log("WARN", "ADMIN_AUTH_FAILCLOSED", {
         reason:
-          "ADMIN_TOKEN unset — denying. Set ADMIN_ALLOW_UNAUTHENTICATED=true to opt out.",
+          "ADMIN_TOKEN unset — denying. Development opt-out: ADMIN_ALLOW_UNAUTHENTICATED=true (never in production).",
       });
     }
     return openByChoice;
   }
   const h = (req && req.headers) || {};
   const got = h["x-admin-token"] || h["x-api-key"] || "";
-  if (got && got === want) return true;
+  // Constant-time from the FIRST compare. The old string equality leaked a
+  // timing signal before the hashed compare was ever reached.
+  if (got && adminAuth.constantTimeEqual(got, want)) return true;
   // Accept the MCP admin token too, so one credential works everywhere.
   return mcpAdminTokenOk(
     String(h["authorization"] || "").startsWith("Bearer ")
@@ -5794,279 +5792,36 @@ function getLockStats() {
 // 
 //  SESSION & MEMORY SYSTEM (Optimized)
 // 
-const SESSIONS_FILE = path.join(DATA_DIR, "sessions.json");
 const CLIENTS_FILE = path.join(DATA_DIR, "clients.json");
-const activeSessions = new Map(); // in-memory cache (id → session)
-const clientSessions = new Map(); // client_id → session_id (for same-client reuse)
-const sessionDirs = new Map(); // sessionId → workingDir (per-session workspace)
 const memoryBuffer = new Map(); // filePath → entry[] (batch write buffer)
-const sessionBuffer = new Map(); // sessionId → data (batch update buffer)
-
-function readSessions() {
-  if (!fs.existsSync(SESSIONS_FILE)) return [];
-  try {
-    return JSON.parse(fs.readFileSync(SESSIONS_FILE, "utf8")) || [];
-  } catch (e) {
-    return [];
-  }
-}
-
-function writeSessions(sessions) {
-  try {
-    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-    // Synchronous + atomic. The old fs.promises.writeFile let two
-    // createSession calls race: B read sessions.json before A's async write
-    // landed and then overwrote the file with only B. Session writes are rare
-    // (create, expire, flush) and the file is small, so sync is the safe trade.
-    const tmp = SESSIONS_FILE + ".tmp-" + process.pid;
-    fs.writeFileSync(tmp, JSON.stringify(sessions, null, 2));
-    fs.renameSync(tmp, SESSIONS_FILE);
-  } catch (e) {
-    log("ERROR", "WRITE_SESSIONS_FAILED", { error: e.message });
-  }
-}
-
-function cleanExpired() {
-  const sessions = readSessions();
-  const now = Date.now();
-  const expired = sessions.filter(
-    (s) => new Date(s.expires_at).getTime() <= now,
-  );
-  const active = sessions.filter((s) => new Date(s.expires_at).getTime() > now);
-
-  if (expired.length > 0) {
-    // Archive expired sessions before removing them
-    for (const s of expired) {
-      // Clean up clientSessions mapping
-      for (const [key, sid] of clientSessions) {
-        if (sid === s.id) {
-          clientSessions.delete(key);
-          break;
-        }
-      }
-      try {
-        archiveSession(
-          mcpWorkingDir,
-          s.id,
-          [],
-          `Session expired after ${s.messages || 0} messages [${s.model || "unknown"}@${s.provider || "unknown"}]`,
-        );
-      } catch (_) {
-        /* single archive fail should not block cleanup */
-      }
-    }
-    writeSessions(active);
-  }
-  // Sync in-memory cache
-  for (const s of active) activeSessions.set(s.id, s);
-
-  try {
-    const dataDir = DATA_DIR;
-    if (fs.existsSync(dataDir)) {
-      const entries = fs.readdirSync(dataDir);
-      const uuidPattern =
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-      const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
-      for (const entry of entries) {
-        if (uuidPattern.test(entry)) {
-          const entryPath = path.join(dataDir, entry);
-          try {
-            const stat = fs.statSync(entryPath);
-            if (
-              stat.isDirectory() &&
-              Date.now() - stat.mtimeMs > SEVEN_DAYS_MS
-            ) {
-              fs.rmSync(entryPath, { recursive: true, force: true });
-              log("INFO", "DATA_CLEANED", { path: entryPath });
-            }
-          } catch (_) {
-            /* individual folder cleanup failure should not block */
-          }
-        }
-      }
-    }
-  } catch (_) {
-    /* data cleanup is best-effort */
-  }
-
-  return active;
-}
-
-function createSession(clientId, editor, ip, customId, extraMeta) {
-  // ── Session Reuse: if same client has an active session, return it ──
-  if (!customId) {
-    const clientKey = (clientId || "anonymous") + ":" + (editor || "unknown");
-    const existingId = clientSessions.get(clientKey);
-    if (existingId) {
-      const existing = getSession(existingId);
-      if (existing) {
-        // Touch: extend expiry on reuse
-        existing.expires_at = new Date(
-          Date.now() + SESSION_TTL_MS,
-        ).toISOString();
-        if (editor && editor !== "unknown") existing.editor = editor;
-        // Merge any new metadata
-        if (extraMeta) {
-          existing.metadata = { ...(existing.metadata || {}), ...extraMeta };
-        }
-        if (existing.metadata && !existing.metadata.system_identity) {
-          existing.metadata.system_identity = identityMetadata(systemIdentityCore());
-        }
-        activeSessions.set(existing.id, existing);
-        log("INFO", "SESSION_REUSE", {
-          id: existing.id.slice(0, 8),
-          client_id: clientKey,
-          client_id_source: (extraMeta && extraMeta.client_id_source) || "unknown",
-          messages: existing.messages,
-        });
-        return existing;
-      }
-      // Stale entry — remove and fall through to create
-      clientSessions.delete(clientKey);
-    }
-  }
-
-  const sessions = cleanExpired();
-  const id = customId || crypto.randomUUID();
-  const now = Date.now();
-  const session = {
-    id,
-    conversation_id: id, // each session has its own conversation_id
-    client_id: clientId || "anonymous",
-    editor: editor || "unknown",
-    ip: ip || "",
-    model: "",
-    provider: "",
-    messages: 0,
-    status: "active",
-    created_at: new Date(now).toISOString(),
-    expires_at: new Date(now + SESSION_TTL_MS).toISOString(),
-    // ── Extended metadata from headers ──
-    metadata: {
-      agent_id: extraMeta?.agent_id || "",
-      user_agent: extraMeta?.user_agent || "",
-      device_info: extraMeta?.device_info || "",
-      editor_version: extraMeta?.editor_version || "",
-      os_platform: extraMeta?.os_platform || "",
-      client_version: extraMeta?.client_version || "",
-      session_source: extraMeta?.session_source || "mcp",
-      // The user's chosen workspace. Persisted so a restart can rebuild the
-      // in-memory sessionDirs map instead of silently falling back to the
-      // server checkout.
-      working_dir: extraMeta?.working_dir || "",
-      // Every session carries the immutable system identity, so an archived
-      // session can never lose track of which system produced it.
-      system_identity: identityMetadata(systemIdentityCore()),
-    },
-  };
-  sessions.push(session);
-  activeSessions.set(id, session);
-  writeSessions(sessions);
-  // Register client → session mapping for reuse
-  if (!customId) {
-    const clientKey = (clientId || "anonymous") + ":" + (editor || "unknown");
-    clientSessions.set(clientKey, id);
-  }
-  log("INFO", "SESSION_CREATE", {
-    id: id.slice(0, 8),
-    editor,
-    client_id_source: (extraMeta && extraMeta.client_id_source) || "unknown",
-  });
-  // Lock log: session created
-  writeLockLog({
-    lock_id: "sess-" + id.slice(0, 12),
-    agent: "system",
-    operation: "session_create",
-    status: "success",
-    duration_ms: Date.now() - now,
-    details: { client_id: clientId, editor },
-    session_id: id,
-  });
-  return session;
-}
-
-/**
- * Create or reuse a session and bind its working directory.
- *
- * `sessionDirs` is the in-memory source for the agent tool loop; the same value
- * is persisted in `session.metadata.working_dir` so `/api/sessions` and a
- * restart can see it. This is the one place that turns "the user picked a
- * folder" into "a real session owns that folder".
- */
-function ensureSessionForDir(opts) {
-  const o = opts || {};
-  const dir = o.workingDir ? path.resolve(String(o.workingDir)) : "";
-  const wanted = o.sessionId ? String(o.sessionId).trim() : "";
-  let session = wanted ? getSession(wanted) : null;
-
-  if (session) {
-    if (dir) {
-      session.metadata = { ...(session.metadata || {}), working_dir: dir };
-      session.expires_at = new Date(Date.now() + SESSION_TTL_MS).toISOString();
-      activeSessions.set(session.id, session);
-      sessionDirs.set(session.id, dir);
-      updateSession(session.id, {
-        metadata: session.metadata,
-        expires_at: session.expires_at,
-      });
-      flushAllSessions();
-    }
-    return session;
-  }
-
-  session = createSession(
-    o.clientId || "mcp",
-    o.editor || "mcp",
-    o.ip || "",
-    wanted || crypto.randomUUID(),
-    {
-      session_source: o.source || "mcp",
-      working_dir: dir,
-      agent_id: o.agentId || "",
-    },
-  );
-  if (dir) sessionDirs.set(session.id, dir);
-  return session;
-}
-
-function getSession(id) {
-  // Check in-memory first
-  if (activeSessions.has(id)) {
-    const s = activeSessions.get(id);
-    if (new Date(s.expires_at).getTime() > Date.now() && s.status === "active")
-      return s;
-    activeSessions.delete(id);
-  }
-  const sessions = cleanExpired();
-  const session = sessions.find((s) => s.id === id && s.status === "active");
-  if (session) activeSessions.set(id, session);
-  return session || null;
-}
-
-function updateSession(id, data) {
-  // Buffer session updates to prevent read-modify-write race conditions
-  // Same pattern as memoryBuffer — batch flush for thread safety
-  const existing = sessionBuffer.get(id) || {};
-  const merged = { ...existing, ...data };
-  sessionBuffer.set(id, merged);
-}
-
-function flushAllSessions() {
-  for (const [id, data] of sessionBuffer) {
-    if (Object.keys(data).length === 0) continue;
-    try {
-      const sessions = readSessions();
-      const idx = sessions.findIndex((s) => s.id === id);
-      if (idx === -1) continue;
-      Object.assign(sessions[idx], data);
-      activeSessions.set(id, sessions[idx]);
-      writeSessions(sessions);
-    } catch (e) {
-      log("ERROR", "FLUSH_SESSION_FAILED", { id, error: e.message });
-    }
-  }
-  sessionBuffer.clear();
-}
+const sessionRegistry = require("./lib/session-registry.js")({
+  dataDir: DATA_DIR,
+  sessionTtlMs: SESSION_TTL_MS,
+  log,
+  crypto,
+  fs,
+  path,
+  archiveSession,
+  identityMetadata,
+  systemIdentityCore,
+  writeLockLog,
+  workingDir: () => mcpWorkingDir,
+});
+const {
+  SESSIONS_FILE,
+  activeSessions,
+  clientSessions,
+  sessionDirs,
+  sessionBuffer,
+  readSessions,
+  writeSessions,
+  cleanExpired,
+  createSession,
+  ensureSessionForDir,
+  getSession,
+  updateSession,
+  flushAllSessions,
+} = sessionRegistry;
 
 // ─── CLIENT LIST PERSISTENCE ─────────────────────────────
 // v3.2.1 — buffered: in-memory cache + ~1s debounced flush + MAX cap.
@@ -6354,309 +6109,9 @@ function maskModelName(realModelName) {
 //   Responses [2][5] · llama.cpp text-fallback [6] · Anthropic [7] ·
 //   Bedrock [8]  (doc links inside tool.js)
 // Load failure → no-op adapter: chat keeps working, tool parsing degrades.
-let TOOLADAPTER;
-try {
-  TOOLADAPTER = require("./external tools/tool.js");
-} catch (e) {
-  TOOLADAPTER = {
-    parseToolCalls: () => [],
-    normalizeChatToolCalls: (t) => t,
-    toProviderTools: (t) => t,
-    toProviderMessages: (m) => m,
-    extractTextToolCalls: () => [],
-    extractText: () => "",
-    detectApi: () => "unknown",
-  };
-  console.warn("[TOOL_ADAPTER_LOAD_FAIL] " + e.message);
-}
+const { createNormalizeResponse } = require("./normalizer/api-response.js");
 
-function normalizeResponse(raw, modelHint) {
-  // Empty/null input -> error response
-  if (!raw) {
-    return {
-      id: `chatcmpl-${Date.now()}`,
-      object: "chat.completion",
-      created: Math.floor(Date.now() / 1000),
-      model: maskModelName(modelHint || "unknown"),
-      provider: "ZombieCoder",
-      choices: [
-        {
-          index: 0,
-          message: { role: "assistant", content: "" },
-          finish_reason: "error",
-        },
-      ],
-      usage: {},
-      normalized: true,
-      error: true,
-    };
-  }
-
-  // UTF-8 encoding fix: handle raw if wrapped in Buffer or Object
-  // Ensure string conversion to prevent Bengali/emoji character breakage
-  if (raw.type === "Buffer") {
-    raw = Buffer.from(raw.data || raw).toString("utf8");
-    if (typeof raw === "string") {
-      try {
-        raw = JSON.parse(raw);
-      } catch (e) { }
-    }
-  }
-
-  const id = raw.id || `chatcmpl-${Date.now()}`;
-  const created = raw.created || Math.floor(Date.now() / 1000);
-  const model = raw.model || modelHint || "unknown";
-  const choice = raw.choices && raw.choices[0] ? raw.choices[0] : null;
-
-  if (!choice) {
-    // ─── UNIVERSAL TOOL-CALL ADAPTER PASS ──────────────────
-    // Responses output[], Gemini functionCall parts, Anthropic tool_use,
-    // Bedrock toolUse, Ollama native, Gemini-interactions steps, and
-    // llama.cpp text-embedded calls — ALL → OpenAI tool_calls, HERE,
-    // before any dialect branch. executeMcpTool loop (callModelWithTools)
-    // then works for every provider unchanged.
-    const autoToolCalls = TOOLADAPTER.parseToolCalls(raw);
-    if (autoToolCalls.length) {
-      return {
-        id,
-        object: "chat.completion",
-        created,
-        model: maskModelName(model),
-        provider: "ZombieCoder",
-        choices: [
-          {
-            index: 0,
-            message: {
-              role: "assistant",
-              content: TOOLADAPTER.extractText(raw) || "",
-              tool_calls: autoToolCalls,
-            },
-            finish_reason: "tool_calls",
-          },
-        ],
-        usage: raw.usage || {},
-        normalized: true,
-        originalFormat: TOOLADAPTER.detectApi(raw),
-        toolCallsFrom: "universal-adapter",
-      };
-    }
-
-    // ─── Google Gemini format ─────────────────────────────
-    // Google Gemini format — only our provider formats, no external ones
-    if (raw.candidates && raw.candidates[0]) {
-      const c = raw.candidates[0];
-      let content = "";
-      if (c.content && c.content.parts) {
-        content = c.content.parts
-          .map((p) => (typeof p.text === "string" ? p.text : ""))
-          .join("");
-      }
-      const role = (c.content && c.content.role) || "assistant";
-      const finish = (c.finishReason && c.finishReason.toLowerCase()) || "stop";
-
-      return {
-        id,
-        object: "chat.completion",
-        created,
-        model,
-        choices: [
-          { index: 0, message: { role, content }, finish_reason: finish },
-        ],
-        usage: raw.usage || {},
-        normalized: true,
-        originalProvider: "gemini",
-        provider: "ZombieCoder",
-      };
-    }
-
-    // ─── Anthropic format (Claude Messages API) ───────────
-    if (raw.content && Array.isArray(raw.content) && raw.stop_reason) {
-      const content = raw.content
-        .filter((b) => b && b.type === "text" && typeof b.text === "string")
-        .map((b) => b.text)
-        .join("");
-      const stop =
-        typeof raw.stop_reason === "string"
-          ? raw.stop_reason.toLowerCase()
-          : "end_turn";
-      return {
-        id: raw.id || id,
-        object: "chat.completion",
-        created,
-        model: raw.model || model,
-        choices: [
-          {
-            index: 0,
-            message: {
-              role: (raw.role || "assistant"),
-              content,
-              // Preserve anthropic tool_use blocks so agent loops can act
-              tool_calls:
-                (raw.content || []).filter((b) => b && b.type === "tool_use")
-                  .length > 0
-                  ? (raw.content || []).filter((b) => b && b.type === "tool_use")
-                  : undefined,
-            },
-            finish_reason: stop === "end_turn" ? "stop" : stop,
-          },
-        ],
-        usage: raw.usage || {},
-        normalized: true,
-        originalProvider: "anthropic",
-        provider: "ZombieCoder",
-      };
-    }
-
-    // ─── AWS Bedrock Converse format ──────────────────────
-    if (raw.output && raw.output.message && raw.output.message.content) {
-      const blocks = raw.output.message.content;
-      const content = Array.isArray(blocks)
-        ? blocks
-            .filter((b) => b && (b.text !== undefined || typeof b === "string"))
-            .map((b) => (typeof b === "string" ? b : b.text || ""))
-            .join("")
-        : "";
-      const stop =
-        typeof raw.stopReason === "string" ? raw.stopReason.toLowerCase() : "end_turn";
-      return {
-        id: raw.id || id,
-        object: "chat.completion",
-        created,
-        model: raw.model || model,
-        choices: [
-          {
-            index: 0,
-            message: { role: "assistant", content },
-            finish_reason: stop === "end_turn" ? "stop" : stop,
-          },
-        ],
-        usage: raw.usage || {},
-        normalized: true,
-        originalProvider: "aws-bedrock-converse",
-        provider: "ZombieCoder",
-      };
-    }
-
-    // ─── llama.cpp server format ─────────────────────────-
-    // Plain string payload { content: "...", stop: true/false, n_predict }
-    if (
-      typeof raw.content === "string" &&
-      raw.content.length > 0 &&
-      (raw.stop !== undefined || raw.n_predict !== undefined)
-    ) {
-      return {
-        id: id + "-llama",
-        object: "chat.completion",
-        created,
-        model: raw.model || model,
-        choices: [
-          {
-            index: 0,
-            message: { role: "assistant", content: raw.content },
-            finish_reason: raw.stop === true ? "stop" : "length",
-          },
-        ],
-        usage: raw.timings
-          ? {
-              prompt_tokens: raw.timings.prompt_n || 0,
-              completion_tokens: raw.timings.predicted_n || 0,
-              total_tokens:
-                (raw.timings.prompt_n || 0) + (raw.timings.predicted_n || 0),
-            }
-          : {},
-        normalized: true,
-        originalProvider: "llama.cpp-server",
-        provider: "ZombieCoder",
-      };
-    }
-
-    // External/unknown format — won't recognize, returns error
-    log("WARN", "HAQ_MAWLA_UNKNOWN_FORMAT", {
-      model: model.slice(0, 30),
-      keys: Object.keys(raw).slice(0, 8),
-      type: typeof raw,
-      hint: modelHint || "none",
-    });
-
-    return {
-      id,
-      object: "chat.completion",
-      created,
-      model,
-      choices: [
-        {
-          index: 0,
-          message: {
-            role: "assistant",
-            content:
-              typeof raw === "string" ? raw : JSON.stringify(raw).slice(0, 500),
-          },
-          finish_reason: "stop",
-        },
-      ],
-      usage: raw.usage || {},
-      normalized: true,
-      originalFormat: "unknown_external",
-      provider: "ZombieCoder",
-    };
-  }
-
-  // ─── OpenAI Standard Format (OpenCode, Groq) ────────────
-  // Standard OpenAI format (from our OpenCode and Groq providers)
-  const message = choice.message || {};
-  let content = message.content || "";
-  const reasoning = message.reasoning_content || message.reasoning || null;
-  const role = message.role || "assistant";
-  const finish = choice.finish_reason || "stop";
-  // CRITICAL: Preserve tool_calls — was being stripped, which killed
-  // the callModelWithTools execution loop!
-  // + ADAPTER: ids guaranteed, object arguments (Ollama quirk [4]) →
-  //   JSON strings (OpenAI canonical [1][5]) so JSON.parse never breaks.
-  const toolCalls = TOOLADAPTER.normalizeChatToolCalls(message.tool_calls);
-
-  // Use FULL reasoning as content when content is empty — no truncation
-  // Phase 3 (consensus output) handles filtering of meta/reasoning artifacts
-  let contentWasEmpty = false;
-  if (!content && reasoning) {
-    content =
-      typeof reasoning === "string" ? reasoning : JSON.stringify(reasoning);
-    contentWasEmpty = true;
-  }
-
-  // Null/undefined → empty string
-  if (content === null || content === undefined) content = "";
-  content = String(content);
-
-  return {
-    id,
-    object: "chat.completion",
-    created,
-    model: maskModelName(model),
-    provider: "ZombieCoder",
-    choices: [
-      {
-        index: 0,
-        message: {
-          role,
-          content,
-          ...(reasoning ? { reasoning_content: reasoning } : {}),
-          ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
-        },
-        finish_reason: finish,
-      },
-    ],
-    usage: raw.usage || {},
-    normalized: true,
-    meta: {
-      contentWasEmpty,
-      hasReasoning: !!reasoning,
-      provider: "ZombieCoder",
-      latency: raw._latency || 0,
-      requestedModel: maskModelName(modelHint || null),
-      rawFinish: finish,
-    },
-  };
-}
+const normalizeResponse = createNormalizeResponse({ maskModelName, log });
 
 // 
 //  MODEL CALL (via Competition Router)
@@ -7733,187 +7188,10 @@ async function proxyChatCompletion(
 // ─── Input Pattern Recognition Engine ──────────────────────
 // Intelligent classification of user input type
 // Prevents wasting agents on simple greetings
-function classifyInput(input) {
-  const cleaned = (input || "").trim().toLowerCase();
-  const result = {
-    type: "task", // greeting | simple_qa | project_task | code_change | debug_request | general
-    complexity: "simple", // simple | moderate | complex
-    requires_code: false,
-    requires_testing: false,
-    requires_project_scan: false,
-    requires_web_search: false,
-    recommended_agents: [],
-    reason: "",
-  };
-
-  // ─── GREETING DETECTION ───
-  const greetingPatterns = [
-    /^(hi|hello|hey|\u09b9\u09be\u0987|\u09b9\u09cd\u09af\u09be\u09b2\u09cb|\u0993\u09b9\u09c7|salam|\u09b8\u09be\u09b2\u09be\u09ae)(\s|$|[.!?,])/i,
-    /^(good\s*(morn(ing)?|afternoon|evening|night))/i,
-    /^(kmon\s*aco|ki\s*obostha|\u0995\u09c7\u09ae\u09a8\s*\u0986\u099b[\u09cb]?|\u0995\u09bf\s*\u0985\u09ac\u09b8\u09cd\u09a5\u09be)/i,
-    /^(\u0995\u09c7\s*\u09a4\u09c1\u09ae\u09bf|name\s*$|what\s*is\s*your\s*name|\u09a4\u09cb\u09ae\u09be\u09b0\s*\u09a8\u09be\u09ae\s*\u0995\u09bf)/i,
-    /^(\u09a7\u09a8\u09cd\u09af\u09ac\u09be\u09a6|thanks|thank you|dhonnobad)(\s|$|[.!?,])/i,
-  ];
-
-  for (const p of greetingPatterns) {
-    if (p.test(cleaned)) {
-      result.type = "greeting";
-      result.complexity = "simple";
-      result.recommended_agents = ["code-guru"]; // Only 1 agent needed
-      result.reason = "greeting_detected";
-      return result;
-    }
-  }
-
-  // ─── SIMPLE Q&A DETECTION ───
-  const simpleQaPatterns = [
-    /^\d+\s*[+\-*\/]\s*\d+/,
-    /^(yes|no|ok|\u09a0\u09bf\u0995\s*\u0986\u099b\u09c7|\u09b9\u09cd\u09af\u09be\u0981|\u09a8\u09be)\s*$/i,
-    /^(what\s*(is|are)\s+\w+\s*\w*\.?\s*\?*$)/i,
-    /^(\u0995\u09c7\s+|\u0995\u09bf\s+|\u0995\u09cb\u09a5\u09be\u09af\u09bc\s+|\u0995\u0996\u09a8\s+|\u0995\u09c7\u09a8\s+)/i,
-    /^(how\s+(many|much|far|long|old)\s+\w+\s*\?*$)/i,
-    /^(\u09ac\u09be\u0982\u09b2\u09be\u09a6\u09c7\u09b6\u09c7\u09b0\s+(\u09b0\u09be\u099c\u09a7\u09be\u09a8\u09c0|\u09ae\u09c1\u09a6\u09cd\u09b0\u09be|\u09a7\u09b0\u09cd\u09ae|\u09ad\u09be\u09b7\u09be))/i,
-    /capital\s+of\s+\w+/i,
-  ];
-
-  for (const p of simpleQaPatterns) {
-    if (p.test(cleaned)) {
-      result.type = "simple_qa";
-      result.complexity = "simple";
-      result.recommended_agents = ["code-guru", "qa-tyrant"]; // 2 agents enough
-      result.reason = "simple_qa_detected";
-      return result;
-    }
-  }
-
-  // ─── WEB SEARCH NEED DETECTION ───
-  // Detect queries that need real-time data (news, current events, factual lookups)
-  const webSearchPatterns = [
-    // Current events / news
-    /latest|recent|today|this week|this month|this year|\u09b8\u09b0\u09cd\u09ac\u09b6\u09c7\u09b7|\u09b8\u09be\u09ae\u09cd\u09aa\u09cd\u09b0\u09a4\u09bf\u0995|\u0986\u099c|\u098f\u0987 \u09b8\u09aa\u09cd\u09a4\u09be\u09b9|\u098f\u0987 \u09ae\u09be\u09b8|\u098f\u0987 \u09ac\u099b\u09b0/i,
-    /news|\u0996\u09ac\u09b0|\u09b8\u0982\u09ac\u09be\u09a6|heading|headlines/i,
-    /what('s| is) (happening|going on|new)/i,
-    // Factual lookups that may change
-    /price|\u09a6\u09be\u09ae|cost|\u0996\u09b0\u099a|rate|exchange rate|\u09ac\u09bf\u09a8\u09bf\u09ae\u09af\u09bc \u09b9\u09be\u09b0/i,
-    /population|\u099c\u09a8\u09b8\u0982\u0996\u09cd\u09af\u09be|GDP|economy|\u0985\u09b0\u09cd\u09a5\u09a8\u09c0\u09a4\u09bf/i,
-    /weather|\u0986\u09ac\u09b9\u09be\u0993\u09af\u09bc\u09be|temperature|\u09a4\u09be\u09aa\u09ae\u09be\u09a4\u09cd\u09b0\u09be/i,
-    // Technology updates
-    /release|\u0986\u09aa\u09a1\u09c7\u099f|update.*version|new.*feature|changelog/i,
-    /which\s+(company|platform|service)\s+( owns | runs | made)/i,
-    // Questions about specific entities that may change
-    /who\s+(is|was|are|were)\s+the\s+(current|new|president|ceo|pm|minister)/i,
-    /\u0995\u09c7\s+(\u09b9\u09b2[\u09cb]?|\u0986\u099b\u09c7\u09a8?|\u099b\u09bf\u09b2\u09c7\u09a8?)\s+(\u09b0\u09be\u09b7\u09cd\u099f\u09cd\u09b0\u09aa\u09a4\u09bf|\u09aa\u09cd\u09b0\u09a7\u09be\u09a8\u09ae\u09a8\u09cd\u09a4\u09cd\u09b0\u09c0|\u09ae\u09a8\u09cd\u09a4\u09cd\u09b0\u09c0)/i,
-    // Comparison that needs current data
-    /best|top|\u09b8\u09c7\u09b0\u09be|\u09b6\u09c0\u09b0\u09cd\u09b7|compared?\s+to|\u09a4\u09c1\u09b2\u09a8\u09be/i,
-  ];
-
-  for (const p of webSearchPatterns) {
-    if (p.test(cleaned)) {
-      result.requires_web_search = true;
-      break;
-    }
-  }
-
-  // ─── PROJECT TASK DETECTION ───
-  const projectPatterns = [
-    /project|\u09aa\u09cd\u09b0\u099c\u09c7\u0995\u09cd\u099f|\u09aa\u09cd\u09b0\u0995\u09b2\u09cd\u09aa|\u0995\u09cb\u09a1|code|\u09ab\u09be\u0987\u09b2|file|directory|\u09a1\u09bf\u09b0\u09c7\u0995\u09cd\u099f\u09b0\u09bf/i,
-    /analyze|analyse|\u09ac\u09bf\u09b6\u09cd\u09b2\u09c7\u09b7\u09a3|analysis/i,
-    /technology|language|framework|tech\s+stack/i,
-    /structure|architecture|\u0986\u09b0\u09cd\u0995\u09bf\u099f\u09c7\u0995\u099a\u09be\u09b0/i,
-    /feature|feature|\u09ac\u09c8\u09b6\u09bf\u09b7\u09cd\u099f\u09cd\u09af/i,
-  ];
-
-  let projectScore = 0;
-  for (const p of projectPatterns) {
-    if (p.test(cleaned)) projectScore++;
-  }
-
-  if (
-    projectScore >= 2 ||
-    /^(analyze|\u09ac\u09bf\u09b6\u09cd\u09b2\u09c7\u09b7\u09a3|explain.*project|project.*(about|what))/.test(cleaned)
-  ) {
-    result.type = "project_task";
-    result.complexity = "moderate";
-    result.requires_code = true;
-    result.requires_project_scan = true;
-    result.recommended_agents = ["code-guru", "doc-king", "qa-tyrant"];
-    result.reason = "project_task_detected";
-    return result;
-  }
-
-  // ─── CODE CHANGE / DEBUG DETECTION ───
-  const codeChangePatterns = [
-    /fix|\u09a0\u09bf\u0995|solve|\u09b8\u09ae\u09be\u09a7\u09be\u09a8|bug|\u09ac\u09be\u0997|error|\u098f\u09b0\u09b0|\u09ad\u09c1\u09b2/i,
-    /change|\u09aa\u09b0\u09bf\u09ac\u09b0\u09cd\u09a4\u09a8|add|\u09af\u09cb\u0997|remove|\u09ae\u09c1\u099b\u09c7|update|\u0986\u09aa\u09a1\u09c7\u099f/i,
-    /implement|\u0987\u09ae\u09aa\u09cd\u09b2\u09bf\u09ae\u09c7\u09a8\u09cd\u099f|create|\u09a4\u09c8\u09b0\u09bf|build|\u09ac\u09be\u09a8\u09be\u0993/i,
-    /function|\u09ab\u09be\u0982\u09b6\u09a8|method|\u09ae\u09c7\u09a5\u09a1|class|\u0995\u09cd\u09b2\u09be\u09b8|component/i,
-    /api|endpoint|route|router/i,
-    /database|db|\u09a1\u09be\u099f\u09be\u09ac\u09c7\u09b8|\u09a1\u09bf\u09ac\u09bf/i,
-    /crash|crashes|hangs|freeze|\u09b2\u09cd\u09af\u09be\u0997/i,
-    /performance|\u09aa\u09be\u09b0\u09ab\u09b0\u09ae\u09cd\u09af\u09be\u09a8\u09cd\u09b8|speed|\u0997\u09a4\u09bf|slow|\u09a7\u09c0\u09b0/i,
-    /security|\u09a8\u09bf\u09b0\u09be\u09aa\u09a4\u09cd\u09a4\u09be|secure|\u09b8\u09c1\u09b0\u0995\u09cd\u09b7\u09bf\u09a4|vulnerability/i,
-    /test|\u099f\u09c7\u09b8\u09cd\u099f|unit|integration|\u09aa\u09b0\u09c0\u0995\u09cd\u09b7\u09be/i,
-  ];
-
-  let codeScore = 0;
-  for (const p of codeChangePatterns) {
-    if (p.test(cleaned)) codeScore++;
-  }
-
-  if (
-    codeScore >= 2 ||
-    cleaned.includes("write code") ||
-    cleaned.includes("code \u09b2\u09bf\u0996")
-  ) {
-    result.type = "code_change";
-    result.complexity = codeScore >= 4 ? "complex" : "moderate";
-    result.requires_code = true;
-    result.requires_testing = true;
-    result.requires_project_scan = true;
-    result.recommended_agents = selectRelevantAgents(cleaned);
-    // Ensure qa-tyrant is included for code changes (testing required)
-    if (!result.recommended_agents.includes("qa-tyrant")) {
-      result.recommended_agents.push("qa-tyrant");
-    }
-    result.reason = "code_change_detected";
-    return result;
-  }
-
-  // ─── DEBUG DETECTION ───
-  if (
-    cleaned.includes("bug") ||
-    cleaned.includes("error") ||
-    cleaned.includes("\u09ad\u09c1\u09b2") ||
-    cleaned.includes("\u0995\u09be\u099c \u0995\u09b0\u099b\u09c7 \u09a8\u09be") ||
-    cleaned.includes("not working") ||
-    cleaned.includes("crash") ||
-    cleaned.includes("broken")
-  ) {
-    result.type = "debug_request";
-    result.complexity = "moderate";
-    result.requires_code = true;
-    result.requires_testing = true;
-    result.requires_project_scan = true;
-    result.recommended_agents = ["bug-hunter", "code-guru", "qa-tyrant"];
-    result.reason = "debug_request_detected";
-    return result;
-  }
-
-  // ─── DEFAULT: MODERATE TASK ───
-  if (cleaned.length > 50) {
-    result.type = "task";
-    result.complexity = "complex";
-    result.recommended_agents = AGENTS.map((a) => a.id); // All agents
-    result.reason = "complex_task_default";
-  } else {
-    result.type = "simple_qa";
-    result.complexity = "simple";
-    result.recommended_agents = ["code-guru", "qa-tyrant"];
-    result.reason = "short_input_default";
-  }
-
-  return result;
-}
+const classifyInput = require("./modules/input-classifier.js")({
+  agents: () => AGENTS,
+  selectRelevantAgents,
+});
 
 // ─── Smart Agent Router ─────────────────────────────────────
 // Selects relevant agents based on the detected task type
@@ -9359,6 +8637,8 @@ async function executeSingleAgent(
   const toolContext = {
     workingDir: getEffectiveDir(sessionId),
     contained: Boolean(sessionId && sessionDirs.has(sessionId)),
+    surface: (stream && stream.surface) || "internal",
+    allowPrivileged: Boolean(stream && stream.allowPrivileged === true),
   };
   const agent = AGENTS.find((a) => a.id === agentId);
   if (!agent) return { success: false, error: "Agent not found: " + agentId };
@@ -10532,38 +9812,20 @@ async function executeRemoteMcpTool(server, tool, args) {
 const expandHome = expandHomePath;
 
 function isPathSafe(targetPath, workingDir) {
-  // AGENT_FS_SCOPE — env toggle for the agent's filesystem sandbox.
-  //   "unrestricted" (DEFAULT): agents may touch ANY file/folder on this OS
-  //     — user's explicit request (root-level access for the agent persona).
-  //   "restricted": legacy sandbox (workspace + ALLOWED_DIRS + $HOME only).
-  const scope = (process.env.AGENT_FS_SCOPE || "unrestricted").toLowerCase();
-  if (scope === "unrestricted" || scope === "root" || scope === "any") {
-    return true;
-  }
-  const resolved = path.resolve(targetPath);
-  // Allow access within the active workspace. A session-bound agent passes its
-  // own dir; a direct MCP call keeps the global mcpWorkingDir.
+  // AGENT_FS_SCOPE:
+  //   session (DEFAULT) — workspace + ALLOWED_DIRS only.
+  //   restricted       — legacy workspace + ALLOWED_DIRS + $HOME.
+  //   unrestricted     — explicit opt-in; no boundary.
+  const scope = fsScope.mode();
+  if (scope === "unrestricted") return true;
   const activeDir = workingDir ? path.resolve(workingDir) : mcpWorkingDir;
-  if (activeDir && (resolved.startsWith(activeDir + path.sep) || resolved === activeDir)) {
-    return true;
-  }
-  // Also check the static ALLOWED_DIRS (server CWD + log/data dirs).
-  for (const allowed of ALLOWED_DIRS) {
-    // Root directory ("/" on POSIX, "C:\" on Windows): everything is under it.
-    if (allowed === path.sep || allowed === path.parse(allowed).root) {
-      return true;
-    }
-    if (resolved.startsWith(allowed + path.sep) || resolved === allowed) {
-      return true;
-    }
-  }
-  // Allow access to any path under the user's home directory.
-  // This enables the agent to read/write project files across all workspaces.
-  const homeDir = path.resolve(userHomeDir());
-  if (resolved.startsWith(homeDir + path.sep) || resolved === homeDir) {
-    return true;
-  }
-  return false;
+  const roots = fsScope.rootsFor({
+    mode: scope,
+    workingDir: activeDir,
+    allowedDirs: ALLOWED_DIRS,
+    homeDir: userHomeDir(),
+  });
+  return fsScope.within(targetPath, roots);
 }
 
 async function executeMcpTool(tool, args, ctx) {
@@ -10584,13 +9846,50 @@ async function executeMcpTool(tool, args, ctx) {
     (ctx && ctx.contained && ctx.workingDir) ||
       (ctxSessionId && sessionDirs.has(ctxSessionId)),
   );
+  const fsMode = fsScope.mode();
   const outsideSession = (target) => {
-    if (!contained) return false;
     const base = path.resolve(workDir);
     const resolved = path.resolve(target);
-    return resolved !== base && !resolved.startsWith(base + path.sep);
+    const escapes = resolved !== base && !resolved.startsWith(base + path.sep);
+    // A bound session stays contained in every mode: "unrestricted" is a
+    // general path policy, not permission to break out of an explicit session.
+    if (contained) return escapes;
+    // Unbound calls keep the legacy behaviour: restricted also allows $HOME,
+    // unrestricted allows everything. session (default) still enforces workDir.
+    if (fsMode === "restricted" || fsMode === "unrestricted") return false;
+    return escapes;
   };
+  const fsRoots =
+    fsMode === "unrestricted"
+      ? null
+      : fsScope.rootsFor({
+          mode: fsMode,
+          workingDir: workDir,
+          allowedDirs: ALLOWED_DIRS,
+          homeDir: userHomeDir(),
+        });
   log("INFO", "MCP_CALL", { tool, args, id });
+
+  // Mission may see the full catalog, but privileged tools still need the
+  // request-level gate to have passed. This catches the auto-injected catalog
+  // too: an empty request tool list is not an authorization.
+  if (
+    ctx &&
+    ctx.surface === "mission" &&
+    isPrivilegedMcpTool(tool) &&
+    ctx.allowPrivileged !== true
+  ) {
+    log("WARN", "MISSION_PRIVILEGE_BLOCKED_AT_EXEC", { tool, id });
+    return {
+      content: [
+        {
+          type: "text",
+          text: `TOOL_DENIED: '${tool}' is privileged and this mission has no admin credential.`,
+        },
+      ],
+      isError: true,
+    };
+  }
 
   // Admin on/off — single choke point for HTTP + UDS + SSE callers.
   if (!toolEnabled(tool)) {
@@ -11426,6 +10725,28 @@ async function executeMcpTool(tool, args, ctx) {
                 ")",
             },
           ],
+        };
+      }
+      if (
+        fsScope.commandEscapes(cmd, {
+          mode: fsMode,
+          roots: fsRoots,
+        })
+      ) {
+        log("WARN", "FS_SCOPE_COMMAND_DENIED", { tool, id, cwd });
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                "Access denied: command changes directory outside the " +
+                fsMode +
+                " filesystem scope (" +
+                workDir +
+                ")",
+            },
+          ],
+          isError: true,
         };
       }
       const timeout = parseInt((args && args.timeout), 10) || parseInt(process.env.EXEC_TIMEOUT || "30000", 10);
@@ -13840,8 +13161,7 @@ const handleHttpRequest = async (req, res) => {
       const udsListening = udsGateway
         ? udsGateway.listening
         : !!(udsServer && udsServer.listening);
-      const openaiOnUds = !!(openaiUdsServer && openaiUdsServer.server &&
-        openaiUdsServer.server.listening) ||
+      const openaiOnUds =
         !!(udsGateway && process.env.OPENAI_UDS !== "0" && process.env.UDS_OPENAI !== "0");
       const cd = "cd " + JSON.stringify(PROJECT_ROOT);
       const mcpHttp = "curl -sS " + publicOrigin + "/mcp " +
@@ -14278,7 +13598,9 @@ const handleHttpRequest = async (req, res) => {
         "Content-Type": "text/html; charset=utf-8",
         "Access-Control-Allow-Origin": getCorsOrigin(req.headers.origin),
         "Cache-Control": "no-store",
-        "Set-Cookie": adminSession.cookie(panelToken),
+        "Set-Cookie": adminSession.cookie(panelToken, {
+          secure: adminAuth.requestIsSecure(req),
+        }),
       });
       res.end(page.html);
       log("INFO", "REQUEST", {
@@ -16983,6 +16305,37 @@ const handleHttpRequest = async (req, res) => {
         bumpUserUsage(mAuth.user);
       }
 
+      // Mission sees the full catalog, so privileged tools run in-process.
+      // They are allowed only with an admin credential or explicit server-side
+      // opt-in; the request body cannot opt in.
+      const missionPrivilegeDecision = missionPrivilege.decide({
+        tools,
+        isPrivileged: isPrivilegedMcpTool,
+        adminAuthorized: adminAuthorized(req),
+        accept: process.env.MISSION_ALLOW_PRIVILEGED === "true",
+      });
+      if (
+        missionPrivilegeDecision.privileged.length > 0 &&
+        !missionPrivilegeDecision.allowed
+      ) {
+        log("WARN", "MISSION_PRIVILEGE_DENIED", {
+          tools: missionPrivilegeDecision.privileged,
+          reason: missionPrivilegeDecision.reason,
+        });
+        jsonResponse(res, 401, {
+          error: "Unauthorized: privileged mission tools require an admin token",
+          code: "MISSION_PRIVILEGE_REQUIRES_ADMIN",
+          tools: missionPrivilegeDecision.privileged,
+        });
+        return;
+      }
+      if (missionPrivilegeDecision.allowed && missionPrivilegeDecision.privileged.length) {
+        log("INFO", "MISSION_PRIVILEGE_ALLOWED", {
+          via: missionPrivilegeDecision.via,
+          tools: missionPrivilegeDecision.privileged,
+        });
+      }
+
       // Track mission usage
       trackAgentUsage("mission");
 
@@ -17148,6 +16501,8 @@ const handleHttpRequest = async (req, res) => {
           tools: tools,
           multiAgent: true,
           antiDote: true,
+          surface: "mission",
+          allowPrivileged: missionPrivilegeDecision.allowed,
         },
       }).finally(() => {
         transport.close();
@@ -18245,6 +17600,26 @@ async function init() {
   });
   log("INFO", "WATCHDOG_STARTED", { interval_ms: WATCHDOG_INTERVAL_MS });
 
+  // Security posture is visible at every boot, not just in a doc.
+  log("INFO", "FS_SCOPE", {
+    mode: fsScope.mode(),
+    note:
+      fsScope.mode() === "unrestricted"
+        ? "explicit opt-in: agents may touch any path this OS user can reach"
+        : "agents are scoped to the workspace + ALLOWED_DIRS",
+  });
+  if (fsScope.mode() === "unrestricted") {
+    log("WARN", "FS_SCOPE_UNRESTRICTED", {
+      reason: "AGENT_FS_SCOPE=unrestricted is an explicit operator choice",
+    });
+  }
+  if (process.env.MISSION_ALLOW_PRIVILEGED === "true") {
+    log("WARN", "MISSION_PRIVILEGE_ACCEPTED", {
+      reason:
+        "MISSION_ALLOW_PRIVILEGED=true lets /api/mission run privileged tools without an admin token",
+    });
+  }
+
   // ── UDS transport: MCP + OpenAI HTTP on one socket ──────────
   // Windows has no Unix domain sockets; it keeps the loopback TCP fallback.
   // On Linux/macOS the UDS list binds in order, so a bad first path falls
@@ -18259,31 +17634,6 @@ async function init() {
       return;
     }
     handleUdsMcpMessage(socket, message);
-  };
-
-  const attachLegacyUds = (socket, socketPath) => {
-    log("INFO", "UDS_CONNECTED", { transport: "uds", path: socketPath });
-    let buffer = "";
-    socket.on("data", (data) => {
-      buffer += data.toString();
-      let idx;
-      while ((idx = buffer.indexOf("\n")) !== -1) {
-        const line = buffer.slice(0, idx).trim();
-        buffer = buffer.slice(idx + 1);
-        if (!line) continue;
-        try {
-          routeUdsMessage(socket, JSON.parse(line));
-        } catch (e) {
-          socket.write(JSON.stringify({
-            jsonrpc: "2.0",
-            id: null,
-            error: { code: -32700, message: "Parse error: " + e.message },
-          }) + "\n");
-        }
-      }
-    });
-    socket.on("end", () => log("INFO", "UDS_DISCONNECTED", { transport: "uds" }));
-    socket.on("error", (err) => log("WARN", "UDS_ERROR", { error: err.message }));
   };
 
   if (isWindows) {
@@ -18316,57 +17666,24 @@ async function init() {
     udsServer.on("error", (err) => {
       log("WARN", "UDS_SERVER_ERROR", { error: err.message, transport: "tcp" });
     });
-  } else if (process.env.OPENAI_UDS_PATH) {
-    // Legacy/test mode: two explicit sockets, no demux. Production uses UDS.
-    udsBoundPath = UDS_PATH;
-    try { fs.mkdirSync(path.dirname(UDS_PATH), { recursive: true }); } catch (_) {}
-    if (fs.existsSync(UDS_PATH)) {
-      try { fs.unlinkSync(UDS_PATH); } catch (_) {}
-    }
-    udsServer = net.createServer((socket) => attachLegacyUds(socket, UDS_PATH));
-    udsServer.listen(UDS_PATH, () => {
-      try {
-        fs.chmodSync(UDS_PATH, 0o660);
-        udsBoundIno = fs.statSync(UDS_PATH).ino;
-      } catch (_) {}
-      log("INFO", "UDS_LISTENING", {
-        transport: "uds", path: UDS_PATH, ino: udsBoundIno, protocols: ["mcp"],
-      });
-    });
-    udsServer.on("error", (err) => {
-      log("WARN", "UDS_SERVER_ERROR", { error: err.message, transport: "uds" });
-    });
-
-    if (process.env.OPENAI_UDS !== "0") {
-      openaiUdsPath = path.resolve(PROJECT_ROOT, process.env.OPENAI_UDS_PATH);
-      const { createUdsOpenAIServer } = require("./transport/uds-openai");
-      openaiUdsServer = createUdsOpenAIServer({
-        socketPath: openaiUdsPath,
-        handler: handleHttpRequest,
-        onListening: (p) => {
-          try { openaiUdsIno = fs.statSync(p).ino; } catch (_) {}
-          log("INFO", "OPENAI_UDS_LISTENING", { path: p, ino: openaiUdsIno });
-        },
-      });
-      openaiUdsServer.listen().catch((err) => {
-        log("WARN", "OPENAI_UDS_ERROR", { error: err.message });
-      });
-    }
   } else {
     const { createUdsGateway } = require("./transport/uds-gateway");
-    const openaiOverUds = process.env.OPENAI_UDS !== "0" && process.env.UDS_OPENAI !== "0";
+    const openaiOverUds =
+      process.env.OPENAI_UDS !== "0" && process.env.UDS_OPENAI !== "0";
     const handler = openaiOverUds
       ? handleHttpRequest
-      : (req, res) => jsonResponse(res, 404, {
-          error: "OpenAI over UDS is disabled (UDS_OPENAI=0)",
-        });
+      : (req, res) =>
+          jsonResponse(res, 404, {
+            error: "OpenAI over UDS is disabled (UDS_OPENAI=0)",
+          });
     udsGateway = createUdsGateway({
       paths: UDS_PATHS,
       handler,
-      onConnection: () => log("INFO", "UDS_CONNECTED", {
-        transport: "uds",
-        path: udsBoundPath || UDS_PATHS[0],
-      }),
+      onConnection: () =>
+        log("INFO", "UDS_CONNECTED", {
+          transport: "uds",
+          path: udsBoundPath || UDS_PATHS[0],
+        }),
       onMcpMessage: routeUdsMessage,
       onSocketError: (err) => log("WARN", "UDS_ERROR", { error: err.message }),
       onListening: (p, meta) => {
@@ -19677,26 +18994,7 @@ function shutdown() {
       /* path already gone */
     }
   }
-  if (openaiUdsServer && typeof openaiUdsServer.close === "function") {
-    openaiUdsServer.close().catch(() => {});
-  }
-  if (openaiUdsPath && openaiUdsIno) {
-    try {
-      const st = fs.statSync(openaiUdsPath);
-      if (st.ino === openaiUdsIno) {
-        fs.unlinkSync(openaiUdsPath);
-        log("INFO", "OPENAI_UDS_CLEANUP", { path: openaiUdsPath, ino: st.ino });
-      } else {
-        log("INFO", "OPENAI_UDS_CLEANUP_SKIP", {
-          path: openaiUdsPath,
-          owned: openaiUdsIno,
-          found: st.ino,
-        });
-      }
-    } catch (_) {
-      /* path already gone */
-    }
-  }
+
   // Close all SSE connections
   for (const [clientId, { res }] of sseClients) {
     try {

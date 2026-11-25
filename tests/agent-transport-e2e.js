@@ -424,7 +424,6 @@ function callStdio(agentId, prompt, opts) {
     const child = spawn(process.execPath, ["transport/stdio-openai.js"], {
       cwd: ROOT,
       env: Object.assign({}, process.env, {
-        OPENAI_UDS_PATH: "",
         UDS: "",
         OPENAI_BASE_URL: "http://localhost:" + PORT,
       }),

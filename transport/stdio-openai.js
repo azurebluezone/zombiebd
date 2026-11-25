@@ -8,14 +8,14 @@
  *   {"response":{...}}                    non-streamed chat.completion
  *   {"done":true,"finish_reason":"..."}   stream finished
  *   {"error":{...}}                       request failed
- * Target: OPENAI_UDS_PATH (legacy), the first UDS candidate, or
+ * Target: UDS_PATH/UDS (the canonical multi-protocol gateway), or
  * OPENAI_BASE_URL (default http://localhost:5050). Zero dependencies.
  */
 
 const http = require("http");
 const readline = require("readline");
 
-const UDS_PATH = process.env.OPENAI_UDS_PATH ||
+const UDS_PATH = process.env.UDS_PATH || process.env.UDS ||
   String(process.env.UDS || "").split(",")[0].trim() ||
   "";
 const BASE_URL = process.env.OPENAI_BASE_URL || "http://localhost:5050";

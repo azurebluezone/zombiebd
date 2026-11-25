@@ -37,7 +37,7 @@ node tests/modules-runtime-check.js  # MODULES_RUNTIME_OK
 | F5 | **P0** | ডিফল্টে external MCP নেই, কিন্তু pinned tool `tts__tts_speak`, `ocr__ocr_image` | `lib/tool-budget.js:20`, `external-mcp.js:69`, `external mcp/servers.example.json` | এজেন্ট TTS/OCR দেখেই না; “অডিও বানাও” কাজ করে না |
 | F6 | **P1** | `agent_personas` টুল শুধু universal-adapter-এ, hardcoded ৬ এজেন্ট; main-এ ৯ | `universal-adapter/registry.js:325-360`, `universal-adapter/personas.js:37-46`, `agent/*.js` | persona-র দুই সত্য; টুলটি main `/mcp`-এ নেই |
 | F7 | **P1** | টুল-সংখ্যা ডকুমেন্টে ৩৬/১০১/১৫৫; স্ট্যাটিকে ২৯ core | `tools/tools-manifest.js:31`, `README.md:118`, `docs/EDGE-RUNTIME-SPEC.md:53`, `api.js:9785` | ডকুমেন্ট বিশ্বাসযোগ্যতা হারায়; gate মিথ্যা PASS হতে পারে |
-| F8 | **P1** | `shutdown()` HTTPS/gRPC/h2c বন্ধ করে না; UDS close async, তারপরই `process.exit(0)` | `api.js:19622-19686`, `api.js:18378-18402` | stale UDS socket, অসম্পূর্ণ flush, non-graceful stop |
+| F8 | **P1** | `shutdown()` HTTPS/gRPC/h2c বন্ধ করে না; UDS close async, তারপরই `process.exit(0)` | `api.js:18967-19010`, `api.js:18378-18402` | stale UDS socket, অসম্পূর্ণ flush, non-graceful stop — **OPEN** |
 | F9 | **P1** | WebSocket `auth` ফ্রেম কিছুই enforce করে না | `api.js:17867-17892`, `api.js:17899-17921` | auth ভুল হলেও `chat`/`question` চলবে |
 | F10 | **P1** | TCP sniffer ২৪ বাইট পূর্ণ না হলে socket আটকে থাকে | `api.js:13369-13410` | ছোট HTTP request (যেমন `GET / HTTP/1.0\r\n\r\n`) hang |
 | F11 | **P1** | স্ট্রিমিং proxy fallback করে না (`if (stream) break`) | `api.js:15993-16018` | streaming-এ প্রথম provider ব্যর্থ হলে বাকিরা try হয় না |
@@ -227,7 +227,7 @@ ADR-001:134 দাবি: “config | inline .env loader | `loadEnvFile` / `pars
 
 `universal-adapter/registry.js:92-320` নিজে `adapter_status`, `system_info`, `list_directory`, `read_file`, `write_file`, `delete_file`, `glob`, `grep`, `hash_text`, `agent_personas` — এই ১০টি টুল ডিফাইন করে। main-এও `list_directory/read_file/write_file/delete_file/glob/grep/system_info` আছে (`api.js:9786-10090`)। একই নাম, ভিন্ন sandbox:
 
-- main: `isPathSafe` ডিফল্ট `AGENT_FS_SCOPE=unrestricted` (`api.js:10500-10533`)।
+- main: `isPathSafe` ডিফল্ট `AGENT_FS_SCOPE=session` (`lib/fs-scope.js`; `api.js:9814-9840`)।
 - adapter: `ROOTS` ডিফল্ট `universal-adapter/` (`universal-adapter/registry.js:57-62`)।
 
 **সমস্যা:** একই `read_file` টুল দুই সার্ভারে দুই scope; ক্লায়েন্ট কোনটায় যুক্ত তা বুঝে না। `main-sync` (`universal-adapter/main-sync.js:1-30`) main-এর টুল mirror করে, ফলে একই নামের shadowing/recursion ঝুঁকি।
@@ -509,9 +509,9 @@ if ([".js", ".cjs", ".mjs", ".json"].includes(ext)) {
 
 ### F8 — shutdown অসম্পূর্ণ
 
-**অবস্থান:** `api.js:19622-19686`, `api.js:18378-18402`, `api.js:18022-18084`, `transport/uds-gateway.js:200-230`।
+**অবস্থান:** `api.js:18967-19010`, `api.js:18378-18402`, `api.js:18022-18084`, `transport/uds-gateway.js:200-230`।
 
-**এখন কী হয়:** `shutdown()` শুধু `tcpServer`, `udsGateway`, `udsServer`, `openaiUdsServer`, SSE বন্ধ করে; `httpsServer`, `grpcServer`, `h2cServer`, watchdog timer বন্ধ করে না। `udsGateway.close()` async, কিন্তু তারপরই `process.exit(0)` — promise resolve হওয়ার সুযোগ নেই; `if (!udsGateway)` cleanup branch-ও চলবে না।
+**এখন কী হয়:** `shutdown()` শুধু `tcpServer`, `udsGateway`, legacy `udsServer`, SSE বন্ধ করে; `httpsServer`, `grpcServer`, `h2cServer`, watchdog timer বন্ধ করে না। `udsGateway.close()` async, কিন্তু তারপরই `process.exit(0)` — promise resolve হওয়ার সুযোগ নেই; `if (!udsGateway)` cleanup branch-ও চলবে না। ২০২৬-১১-২৭-এ দ্বিতীয় `openaiUdsServer` listener সরানো হয়েছে, তাই এই finding এখনো **OPEN** (শুধু legacy listener কমেছে)।
 
 **কেন এমন:** shutdown ধীরে ধীরে বেড়েছে; নতুন transport যোগ হলে cleanup যোগ হয়নি।
 
@@ -529,7 +529,6 @@ async function shutdown(signal) {
   await Promise.allSettled([
     closeNet(tcpServer), closeNet(httpsServer), closeNet(h2cServer),
     grpcServer?.close?.(), udsGateway?.close?.(),
-    openaiUdsServer?.close?.(),
   ]);
   watchdog?.stop?.();
   externalMcp.killAllStdio?.();
@@ -879,8 +878,7 @@ if (result.status !== "PASS") → honest failure
 | HTTP/1.1 | `PORT` | `server` `api.js:17753`, `tcpServer` sniffer `:13371` | মূল |
 | h2c | একই port | `h2cServer` `:17997`, `:18022` | preface detect |
 | HTTPS | `HTTPS_PORT` | `:18378` | optional cert |
-| UDS (MCP+OpenAI) | `UDS_PATHS` | `createUdsGateway` `:18338`; legacy `:18301` | protocol sniff |
-| UDS OpenAI (legacy) | `OPENAI_UDS_PATH` | `createUdsOpenAIServer` `:18318` | test mode |
+| UDS (MCP+OpenAI) | `UDS_PATH` / `UDS_PATHS` | `createUdsGateway` `api.js:17675` | protocol sniff |
 | TCP fallback | `UDS_PORT` | `:18265` | Windows |
 | WebSocket | upgrade | `:17758-18010` | chat/mcp/auth |
 | gRPC | `GRPC_PORT` | `createGrpcServer` `:18395` | h2c+protobuf |
@@ -1122,7 +1120,7 @@ ocr: 4, tts: 3, screen-recorder: 4 → 11 shipped
 | `modules/config.js` | `tests/env-loader-check.js:58` | `lib/env.js` loader; config resolver-এর runtime importer নেই | **NOT_WIRED** — guard নিজেই api.js-এ এই path নিষেধ করে; এটি loader নয়, resolver | `ENV_LOADER_OK`; “api.js has no modules/config.js env loader” |
 | `modules/data-prune.js` | `tests/data-cleanup-check.js:166` | `start.js:75` boot | **NOT_WIRED** — boot-process housekeeping | `DATA_CLEANUP_OK` |
 | `modules/edge-proxy.js` | `tests/edge-proxy-check.js` | `start.js:27` | **NOT_WIRED** — edge/deploy প্রসেস | `EDGE_PROXY_OK` |
-| `modules/sessions.js` | `tests/modules-foundation-check.js:157` | কোনো consumer নেই | **NOT_WIRED** — `SessionStore` agent-turn archive (১০ resident); api.js-এর client session (`SESSIONS_FILE`, TTL/reuse) আলাদা concern; merge behaviour decision | `modules/sessions.js:1-16`; `api.js:5803-5903` |
+| `modules/sessions.js` | `tests/modules-foundation-check.js:157` | কোনো consumer নেই | **NOT_WIRED (আলাদা concern)** — `SessionStore` agent-turn archive; api.js-এর client session এখন `lib/session-registry.js`-এ (TTL/reuse), merge নয় | `modules/sessions.js:1-16`; `lib/session-registry.js` |
 | `modules/skill-db.js` | `tests/skill-mcp-check.js:130` | `external mcp/skill-mcp.js:17` | **NOT_WIRED** — MCP প্রসেস | `SKILL_MCP_OK` |
 | `modules/skill-parser.js` | `tests/skill-mcp-check.js:131` | `external mcp/skill-mcp.js:27` | **NOT_WIRED** — MCP প্রসেস | `SKILL_MCP_OK` |
 
@@ -1133,9 +1131,15 @@ ocr: 4, tts: 3, screen-recorder: 4 → 11 shipped
 | `node tests/api-module-wiring-check.js` | `API_MODULE_WIRING_OK` pass=11 fail=0 |
 | `node tests/env-loader-check.js` | `ENV_LOADER_OK` (29/29) |
 | `node tests/bridge-discovery-check.js` | `BRIDGE_DISCOVERY_OK` (7/7) |
+| `node tests/normalizer-single-path-check.js` | `NORMALIZER_SINGLE_PATH_OK pass=8 fail=0` |
+| `node tests/uds-single-path-check.js` | `UDS_SINGLE_PATH_OK pass=5 fail=0` |
+| `node tests/mission-privilege-check.js` | `MISSION_PRIVILEGE_OK pass=6 fail=0` |
+| `node tests/fs-scope-decision-check.js` | `FS_SCOPE_DECISION_OK pass=6 fail=0` |
+| `node tests/admin-auth-hardening-check.js` | `ADMIN_AUTH_HARDENING_OK pass=6 fail=0` |
+| `node tests/real-usage-dir-check.js` | `REAL_USAGE_DIR_OK` 16/0 (isolated gateway) |
 | `node --check api.js` | exit 0 |
 
-`AGENT_FS`/`dist` নোট: runtime `dist/api.js` rebuild বা restart করা হয়নি; এই রিভিশন source-level। নতুন কোড restart-এর পর লাইভ হবে — সেটি `NOT_TESTED`।
+`AGENT_FS`/`dist` নোট: ২০২৬-১১-২৭-এ `scripts/rebuild-restart.sh --restart` → `REBUILD_RESTART_OK api_sha=45582d63e7a3`, live `/health` 200 version 3.2.1। `.env` এখনো explicit `AGENT_FS_SCOPE=unrestricted`; code default `session`।
 
 ---
 
@@ -1148,7 +1152,7 @@ ocr: 4, tts: 3, screen-recorder: 4 → 11 shipped
 এটি একটাই কারণ নয়, চারটি আলাদা প্রক্রিয়া একসাথে কাজ করছে:
 
 1. **Import মানে move নয়।** `lib/net.js` import করে api.js-এর ৩টি loopback helper বদলালে main file থেকে ৩ লাইন যায়, কিন্তু module-এ কোড থেকে যায়। মোট repo লাইন কমে না; শুধু `api.js`-এর হিসাব কমে। `modules/mcp-protocol.js` ৪০৯ লাইনের canonical validator — api.js শুধু call করে, কিন্তু call site, fallback আর আগের inline copy থেকে যাওয়া behaviour এখনো api.js-এ আছে।
-2. **api.js-এ দ্বিতীয় implementation বেঁচে আছে।** `normalizeResponse()` (`api.js:6373-6659`, ২৮৭ লাইন) আর canonical `normalizer/index.js` (৫৪১ লাইন) — দুটোই জীবিত। `classifyInput()` (`api.js:7736-7916`, ১৮১ লাইন) আর `modules/intent.js`-এর `classifyIntent()` (২৫২ লাইনের module) — দুটোই জীবিত। Session system (`api.js:5794-6070`, ২৭৭ লাইন) আর `modules/sessions.js` (২৩৪ লাইন) — module-টির production consumer নেই।
+2. **api.js-এ দ্বিতীয় implementation বেঁচে ছিল।** ২০২৬-১১-২৭-এ `normalizeResponse()` (২৮৭ লাইন) canonical adapter-এ, `classifyInput()` (১৮১ লাইন) `modules/input-classifier.js`-এ, client session (২৭৭ লাইন) `lib/session-registry.js`-এ সরানো হয়েছে। `modules/sessions.js` এখনো আলাদা agent-turn archive — duplicate নয়, ভিন্ন concern।
 3. **নতুন guard/logging যোগ হচ্ছে, পুরোনো duplicate যাচ্ছে না।** এই pass-এ ১৯টি `adminRouteAuthorized(req)` call site আছে (`api.js:4817` definition; প্রথম call `:13813`, শেষ `:17523`)। প্রতিটি ৪–৮ লাইনের 401 block; এগুলো এক middleware-এ গেলে ৭০+ লাইন বাঁচত, কিন্তু এখন প্রতিটি route-এ কপি করা।
 4. **মোট line count খারাপ KPI।** `api.js` থেকে কোড module-এ সরালে main file ছোট হয়, repo বড় হয়; আর `normalizeResponse`-এর মতো দ্বিতীয় copy মুছলে behaviour বদলানোর ঝুঁকি থাকে। তাই "কম লাইন"目標 হলে আগে duplicate behaviour মাপতে হবে, শুধু `wc -l` নয়।
 
@@ -1156,11 +1160,11 @@ ocr: 4, tts: 3, screen-recorder: 4 → 11 shipped
 
 | Module | api.js-এ সমমানের কোড | প্রমাণ | সিদ্ধান্ত |
 |---|---|---|---|
-| `normalizer/index.js` (৫৪১) | `normalizeResponse()` ২৮৭ লাইন; `/api/normalize`, r2t, internal call-এ ব্যবহৃত | `api.js:6373-6659`, call `:14632,:19434,:19543`; provider adapter `provider/openai.js:22` canonical `normalize` ব্যবহার করে | **NOT_WIRED in api.js** — provider path canonical, dev/r2t path second copy; একীভূত করতে golden-output test দরকার |
-| `modules/intent.js` (২৫২) | `classifyInput()` ১৮১ লাইন | `api.js:7736-7916`, call `:8853,:9457`; module থেকে শুধু `PROMPTS` import (`:765-768`) | **PARTIAL** — prompt comes from module, classification still local |
-| `modules/sessions.js` (২৩৪) | `readSessions`/`writeSessions`/`cleanExpired`/`createSession`/`getSession`/`updateSession` ২৭৭ লাইন | `api.js:5794-6070`; `modules/sessions.js:234` exports `SessionStore`, production importer নেই | **NOT_WIRED** — দুটি ভিন্ন concern (agent-turn archive vs client session); merge decision খোলা |
+| `normalizer/index.js` (৫৪১+) | inline `normalizeResponse()` ছিল ২৮৭ লাইন | `normalizer/api-response.js`; `api.js:6112-6114`; Anthropic/Bedrock/llama.cpp canonical-এ | **WIRED** — provider + api path একই `normalize()`; `NORMALIZER_SINGLE_PATH_OK pass=8` |
+| `modules/input-classifier.js` | `classifyInput()` ১৮১ লাইন api.js-এ ছিল | `modules/input-classifier.js`; lazy `agents()` accessor | **WIRED (extracted)** — `modules/intent.js` এখনো আলাদা semantic (`classifyIntent`); merge ভবিষ্যৎ decision |
+| `modules/sessions.js` (২৩৪) | client session ২৭৭ লাইন api.js-এ ছিল | `lib/session-registry.js`; `modules/sessions.js` `SessionStore` আলাদা | **WIRED (client registry)** — agent-turn archive merge হয়নি; দুটি ভিন্ন concern |
 | `modules/config.js` (১৪৭) | `lib/env.js` loader; api.js-এ direct `process.env.X || default` শত শত জায়গায় | `tests/env-loader-check.js:58` নিজেই বলে api.js এই module import করবে না | **DEAD for runtime** — config resolver-এর importer নেই; ভবিষ্যতে `lib/env`-এর সাথে merge অথবা delete |
-| `transport/uds-gateway.js` | পুরোনো `OPENAI_UDS_PATH` branch + নিজের frame parser | `api.js:18319-18406`; `transport/uds-gateway.js` canonical, call `:18356` | **PARTIAL** — নতুন gateway wired, legacy branch scripts/tests-এর জন্য টিকে আছে |
+| `transport/uds-gateway.js` | পুরোনো `OPENAI_UDS_PATH` branch + নিজের frame parser | `api.js:17666-17705`; `transport/uds-openai.js` deleted; scripts canonical `UDS_PATH` | **WIRED** — এক socket-এ MCP+HTTP; `UDS_SINGLE_PATH_OK pass=5` |
 | `modules/skill-db.js` (২২০), `modules/skill-parser.js` (১৭৭) | api.js-এ সমমানের skill parser নেই; `loadSkills()` শুধু git download | `api.js:5255-5280` | **NOT_WIRED** — owner `external mcp/skill-mcp.js`; api.js-এ আনা dead import হবে |
 
 **গুরুত্বপূর্ণ পার্থক্য:** §16-এ আটটি module-এর scope ছিল "api.js কেন এই module টানে না"। এখানে প্রশ্ন উল্টো: **api.js-এ এমন কোড আছে যা module-এও আছে, অথচ module-টি api.js import করে না**। দ্বিতীয় তালিকাটাই "ডাল মে কুছ কালা" — মডিউল থাকা সত্ত্বেও পুরোনো ডাল নিজের পাতে পড়ে আছে।
@@ -1170,15 +1174,15 @@ ocr: 4, tts: 3, screen-recorder: 4 → 11 shipped
 | ID | Finding | প্রমাণ (path:line) | অবস্থা / ঝুঁকি |
 |---|---|---|---|
 | **F21** | **r2t `[[TOOL:exec]]` — request body থেকেই shell, কোনো admin gate নেই; default ছিল `true`** | আগে `process.env.R2T_ENABLED || "true"` (বর্তমান line `api.js:19457`); executor `:19614-19623`; `.env:160` এই মেশিনে `false` | **FIXED (opt-in)** — এখন শুধু exact `true`; test `R2T_TRACE_OK 15/15`। `.env` আগে থেকেই false, তাই live behaviour অপরিবর্তিত |
-| **F22** | `/api/mission`-এ shell/file tool "in-process", admin token ছাড়া; auth optional | `modules/surface-policy.js:52-62` (`privileged: "in-process"`), `api.js:16969-16974` optional auth, `authFromRequest` no-header → `{ok:null}` (`:4732`), `:16935` route | **OPEN** — local-agent trust model; loopback-only। কিন্তু browser/other local process-এর জন্য blast radius বড়; §15-এ decision দরকার |
-| **F23** | FS scope default `unrestricted`; terminal guard শুধু `cwd` দেখে, command দেখে না | `api.js:10539` default, `:10743-10762` `outsideSession(cwd)` তারপর `bash -c cmd`; `restricted`-ও `$HOME` allow করে (`:10570-10577`) | **OPEN / accepted** — `cd / && cat /etc/passwd` cwd guard পাশ কাটায়; unrestricted-এ guard-ই চলে না। §15-এ explicit accept/decision |
-| **F24** | Admin fail-open switch: `ADMIN_ALLOW_UNAUTHENTICATED=true` + token unset → সব admin route open | `api.js:4791-4801`; `.env`-এ flag absent, তাই এখন fail-closed | **OPEN (config)** — production-এ flag সেট না করার guard দরকার; docs-এ इसे "dev only" রাখা |
-| **F25** | Panel cookie-তে `Secure` নেই; panel GET credential ছাড়াই cookie mint করে | `lib/admin-session.js:54-61`; `api.js:14276-14281` | **OPEN (low/medium)** — loopback HTTP-তে Secure cookie কাজ করবে না, কিন্তু HTTPS edge-এ downgrade risk; token ছাড়া cookie একা admin route খোলে না (`:4817-4819`) |
-| **F26** | Admin token প্রথমে সাধারণ `===`, পরে constant-time helper | `api.js:4804-4811` (`got === want` short-circuit), `mcpAdminTokenOk` | **OPEN (low)** — ৪৮-char token-এ network timing attack অবাস্তব, তবু first compare সরানো সহজ |
+| **F22** | `/api/mission`-এ shell/file tool "in-process", admin token ছাড়া; auth optional | `api.js:16307-16333`; `lib/mission-privilege.js`; exec guard `:9870-9895` | **FIXED** — explicit privileged tool-এ admin/channel accept ছাড়া 401; catalog-granted execution-এ দ্বিতীয় block। MCP `agent_mission` local path আলাদা residual |
+| **F23** | FS scope default `unrestricted`; terminal guard শুধু `cwd` দেখে, command দেখে না | `lib/fs-scope.js`; `api.js:9814-9840`; `:10715-10740` | **FIXED (code default)** — unset → `session`; unrestricted exact opt-in + boot WARN; `cd` absolute escape denied। live `.env` explicit unrestricted |
+| **F24** | Admin fail-open switch: `ADMIN_ALLOW_UNAUTHENTICATED=true` + token unset → সব admin route open | `lib/admin-auth.js`; `api.js:4784-4803` | **FIXED** — production-এ flag উপেক্ষিত; `ADMIN_AUTH_FLAG_IGNORED` WARN |
+| **F25** | Panel cookie-তে `Secure` নেই; panel GET credential ছাড়াই cookie mint করে | `lib/admin-session.js`; `api.js:13598` | **FIXED (Secure)** — TLS/proxy-তে `Secure`; unauthenticated mint এখনো শুধু non-admin panel cookie |
+| **F26** | Admin token প্রথমে সাধারণ `===`, পরে constant-time helper | `api.js:4803`; `lib/admin-auth.js:21` | **FIXED** — SHA-256 + `timingSafeEqual`, length leak নেই |
 | **F27** | Provider-wide breaker model-scoped 404/400-এ trip করত; retired Gemini 2.5 পুরো Gemini skip করিয়েছিল | live log: `PROVIDER_UNHEALTHY consecutiveFailures:3 lastError:http_404 …gemini-2.5-pro` (`logs/2026-11-25.log`, 17:40:28); `api.js:12743` (`markProviderFailure`) | **FIXED** — `lib/provider-failure.js`; 400/404-model health ledger-এ যাবে না, 503/429 যাবে; `PROVIDER_HEALTH_OK 17/17` |
 | **F28** | MCP `MCP-Protocol-Version: 2026-07-28` (client future date) প্রতিটি call-এ 400; ৫২টি reject | `logs/2026-11-25.log` 17:30–17:34 `MCP_HEADER_REJECTED …2026-07-28`; `modules/mcp-protocol.js` `isForwardProtocolVersion` | **FIXED** — future valid ISO date accepted as forward-compat, `2026-13-99` rejected; `MCP_API_INTEGRATION_OK`; live restart pending |
-| **F29** | পুরোনো UDS parser + `OPENAI_UDS_PATH` branch canonical gateway-এর পাশে টিকে আছে | `api.js:18319-18406`, `transport/uds-gateway.js`; scripts `scripts/dist-verify.sh`, `scripts/p4-verify.sh`, `tests/agent-transport-e2e.js` এখনো legacy path ব্যবহার করে | **OPEN** — naive delete scripts ভাঙবে; migration plan দরকার |
-| **F30** | `api.js`-এ দ্বিতীয় normalizer/intent/session implementation | §17.২ table: ২৮৭ + ১৮১ + ২৭৭ = ৭৪৫ লাইন | **OPEN** — একীভূত করতে behaviour/golden test; line count নয়, duplicate behaviour মাপা হবে |
+| **F29** | পুরোনো UDS parser + `OPENAI_UDS_PATH` branch canonical gateway-এর পাশে টিকে আছে | `api.js:17666-17705`; scripts canonical `UDS_PATH`; `transport/uds-openai.js` deleted | **FIXED** — এক gateway, এক socket; `UDS_SINGLE_PATH_OK pass=5` |
+| **F30** | `api.js`-এ দ্বিতীয় normalizer/intent/session implementation | normalizer adapter + `modules/input-classifier.js` + `lib/session-registry.js` | **FIXED (extract)** — duplicate inline blocks gone; `NORMALIZER_SINGLE_PATH_OK pass=8` |
 
 ### ১৭.৪ এই pass-এ যা বদলেছে (runtime)
 
@@ -1194,10 +1198,10 @@ ocr: 4, tts: 3, screen-recorder: 4 → 11 shipped
 
 ### ১৭.৫ সীমা — যা এখনো প্রমাণিত নয়
 
-- F22-এর exploitability test করা হয়নি (unauth mission দিয়ে shell চালানো হয়নি); এটি code-path audit, live exploit নয়।
+- F22-এর exploitability test করা হয়নি (unauth mission দিয়ে shell চালানো হয়নি); gate unit/static test, live exploit probe নয়। MCP `agent_mission` credential ছাড়া in-process — আলাদা residual।
 - F21-এর enabled অবস্থায় exploit test করা হয়নি; `.env`-এ `false`, তাই live-এ শুধু `R2T_DISABLED` path যাচাই হয়েছে।
 - `PROVIDER_SKIP_DOWN`-এর after-count (`574` histórico) restart-এর পরে বাড়েনি; তবে একটি provider সেই window-এ skip হয়েছে কিনা আলাদা করে ধরা হয়নি।
-- F29/F30-এর migration হয়নি; এগুলো code-level decision, test नहीं।
+- F29/F30 migration হয়েছে (source + gate test); live restart verification এখনো বাকি।
 
 ### ১৭.৬ Live verification — ২০২৬-১১-২৬ ০০:৩৭ (+০৬)
 
@@ -1210,7 +1214,24 @@ ocr: 4, tts: 3, screen-recorder: 4 → 11 shipped
 | `POST /mcp` + `MCP-Protocol-Version: 2026-13-99` | `HTTP 400`; `MCP_HEADER_REJECTED` — malformed date rejected |
 | `POST /v1/chat/completions` model `r2t` | `R2T_DISABLED`; `R2T_ENABLED=false` (`.env:160`) |
 | `POST /v1/chat/completions` model `gemini-2.5-pro` | `HTTP 502` upstream 404; log `PROVIDER_MODEL_SCOPED_FAILURE`; `PROVIDER_UNHEALTHY` count আগের ১-ই আছে, নতুন breaker trip নেই |
-| `sha256sum api.js dist/api.js` | দুটোই `72decd3ad066…` |
+| `sha256sum api.js dist/api.js` | দুটোই `45582d63e7a3…` (2026-11-27 rebuild) |
 
 **মন্তব্য:** row 7/8-এর source fix এখন live-verified। row 1-এর default opt-in code verified, কিন্তু `.env`-এ false থাকায় enabled exploitable path এখনো test করা হয়নি।
+
+### ১৭.৭ ২০২৬-১১-২৭ follow-up — §15 row 1–6
+
+Source-level সব gate সবুজ; live rebuild/restart এখনো হয়নি (dist `api.js` এখনো পুরোনো)।
+
+| Gate | Command | Result |
+|---|---|---|
+| `R2T_DEFAULT_OFF_OK` | `node tests/r2t-default-off-check.js` | pass=4 fail=0 |
+| `MISSION_PRIVILEGE_OK` | `node tests/mission-privilege-check.js` | pass=6 fail=0 |
+| `FS_SCOPE_DECISION_OK` | `node tests/fs-scope-decision-check.js` | pass=6 fail=0 |
+| `ADMIN_AUTH_HARDENING_OK` | `node tests/admin-auth-hardening-check.js` | pass=6 fail=0 |
+| `NORMALIZER_SINGLE_PATH_OK` | `node tests/normalizer-single-path-check.js` | pass=8 fail=0 |
+| `UDS_SINGLE_PATH_OK` | `node tests/uds-single-path-check.js` | pass=5 fail=0 (real HTTP+MCP on one socket) |
+| `LOCAL_TOOL_CAP_OK` | `node tests/local-tool-cap.test.js` | 45/45 |
+| `API_LINE_AUDIT_OK` | `node tests/api-line-audit-check.js` | pass=14 fail=0; `api.js` 19050 vs HEAD 19755 |
+
+**সীমা:** `.env`-এ `AGENT_FS_SCOPE=unrestricted` এবং `R2T_ENABLED=false` অপরিবর্তিত; এই follow-up code default বদলেছে, live operator choice বদলায়নি। `/api/mission` HTTP gate live, কিন্তু MCP `agent_mission` এখনো local in-process path।
 

@@ -314,15 +314,8 @@ async function main() {
       assert(block.includes(gate), "roadmap missing gate " + gate);
     }
     assert(block.includes("A → B"), "roadmap missing dependency order");
-    for (const suite of [
-      "transport-suite",
-      "cwd-db-repair",
-      "provider-matrix",
-      "uds-e2e-check",
-      "mcp-architecture-check",
-    ]) {
-      assert(block.includes(suite), "roadmap missing red suite " + suite);
-    }
+    assert(block.includes("SUITE_GREEN_OK"), "roadmap missing suite gate");
+    assert(block.includes("D. Red suites"), "roadmap missing Phase D status");
     return "phases=5 markers=2";
   });
 
@@ -613,7 +606,8 @@ async function main() {
   // ── 10. Static wiring assertions ───────────────────────────
   await expectAsync("api.js binds sessions in MCP and HTTP, and tools use ctx", () => {
     const api = fs.readFileSync(path.join(ROOT, "api.js"), "utf8");
-    assert.match(api, /function ensureSessionForDir/);
+    const registry = fs.readFileSync(path.join(ROOT, "lib", "session-registry.js"), "utf8");
+    assert.match(registry, /ensureSessionForDir/);
     assert.match(api, /case "set_working_dir":[\s\S]{0,4000}ensureSessionForDir/);
     assert.match(api, /case "agent_single":[\s\S]{0,900}ensureSessionForDir/);
     assert.match(api, /case "agent_mission":[\s\S]{0,900}ensureSessionForDir/);

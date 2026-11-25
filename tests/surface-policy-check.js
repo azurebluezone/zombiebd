@@ -91,12 +91,12 @@ check("toolsFor enforces the allowlist", () => {
   return "chat filtered, mission full";
 });
 
-check("mission is documented as in-process", () => {
+check("mission privileged tools need an admin token", () => {
   const mission = policy.policyFor("mission");
   assert(mission.tools === "catalog", "mission must see the full catalog");
-  assert(mission.privileged === "in-process", "mission privileged tools run in-process, not behind the admin token");
+  assert(mission.privileged === "admin-token", "mission privileged tools must require the admin token");
   assert(mission.admin === false, "mission is not an admin surface");
-  return "catalog + in-process";
+  return "catalog + admin-token";
 });
 
 check("editor privileged tools need an admin token", () => {

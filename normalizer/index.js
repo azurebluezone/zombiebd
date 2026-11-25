@@ -27,6 +27,13 @@ function detect(raw) {
   if (!raw || typeof raw !== "object") return "unknown";
   if (Array.isArray(raw.candidates)) return "gemini";
   if (raw.choices) return "openai";
+  // AWS Bedrock Converse: output.message.content[] (checked before Anthropic
+  // because both use a content array).
+  if (raw.output && raw.output.message && Array.isArray(raw.output.message.content)) return "bedrock";
+  // Anthropic Messages: content[] + stop_reason.
+  if (Array.isArray(raw.content) && "stop_reason" in raw) return "anthropic";
+  // llama.cpp server: plain content string plus stop/n_predict.
+  if (typeof raw.content === "string" && (raw.stop !== undefined || raw.n_predict !== undefined)) return "llamacpp";
   // Ollama /api/chat non-stream: {model, message:{role,content}, done}
   if (raw.message && typeof raw.done === "boolean") return "ollama";
   // Ollama list endpoints etc.
@@ -279,15 +286,127 @@ function fromGemini(raw) {
   };
 }
 
+// ─── Anthropic Messages dialect ──────────────────────────────────────
+// https://docs.anthropic.com/en/api/messages
+//   content[] = {type:"text",text} | {type:"tool_use",id,name,input}
+//   stop_reason = "end_turn" | "max_tokens" | "tool_use" | "stop_sequence"
+function fromAnthropic(raw) {
+  if (!raw || !Array.isArray(raw.content) || !("stop_reason" in raw)) return null;
+  let text = "";
+  const toolCalls = [];
+  for (const part of raw.content) {
+    if (!part || typeof part !== "object") continue;
+    if (part.type === "text" && typeof part.text === "string") text += part.text;
+    if (part.type === "tool_use") {
+      toolCalls.push({
+        id: part.id || nextToolId("call_"),
+        type: "function",
+        function: { name: part.name || "", arguments: asArgString(part.input) },
+        index: toolCalls.length,
+      });
+    }
+  }
+  const stopMap = { end_turn: "stop", max_tokens: "length", tool_use: "tool_calls", stop_sequence: "stop" };
+  const finish = toolCalls.length ? "tool_calls" : (stopMap[raw.stop_reason] || "stop");
+  return {
+    object: "chat.completion",
+    id: raw.id,
+    choices: [{
+      index: 0,
+      message: Object.assign(
+        { role: "assistant", content: text },
+        toolCalls.length ? { tool_calls: toolCalls } : {},
+      ),
+      finish_reason: finish,
+      logprobs: null,
+    }],
+    usage: normalizeUsage(raw.usage),
+    model: raw.model,
+    provider: "anthropic",
+    raw_format: "anthropic",
+  };
+}
+
+// ─── AWS Bedrock Converse dialect ────────────────────────────────────
+// https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_Converse.html
+//   output.message.content[] = {text} | {toolUse:{toolUseId,name,input}}
+function fromBedrock(raw) {
+  const message = raw && raw.output && raw.output.message;
+  if (!message || !Array.isArray(message.content)) return null;
+  let text = "";
+  const toolCalls = [];
+  for (const part of message.content) {
+    if (!part || typeof part !== "object") continue;
+    if (typeof part.text === "string") text += part.text;
+    if (part.toolUse) {
+      toolCalls.push({
+        id: part.toolUse.toolUseId || nextToolId("call_"),
+        type: "function",
+        function: {
+          name: part.toolUse.name || "",
+          arguments: asArgString(part.toolUse.input),
+        },
+        index: toolCalls.length,
+      });
+    }
+  }
+  const stop = typeof raw.stopReason === "string" ? raw.stopReason.toLowerCase() : "end_turn";
+  const finish = toolCalls.length
+    ? "tool_calls"
+    : (stop === "max_tokens" ? "length" : "stop");
+  return {
+    object: "chat.completion",
+    choices: [{
+      index: 0,
+      message: Object.assign(
+        { role: "assistant", content: text },
+        toolCalls.length ? { tool_calls: toolCalls } : {},
+      ),
+      finish_reason: finish,
+      logprobs: null,
+    }],
+    usage: normalizeUsage(raw.usage),
+    model: raw.model,
+    provider: "aws-bedrock-converse",
+    raw_format: "bedrock",
+  };
+}
+
+// ─── llama.cpp server dialect ────────────────────────────────────────
+// https://github.com/ggml-org/llama.cpp/blob/master/examples/server/README.md
+//   { content:"...", stop:true, timings:{prompt_n,predicted_n} }
+function fromLlamaCpp(raw) {
+  if (!raw || typeof raw.content !== "string" || raw.content.length === 0) return null;
+  if (raw.stop === undefined && raw.n_predict === undefined) return null;
+  const timings = raw.timings || {};
+  return {
+    object: "chat.completion",
+    choices: [{
+      index: 0,
+      message: { role: "assistant", content: raw.content },
+      finish_reason: raw.stop === true ? "stop" : "length",
+      logprobs: null,
+    }],
+    usage: {
+      prompt_tokens: timings.prompt_n || 0,
+      completion_tokens: timings.predicted_n || 0,
+      total_tokens: (timings.prompt_n || 0) + (timings.predicted_n || 0),
+    },
+    model: raw.model,
+    provider: "llama.cpp-server",
+    raw_format: "llamacpp",
+  };
+}
+
 // ─── Usage ────────────────────────────────────────────────────────────
 function normalizeUsage(u) {
   if (!u) return null;
   return {
-    prompt_tokens: u.prompt_tokens || u.input_tokens || 0,
-    completion_tokens: u.completion_tokens || u.output_tokens || 0,
+    prompt_tokens: u.prompt_tokens || u.input_tokens || u.inputTokens || 0,
+    completion_tokens: u.completion_tokens || u.output_tokens || u.outputTokens || 0,
     total_tokens: u.total_tokens ||
-      ((u.prompt_tokens || u.input_tokens || 0) +
-       (u.completion_tokens || u.output_tokens || 0)),
+      ((u.prompt_tokens || u.input_tokens || u.inputTokens || 0) +
+       (u.completion_tokens || u.output_tokens || u.outputTokens || 0)),
     // Groq/Ollama timing extras survive when present.
     ...(u.prompt_time != null ? { prompt_time: u.prompt_time } : {}),
     ...(u.completion_time != null ? { completion_time: u.completion_time } : {}),
@@ -312,6 +431,9 @@ function normalize(raw, opts) {
     case "ollama":   out = fromOllama(raw); break;
     case "gemini":   out = fromGemini(raw); break;
     case "openai":   out = fromOpenAI(raw); break;
+    case "anthropic": out = fromAnthropic(raw); break;
+    case "bedrock":  out = fromBedrock(raw); break;
+    case "llamacpp": out = fromLlamaCpp(raw); break;
     default:
       // Unknown dialect — try structurally before giving up.
       if (Array.isArray(raw && raw.candidates)) out = fromGemini(raw);

@@ -256,8 +256,9 @@ if (ADAPTER) {
 //   STATIC: where it is wired; DYNAMIC: extract the real normalizeResponse
 //   from api.js, eval it, then feed fixtures.
 // ─────────────────────────────────────────────────────────────
-assert("D1  api.js requires external tools/tool.js",
-  src.includes('require("./external tools/tool.js")'));
+assert("D1  response adapter requires external tools/tool.js",
+  require("fs").readFileSync(require("path").resolve(__dirname, "..", "normalizer", "api-response.js"), "utf8")
+    .includes('require("../external tools/tool.js")'));
 
 // D2. Gemini outbound functionDeclarations now live in the adapter; api.js has
 //   no gemini branch, so both paths (non-stream/stream) use the same code.
@@ -291,20 +292,20 @@ const prepareCount = src.split("toolRegister.prepare(providerId").length - 1;
 assert("D5  both call sites pass tools (toolRegister.prepare x2)",
   prepareCount === 2, prepareCount + " site(s)");
 
-// D6 — extract the real normalizeResponse block from api.js (not a copy).
-const nrStart = src.indexOf("function normalizeResponse(raw, modelHint) {");
-const bannerIdx = nrStart > 0 ? src.indexOf("MODEL CALL", nrStart) : -1;
-let nrBlock = "";
-if (nrStart > 0 && bannerIdx > 0) nrBlock = src.slice(nrStart, src.lastIndexOf("\n", src.lastIndexOf("\n", bannerIdx)));
-assert("D6  normalizeResponse block extracted", nrBlock.length > 2000, nrBlock.length + " chars");
+// D6 — the real adapter now lives in normalizer/api-response.js and delegates
+// every text dialect to normalizer/index.js. No copy is evaluated here.
+const apiResponse = require(path.resolve(__dirname, "..", "normalizer", "api-response.js"));
+assert("D6  api.js delegates to normalizer/api-response.js",
+  src.includes("createNormalizeResponse") && src.includes("normalizer/api-response.js"),
+  "delegation missing");
 
 let normalizeResponse = null;
-if (nrBlock) {
-  try {
-    normalizeResponse = new Function("log", "maskModelName", "TOOLADAPTER",
-      nrBlock + "\nreturn normalizeResponse;")(() => {}, (m) => m, ADAPTER);
-  } catch (e) { fact("D6  eval error", e.message); }
-}
+try {
+  normalizeResponse = apiResponse.createNormalizeResponse({
+    maskModelName: (m) => m,
+    log: () => {},
+  });
+} catch (e) { fact("D6  adapter error", e.message); }
 assert("D6b normalizeResponse evaluated", typeof normalizeResponse === "function");
 
 if (typeof normalizeResponse === "function" && ADAPTER) {
