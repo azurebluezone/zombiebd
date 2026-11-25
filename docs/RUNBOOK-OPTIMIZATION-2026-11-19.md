@@ -1333,6 +1333,8 @@ bash scripts/rebuild-restart.sh --restart # REBUILD_RESTART_OK
 | 8 | **Log truth ও noise** — chat entry route ব্যর্থ হলেও `status:200`; `PROVIDER_SKIP_DOWN` প্রতি request-এ ৫০+ লাইন | `api.js` `CHAT_ACCEPTED`; `PROVIDER_SKIP_DOWN` once-per-provider; live count `574` (পুরোনো) | **FIXED + LIVE VERIFIED (2026-11-26 00:37)** — `CHAT_ACCEPTED` live log-এ আছে; `PROVIDER_SKIP_DOWN` count `574`-এ স্থির (restart-এর পরে নতুন লাইন নেই) | `LOG_TRUTH_OK` |
 | 9 | **NOTE-STORE dual-instance warning** | `logs/systemd-err.log`: `Another instance is using /home/sahon/zombiebd/dist/data`; current lock `data/.note-store.lock` pid `59007`, একমাত্র live gateway | **NOT A BUG NOW** — bridge child একই data dir-এ note-store load করলে warning দেয়; lock pid live। ভবিষ্যতে bridge-কে note-store থেকে সরানো বা lock owner আলাদা করা | — |
 
+**২০২৬-১১-২৭ লাইভ প্রমাণ (row 1–6):** `scripts/rebuild-restart.sh --restart` → `REBUILD_RESTART_OK api_sha=45582d63e7a3`; `GET /health` 200 version 3.2.1; admin token ছাড়া `POST /api/mission` + `terminal` → 401 `MISSION_PRIVILEGE_REQUIRES_ADMIN`; boot log `FS_SCOPE mode=unrestricted` + `FS_SCOPE_UNRESTRICTED`; `UDS_LISTENING protocols=["mcp","openai"]` এক socket; `docs-current` 14/14। R2T live-এ disabled; enabled exploit path ইচ্ছাকৃতভাবে unexercised।
+
 ### 15.1 এই pass-এ ছোট runtime fix (restart-এর পরে live)
 
 - `stripMissionChatArtifacts()` — stream/non-stream-এ হুবহু duplicate ৫-regex chain এক জায়গায়; `node --check api.js` exit 0।
