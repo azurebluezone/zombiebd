@@ -1156,7 +1156,7 @@ ocr: 4, tts: 3, screen-recorder: 4 → 11 shipped
 
 | Module | api.js-এ সমমানের কোড | প্রমাণ | সিদ্ধান্ত |
 |---|---|---|---|
-| `normalizer/index.js` (৫৪১) | `normalizeResponse()` ২৮৭ লাইন; `/api/normalize`, r2t, internal call-এ ব্যবহৃত | `api.js:6373-6659`, call `:14632,:19432,:19540`; provider adapter `provider/openai.js:22` canonical `normalize` ব্যবহার করে | **NOT_WIRED in api.js** — provider path canonical, dev/r2t path second copy; একীভূত করতে golden-output test দরকার |
+| `normalizer/index.js` (৫৪১) | `normalizeResponse()` ২৮৭ লাইন; `/api/normalize`, r2t, internal call-এ ব্যবহৃত | `api.js:6373-6659`, call `:14632,:19434,:19543`; provider adapter `provider/openai.js:22` canonical `normalize` ব্যবহার করে | **NOT_WIRED in api.js** — provider path canonical, dev/r2t path second copy; একীভূত করতে golden-output test দরকার |
 | `modules/intent.js` (২৫২) | `classifyInput()` ১৮১ লাইন | `api.js:7736-7916`, call `:8853,:9457`; module থেকে শুধু `PROMPTS` import (`:765-768`) | **PARTIAL** — prompt comes from module, classification still local |
 | `modules/sessions.js` (২৩৪) | `readSessions`/`writeSessions`/`cleanExpired`/`createSession`/`getSession`/`updateSession` ২৭৭ লাইন | `api.js:5794-6070`; `modules/sessions.js:234` exports `SessionStore`, production importer নেই | **NOT_WIRED** — দুটি ভিন্ন concern (agent-turn archive vs client session); merge decision খোলা |
 | `modules/config.js` (১৪৭) | `lib/env.js` loader; api.js-এ direct `process.env.X || default` শত শত জায়গায় | `tests/env-loader-check.js:58` নিজেই বলে api.js এই module import করবে না | **DEAD for runtime** — config resolver-এর importer নেই; ভবিষ্যতে `lib/env`-এর সাথে merge অথবা delete |
@@ -1169,13 +1169,13 @@ ocr: 4, tts: 3, screen-recorder: 4 → 11 shipped
 
 | ID | Finding | প্রমাণ (path:line) | অবস্থা / ঝুঁকি |
 |---|---|---|---|
-| **F21** | **r2t `[[TOOL:exec]]` — request body থেকেই shell, কোনো admin gate নেই; default ছিল `true`** | আগে `api.js:19454` `process.env.R2T_ENABLED || "true"`; executor `:19611-19620`; `.env:160` এই মেশিনে `false` | **FIXED (opt-in)** — এখন শুধু exact `true`; test `R2T_TRACE_OK 15/15`। `.env` আগে থেকেই false, তাই live behaviour অপরিবর্তিত |
+| **F21** | **r2t `[[TOOL:exec]]` — request body থেকেই shell, কোনো admin gate নেই; default ছিল `true`** | আগে `process.env.R2T_ENABLED || "true"` (বর্তমান line `api.js:19457`); executor `:19614-19623`; `.env:160` এই মেশিনে `false` | **FIXED (opt-in)** — এখন শুধু exact `true`; test `R2T_TRACE_OK 15/15`। `.env` আগে থেকেই false, তাই live behaviour অপরিবর্তিত |
 | **F22** | `/api/mission`-এ shell/file tool "in-process", admin token ছাড়া; auth optional | `modules/surface-policy.js:52-62` (`privileged: "in-process"`), `api.js:16969-16974` optional auth, `authFromRequest` no-header → `{ok:null}` (`:4732`), `:16935` route | **OPEN** — local-agent trust model; loopback-only। কিন্তু browser/other local process-এর জন্য blast radius বড়; §15-এ decision দরকার |
 | **F23** | FS scope default `unrestricted`; terminal guard শুধু `cwd` দেখে, command দেখে না | `api.js:10539` default, `:10743-10762` `outsideSession(cwd)` তারপর `bash -c cmd`; `restricted`-ও `$HOME` allow করে (`:10570-10577`) | **OPEN / accepted** — `cd / && cat /etc/passwd` cwd guard পাশ কাটায়; unrestricted-এ guard-ই চলে না। §15-এ explicit accept/decision |
 | **F24** | Admin fail-open switch: `ADMIN_ALLOW_UNAUTHENTICATED=true` + token unset → সব admin route open | `api.js:4791-4801`; `.env`-এ flag absent, তাই এখন fail-closed | **OPEN (config)** — production-এ flag সেট না করার guard দরকার; docs-এ इसे "dev only" রাখা |
 | **F25** | Panel cookie-তে `Secure` নেই; panel GET credential ছাড়াই cookie mint করে | `lib/admin-session.js:54-61`; `api.js:14276-14281` | **OPEN (low/medium)** — loopback HTTP-তে Secure cookie কাজ করবে না, কিন্তু HTTPS edge-এ downgrade risk; token ছাড়া cookie একা admin route খোলে না (`:4817-4819`) |
 | **F26** | Admin token প্রথমে সাধারণ `===`, পরে constant-time helper | `api.js:4804-4811` (`got === want` short-circuit), `mcpAdminTokenOk` | **OPEN (low)** — ৪৮-char token-এ network timing attack অবাস্তব, তবু first compare সরানো সহজ |
-| **F27** | Provider-wide breaker model-scoped 404/400-এ trip করত; retired Gemini 2.5 পুরো Gemini skip করিয়েছিল | live log: `PROVIDER_UNHEALTHY consecutiveFailures:3 lastError:http_404 …gemini-2.5-pro` (`logs/2026-11-25.log`, 17:40:28); `api.js:12707` আগের `markProviderFailure` | **FIXED** — `lib/provider-failure.js`; 400/404-model health ledger-এ যাবে না, 503/429 যাবে; `PROVIDER_HEALTH_OK 17/17` |
+| **F27** | Provider-wide breaker model-scoped 404/400-এ trip করত; retired Gemini 2.5 পুরো Gemini skip করিয়েছিল | live log: `PROVIDER_UNHEALTHY consecutiveFailures:3 lastError:http_404 …gemini-2.5-pro` (`logs/2026-11-25.log`, 17:40:28); `api.js:12743` (`markProviderFailure`) | **FIXED** — `lib/provider-failure.js`; 400/404-model health ledger-এ যাবে না, 503/429 যাবে; `PROVIDER_HEALTH_OK 17/17` |
 | **F28** | MCP `MCP-Protocol-Version: 2026-07-28` (client future date) প্রতিটি call-এ 400; ৫২টি reject | `logs/2026-11-25.log` 17:30–17:34 `MCP_HEADER_REJECTED …2026-07-28`; `modules/mcp-protocol.js` `isForwardProtocolVersion` | **FIXED** — future valid ISO date accepted as forward-compat, `2026-13-99` rejected; `MCP_API_INTEGRATION_OK`; live restart pending |
 | **F29** | পুরোনো UDS parser + `OPENAI_UDS_PATH` branch canonical gateway-এর পাশে টিকে আছে | `api.js:18319-18406`, `transport/uds-gateway.js`; scripts `scripts/dist-verify.sh`, `scripts/p4-verify.sh`, `tests/agent-transport-e2e.js` এখনো legacy path ব্যবহার করে | **OPEN** — naive delete scripts ভাঙবে; migration plan দরকার |
 | **F30** | `api.js`-এ দ্বিতীয় normalizer/intent/session implementation | §17.২ table: ২৮৭ + ১৮১ + ২৭৭ = ৭৪৫ লাইন | **OPEN** — একীভূত করতে behaviour/golden test; line count নয়, duplicate behaviour মাপা হবে |
@@ -1189,7 +1189,7 @@ ocr: 4, tts: 3, screen-recorder: 4 → 11 shipped
 | Provider error scope | api.js-এ inline ১১-লাইন classifier | `lib/provider-failure.js` (১৯ লাইন), reusable + test | `PROVIDER_HEALTH_OK 17/17` |
 | Chat entry log | routing-এর আগেই `REQUEST status:200` | `CHAT_ACCEPTED` (status নেই) | `api.js` chat entry |
 | `PROVIDER_SKIP_DOWN` | প্রতি resolve-এ একই provider-এর জন্য ৫০+ লাইন | client+provider per-process একবার | live log আগে ৫৭৪/day; restart-এর পরে যাচাই বাকি |
-| r2t default | absent → enabled, arbitrary `exec` | absent/false → disabled; exact `true` opt-in | `api.js:19454`; `R2T_TRACE_OK 15/15` |
+| r2t default | absent → enabled, arbitrary `exec` | absent/false → disabled; exact `true` opt-in | `api.js:19457`; `R2T_TRACE_OK 15/15` |
 | Panel test auth | `provider-panel-ops-check` bare token → 401 | `/admin/zombie` cookie bootstrap | `PROVIDER_PANEL_OPS_OK 18/18` |
 
 ### ১৭.৫ সীমা — যা এখনো প্রমাণিত নয়
