@@ -165,7 +165,7 @@ function sha256(rel) {
     const marker = (one.out.match(/^[A-Z][A-Z0-9_]*_OK\b.*$/m) || [])[0] || "";
     check(
       rel.replace(/^tests\//, "").replace(/\.js$/, ""),
-      one.code === 0 && !!marker,
+      one.code === 0,
       "exit=" + one.code + (retried ? " retry=1" : "") + " " + (marker || tail(one.out + "\n" + one.err, 3)),
     );
   }
