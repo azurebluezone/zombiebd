@@ -1,0 +1,76 @@
+{
+  "title": "অডিট রিপোর্ট পর্যালোচনা এবং মডিউল ইমপোর্ট প্রস্তাবনা",
+  "created_at": "2026-11-23T18:48:07.400455+00:00",
+  "voice": "bn-BD-NabanitaNeural",
+  "rate": "-5%",
+  "audio_file": "docs/audio/audit-apijs-2026-11-24-bn.mp3",
+  "narration_file": "docs/audio/audit-apijs-2026-11-24-bn.txt",
+  "audio_sha256": "009ddf1338ff991b0d0b40d0d9beae53752066e4e6d794cf6cc654308e13810e",
+  "narration_sha256": "10e40e9703476a2320f09841b73407cfacea7ddf3815e82981c3324fe9cb66fb",
+  "duration_seconds": 948.74,
+  "size_bytes": 5692464,
+  "format": "mp3",
+  "streams": [
+    {
+      "codec_type": "audio",
+      "codec_name": "mp3"
+    }
+  ],
+  "verdict": "core agree; details conditional; module-import proposal approved",
+  "evidence": [
+    {
+      "claim": "HTTP mission uses executeSingleAgent while MCP mission uses executeMission",
+      "path": "api.js",
+      "lines": "19245-19252, 11006, 8782, 9313",
+      "label": "SOURCE_VERIFIED"
+    },
+    {
+      "claim": "The /v1 agent branch bypasses handleMessage",
+      "path": "api.js",
+      "lines": "16469, 19131",
+      "label": "SOURCE_VERIFIED"
+    },
+    {
+      "claim": "write_file reports success without compiling the written file",
+      "path": "api.js",
+      "lines": "10687-10702, 19304; modules/compiler.js:53",
+      "label": "SOURCE_VERIFIED"
+    },
+    {
+      "claim": "verifyGoalOutput replaces failed content with a canned message and ignores userInput",
+      "path": "api.js",
+      "lines": "9646-9652, 12336-12435",
+      "label": "SOURCE_VERIFIED"
+    },
+    {
+      "claim": "shutdown is synchronous and misses HTTPS, h2c, gRPC and watchdog",
+      "path": "api.js",
+      "lines": "19622-19683",
+      "label": "SOURCE_VERIFIED"
+    },
+    {
+      "claim": "registering modules/config.js and modules/sessions.js is absent",
+      "path": "api.js",
+      "lines": "no require for either module",
+      "label": "SOURCE_VERIFIED"
+    },
+    {
+      "claim": "servers.json exists here and enables tts, ocr and screen-recorder",
+      "path": "external mcp/servers.json",
+      "lines": "1-40",
+      "label": "CONFIG_VALIDATED"
+    },
+    {
+      "claim": "the /api/connect agent branch passes arguments in the wrong order",
+      "path": "api.js",
+      "lines": "17705-17709 vs signature 9313-9320",
+      "label": "SOURCE_VERIFIED"
+    },
+    {
+      "claim": "handleMessage passes a params object into the boolean stream parameter",
+      "path": "api.js",
+      "lines": "19234, 19247, 19280, 9515-9566",
+      "label": "SOURCE_VERIFIED"
+    }
+  ]
+}
