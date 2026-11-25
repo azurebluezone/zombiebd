@@ -1281,7 +1281,7 @@ Browser CDP screenshot, VS Code/opencode client, ৭ vhost, ৫ red suite, relea
 - `provider-matrix`-এর ৭টি `SKIP`: `llama-cpu` (9932 unreachable), `ollama-cloud` (402 credits), `ollama-local`-এর `lfm3:1.7b` (উত্তর দেয়, tool call করে না)। এগুলো এই pass-এ ঠিক হয়নি; test শুধু তাদের আলাদা করে দেখায়।
 - `uds-e2e`-তে Gemini এই run-এ attempt 2-এ 200 পেয়েছে; upstream আবার 503 দিলে test `SKIP` লেখবে, 502 permanent হলে fail করবে।
 - OpenCode `OPENCODE_ENABLED=false` (admin-disabled) — deliberate skip, error নয়।
-- `dist` rebuild + restart হয়েছে (`REBUILD_RESTART_OK`, sha `9314b489…`), কিন্তু docs gate push-নির্ভর; commit/push আলাদা ধাপ।
+- `dist` rebuild + restart হয়েছে (`REBUILD_RESTART_OK`, sha `9314b489…`); docs gate `14/14 DOCS_CURRENT_OK`, docs+f fixes commit `1e18897` `origin/main`-এ push করা।
 
 ### 13.4 প্রমাণ কমান্ড
 
