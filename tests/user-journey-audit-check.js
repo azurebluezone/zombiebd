@@ -27,7 +27,7 @@ const ROOT = path.resolve(__dirname, "..");
 const HOST = "127.0.0.1";
 const PORT = 5050;
 const RUNBOOK = path.join(ROOT, "docs/RUNBOOK-OPTIMIZATION-2026-11-19.md");
-const AUDIO = "/home/sahon/Music/mp3/zc lama/zc-audit-2026-11-21.mp3";
+const AUDIO = path.join(ROOT, "tmp", "audio", "zc-rebuild-flow-2026-11-21.mp3");
 const VHOSTS = [
   "ocr.localhost",
   "screen.localhost",

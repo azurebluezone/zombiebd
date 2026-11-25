@@ -162,7 +162,11 @@ function runbookRows(text) {
 
   await check("PLAN: next TODO row matches the runbook", () => {
     const next = table.find((row) => !row.done);
-    assert(next, "runbook has no TODO row left");
+    if (!next) {
+      assert(plan.includes("`RELEASE_READY_OK`"), "PLAN does not mention RELEASE_READY_OK");
+      assert(/(?:১৯|19)\/19|ALL ROWS DONE|সব row DONE/i.test(plan), "PLAN does not record the closed backlog");
+      return "all " + table.length + " rows DONE";
+    }
     assert(plan.includes(next.gate), "PLAN does not mention " + next.gate);
     const planRow =
       plan

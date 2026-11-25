@@ -325,16 +325,17 @@ async function main() {
 
   // Bengali bytes through the file tools: write once over HTTP, read back
   // over HTTP and UDS, compare SHA-256 with the original UTF-8 bytes.
+  // ZWNJ/ZWJ are deliberately stripped by sanitizeForWrite (hardening-check
+  // owns that contract), so the byte-integrity payload uses clean text and a
+  // separate write below proves the documented stripping.
   const token = envSecret("MCP_ADMIN_TOKEN") || envSecret("ADMIN_API_KEY");
   const authHeaders = token ? { Authorization: "Bearer " + token } : {};
   const bengaliText = [
     BENGALI.composed,
     BENGALI.decomposed,
-    BENGALI.zwnj,
-    BENGALI.zwj,
     BENGALI.astral,
     "\u09ac\u09be\u0982\u09b2\u09be: \u0995\u09cd\u200C\u09b7, \u099c\u09af\u09bc\u09a8\u09be\u09b2, \u09a1\u09bc, \u09a2\u09bc",
-  ].join(" ");
+  ].join(" ").replace(/[\u200C\u200D]/g, "");
   const target = path.join(SCRATCH, "bengali-" + process.pid + ".txt");
   const writeRes = await mcpToolHttp(ALLOWED_ORIGIN, "write_file", { path: target, content: bengaliText }, authHeaders);
   const expected = crypto.createHash("sha256").update(Buffer.from(bengaliText, "utf8")).digest("hex");
@@ -353,7 +354,20 @@ async function main() {
   byteErrors.length === 0
     ? pass("bengali-bytes", "sha256=" + expected.slice(0, 16) + " http+uds")
     : fail("bengali-bytes", byteErrors.join("; "));
+  const dirtyTarget = path.join(SCRATCH, "bengali-zwnj-" + process.pid + ".txt");
+  const dirtyText = BENGALI.zwnj + BENGALI.zwj + "x";
+  const dirtyWrite = await mcpToolHttp(ALLOWED_ORIGIN, "write_file", { path: dirtyTarget, content: dirtyText }, authHeaders);
+  const dirtyRead = await mcpToolHttp(ALLOWED_ORIGIN, "read_file", { path: dirtyTarget });
+  const dirtyStored = mcpText(dirtyRead);
+  const stripErrors = [];
+  if (dirtyWrite.status !== 200) stripErrors.push("write status=" + dirtyWrite.status);
+  const dirtyExpected = dirtyText.replace(/[\u200C\u200D]/g, "");
+  if (dirtyStored !== dirtyExpected) stripErrors.push("stored=" + JSON.stringify(dirtyStored) + " expected=" + JSON.stringify(dirtyExpected));
+  stripErrors.length === 0
+    ? pass("bengali-zwnj-strip", "write_file removed ZWNJ/ZWJ")
+    : fail("bengali-zwnj-strip", stripErrors.join("; "));
   await mcpToolHttp(ALLOWED_ORIGIN, "delete_file", { path: target }, authHeaders);
+  await mcpToolHttp(ALLOWED_ORIGIN, "delete_file", { path: dirtyTarget }, authHeaders);
 
   if (failures.length) {
     console.log("RESULT: ALL TRANSPORTS FAIL " + failures.join(","));

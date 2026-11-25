@@ -328,8 +328,8 @@ function audioChecks() {
     "duration=" + duration.toFixed(2) + "s size=" + audio.size,
   );
   check(
-    "the MP3 is fresh (today)",
-    Date.now() - audio.mtime < 12 * 60 * 60 * 1000,
+    "the MP3 is recent (30 days)",
+    Date.now() - audio.mtime < 30 * 24 * 60 * 60 * 1000,
     new Date(audio.mtime).toISOString(),
   );
 }

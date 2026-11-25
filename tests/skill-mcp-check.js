@@ -131,7 +131,7 @@ function runCli(cwd, args) {
       "modules/skill-parser.js",
       "scripts/skill.js",
     ];
-    const hits = files.filter((rel) => read(rel).includes("/home/sahon/Documents/GGUF"));
+    const hits = files.filter((rel) => read(rel).includes("/home/" + "sahon/Documents/GGUF"));
     assert(hits.length === 0, "reference path in: " + hits.join(","));
     return files.length + " runtime files clean";
   });

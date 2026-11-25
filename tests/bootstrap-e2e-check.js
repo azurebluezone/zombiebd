@@ -62,7 +62,7 @@ function getJson(pathname, headers) {
           } catch (_) {
             body = null;
           }
-          resolve({ status: res.statusCode, body, text });
+          resolve({ status: res.statusCode, body, text, headers: res.headers });
         });
       },
     );
@@ -73,8 +73,10 @@ function getJson(pathname, headers) {
 }
 
 async function main() {
+  // start.js is the repo-root launcher and is deliberately not copied into
+  // dist (scripts/build.js); the launcher execs dist/api.js.
+  if (!fs.existsSync(path.join(ROOT, "start.js"))) die("missing artifact: start.js");
   for (const rel of [
-    "dist/start.js",
     "dist/api.js",
     "dist/VERSION",
     "dist/manifest.json",
@@ -117,7 +119,7 @@ async function main() {
   const mainPid = Number((shown.match(/MainPID=(\d+)/) || [])[1] || 0);
   if (!mainPid) die("gateway unit has no MainPID");
   const cmdline = fs.readFileSync("/proc/" + mainPid + "/cmdline", "utf8").replace(/\0/g, " ").trim();
-  if (!cmdline.includes("dist/start.js")) die("MainPID " + mainPid + " is not dist/start.js: " + cmdline);
+  if (!/(^|\/)start\.js\b/.test(cmdline)) die("MainPID " + mainPid + " is not start.js: " + cmdline);
   ok("gateway active MainPID=" + mainPid + " (" + cmdline + ")");
 
   const health = await getJson("/health");
@@ -131,7 +133,12 @@ async function main() {
 
   const token = RAW_ENV.ADMIN_TOKEN || RAW_ENV.ADMIN_API_KEY || "";
   if (!token) die("ADMIN_TOKEN is not set; cannot read the live provider catalog");
-  const admin = await getJson("/api/admin/providers", { "x-admin-token": token });
+  const panel = await getJson("/admin/zombie", { "x-admin-token": token });
+  const panelCookie = [].concat(panel.headers && panel.headers["set-cookie"] || [])
+    .map((line) => String(line).split(";")[0])
+    .join("; ");
+  if (!panelCookie) die("GET /admin/zombie did not mint a panel session cookie (status " + panel.status + ")");
+  const admin = await getJson("/api/admin/providers", { "x-admin-token": token, cookie: panelCookie });
   if (admin.status !== 200 || !admin.body || !Array.isArray(admin.body.providers)) {
     die("GET /api/admin/providers failed: " + admin.status + " " + admin.text.slice(0, 200));
   }

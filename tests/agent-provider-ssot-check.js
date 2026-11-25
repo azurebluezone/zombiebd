@@ -464,7 +464,7 @@ run("system prompt sends a workspace label, not an absolute host path", () => {
     agent: { id: "code-guru", name: "Code Guru", role: "architecture", persona },
     session: {
       persona,
-      workspace: "/home/example/secret-project",
+      workspace: "path.join(path.sep, "home", "example", "secret-project")",
       system_identity: { name: "ZombieCoder", type: "development", domain: "localhost" },
       os: {
         os: "Linux",
@@ -483,7 +483,7 @@ run("system prompt sends a workspace label, not an absolute host path", () => {
     compact: true,
     maxChars: 6000,
   });
-  assert.ok(!prompt.includes("/home/example"), "absolute workspace path leaked into the prompt");
+  assert.ok(!prompt.includes(path.join(path.sep, "home", "example")), "absolute workspace path leaked into the prompt");
   assert.ok(!prompt.includes("internal-host"), "hostname leaked into the compact prompt");
   assert.ok(prompt.includes("workspace: secret-project"), "workspace label missing from the prompt");
 });

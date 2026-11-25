@@ -33,6 +33,30 @@ const NGINX_TEMPLATE = path.join(TEMPLATE_DIR, "nginx.conf.template");
 const ADMIN_PATHS = Object.freeze(["/admin", "/api/admin"]);
 const PROVIDERS = new Set(["auto", "caddy", "nginx", "none"]);
 
+// The seven standalone HTTP tool hosts that returned 502 on 2026-11-25: their
+// upstream ports had no listener because those tools are stdio MCP children,
+// not HTTP services. They were removed from the live edge. Keep the removal
+// pinned here so a stale deploy/tools.json or TOOL_BASE_DOMAIN cannot bring a
+// dead host back. A host is retired at the bare name and at any subdomain of
+// that name (e.g. "ocr" and "ocr.example.test").
+const RETIRED_TOOL_HOSTS = Object.freeze([
+  "ocr",
+  "screen",
+  "tts",
+  "ads",
+  "public",
+  "combined",
+  "adapter",
+]);
+
+function isRetiredToolHost(host) {
+  const value = String(host || "").trim().toLowerCase().replace(/\.$/, "");
+  if (!value) return false;
+  return RETIRED_TOOL_HOSTS.some(
+    (name) => value === name || value.startsWith(name + "."),
+  );
+}
+
 function commandExists(name) {
   try {
     execFileSync("sh", ["-c", "command -v " + name], { stdio: "ignore" });
@@ -158,6 +182,7 @@ function toolSites(cfg) {
         : "");
     const port = Number(cfg.env[tool.portEnv] || 0);
     if (!host || !Number.isInteger(port) || port < 1) continue;
+    if (isRetiredToolHost(host)) continue;
     sites.push({ name: tool.name, host, port });
   }
   return sites;
@@ -518,6 +543,8 @@ function formatApplyLine(applied) {
 
 module.exports = {
   ADMIN_PATHS,
+  RETIRED_TOOL_HOSTS,
+  isRetiredToolHost,
   resolveEdgeConfig,
   renderCaddy,
   renderNginx,

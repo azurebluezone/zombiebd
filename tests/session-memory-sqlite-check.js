@@ -290,12 +290,23 @@ if (live) {
     validLegacy = 0;
   }
 
-  check("live project legacy archives imported", imported >= 1, "legacy_files=" + imported);
-  check(
-    "live project memory rows cover every valid legacy archive",
-    liveRows >= validLegacy && liveRows <= imported,
-    "rows=" + liveRows + " validLegacy=" + validLegacy + " files=" + imported,
-  );
+  if (imported === 0 && validLegacy === 0) {
+    // Idempotent steady state: legacy files are gone and the importer has
+    // nothing left to claim. This is the healthy post-migration state.
+    check("live project legacy archives imported", liveRows >= 1, "legacy_files=0 rows=" + liveRows);
+    check(
+      "live project memory rows cover every valid legacy archive",
+      true,
+      "no legacy files remain; rows=" + liveRows,
+    );
+  } else {
+    check("live project legacy archives imported", imported >= 1, "legacy_files=" + imported);
+    check(
+      "live project memory rows cover every valid legacy archive",
+      liveRows >= validLegacy && liveRows <= imported,
+      "rows=" + liveRows + " validLegacy=" + validLegacy + " files=" + imported,
+    );
+  }
 }
 
 // ── Result ─────────────────────────────────────────────────

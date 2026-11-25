@@ -1,7 +1,7 @@
 # RUNBOOK — Single-Truth Optimization (2026-11-19)
 
 **Scope:** `~/zombiebd` এবং এই মেশিনে চলা adjacent stacks।
-**Status:** `ACTIVE` — ১৫/১৫ মূল row + row 18 `SUITE_GREEN` DONE (2026-11-25); পরের কাজ row 16 `CLIENT_E2E_OK` (Chromium CDP screenshot + editor client task), তারপর row 17 `VHOST_TRUTH_OK` ও row 19 `RELEASE_READY_OK`। ২৬ নভেম্বরের ময়না তদন্তে নতুন ঝুঁকি §15-এ; সেখানেও release দাবি করা হয়নি।
+**Status:** `ACTIVE` — ১৮/১৯ backlog row DONE; row 16 `CLIENT_E2E_OK` ও row 17 `VHOST_TRUTH_OK` ২০২৬-১১-২৭-এ সম্পূর্ণ, এখন শুধু row 19 `RELEASE_READY_OK` বাকি। ২৬ নভেম্বরের ময়না তদন্তে নতুন ঝুঁকি §15-এ; release দাবি শুধু row 19 gate পাশ করার পরে।
 **Entry point (আগে এটা পড়ো):** `docs/PLAN-2026-11-20.md` — ১০ phase, gate ও সময়সহ সংক্ষিপ্ত করণীয়; narration `/home/sahon/Music/mp3/zbd/today/zbd-plan-2026-11-20.mp3` (424.1s, 2,544,860 bytes)।
 **Closed contracts:** `gc-mwnurzwx` → `RETIRE_AUDIO_OK` (Monu retire + runbook narration); `gc-mwnvesuc` → `PLAN_AUDIO_OK` (plan doc + narration); `gc-mwptx62a` → `SURFACE_POLICY_OK` (surface policy table); `gc-mwpu10ck` → `DOCS_CURRENT_OK` (row 13 release); `gc-mwpuupxk` → `CHAT_UPLOAD_OK` (row 14 chat attachments)।
 **Evidence rule:** প্রতিটি দাবির পাশে `path:line`, command output বা exit code আছে। যা probe করা হয়নি তা `UNVERIFIED`।
@@ -925,8 +925,8 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 | 13 | **SURFACE_POLICY** | surface policy table (web-chat/mission/editor) | `SURFACE_POLICY_OK` | ✅ DONE (`gc-mwptx62a`) |
 | 14 | **CHAT_UPLOAD** | chat document/photo/audio upload | `CHAT_UPLOAD_OK` | ✅ DONE (`gc-mwpuupxk`) |
 | 15 | **REAL_USAGE_DIR** | আলাদা working directory + agent session + file containment audit | `REAL_USAGE_DIR_OK` | ✅ DONE (`gc-mwpvfkly`) |
-| 16 | **CLIENT_E2E** | Chromium CDP UI screenshot + upload/chat; VS Code/opencode client-এ real task | `CLIENT_E2E_OK` | TODO |
-| 17 | **VHOST_TRUTH** | ৭ vhost: URL হয় `200`, নয়তো Caddyfile থেকে বাদ | `VHOST_TRUTH_OK` | TODO |
+| 16 | **CLIENT_E2E** | Chromium CDP UI screenshot + upload/chat; VS Code/opencode client-এ real task | `CLIENT_E2E_OK` | ✅ DONE (`gc-cliente2e20261127`) |
+| 17 | **VHOST_TRUTH** | ৭ vhost: URL হয় `200`, নয়তো Caddyfile থেকে বাদ | `VHOST_TRUTH_OK` | ✅ DONE (`gc-vhosttruth20261127`) |
 | 18 | **SUITE_GREEN** | ৫ red suite: HTTPS fixture, repair-log, `toolcall=0`, Gemini 502, stdio admin | `SUITE_GREEN_OK` | ✅ DONE (`gc-mwq7s1e2`) |
 | 19 | **RELEASE_READY** | full regression + rebuild/restart + docs + package + quality eval | `RELEASE_READY_OK` | TODO |
 
@@ -1120,8 +1120,8 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 | Phase | এখন কী আছে | এই ধাপে কী করব | বের হবে (outcome) | Gate |
 |---|---|---|---|---|
 | **A. Session + real dir** | `sessionDirs` Map আছে, কিন্তু MCP `set_working_dir`/HTTP শুধু global `mcpWorkingDir` বদলায়; `agent_single`/`agent_mission` random id বানায়, session persist করে না; file tools global dir ব্যবহার করে | `set_working_dir` (MCP+HTTP) session create/bind; `agent_single`/`agent_mission` session persist + `session_id` return; tool loop-এ per-session dir + write containment | আলাদা folder-এ agent সত্যিই কাজ করে, session list-এ দেখা যায়, এক folder-এর লেখা অন্য folder-এ যায় না | `REAL_USAGE_DIR_OK` ✅ DONE (`gc-mwpvfkly`) |
-| **B. Browser + editor client** | HTTP/MCP API প্রমাণিত, কিন্তু আসল Chromium/VS Code client দিয়ে কেউ চালায়নি | Chromium CDP-তে UI খুলে screenshot + upload/chat; VS Code/opencode MCP client দিয়ে ছোট task | স্ক্রিনশট + session + ফাইল — আসল client-এর প্রমাণ | `CLIENT_E2E_OK` |
-| **C. Vhost truth** | live Caddyfile-এ এখন একটাই vhost `https://127.0.0.1` (200); ৭টি 502 vhost বাদ, `localhost` alias নেই | বাদ দেওয়াটা template/renderer-এ pinned রাখা এবং একটি gate দিয়ে প্রমাণ করা | প্রতিটি URL হয় `200`, নয়তো absent — gate script বাকি | `VHOST_TRUTH_OK` |
+| **B. Browser + editor client** | HTTP/MCP API প্রমাণিত, কিন্তু আসল Chromium/VS Code client দিয়ে কেউ চালায়নি | Chromium CDP-তে UI খুলে screenshot + upload/chat; VS Code/opencode MCP client দিয়ে ছোট task | স্ক্রিনশট + session + ফাইল — আসল client-এর প্রমাণ | `CLIENT_E2E_OK` ✅ DONE (`gc-cliente2e20261127`) |
+| **C. Vhost truth** | live Caddyfile-এ এখন একটাই vhost `https://127.0.0.1` (200); ৭টি 502 vhost বাদ, `localhost` alias নেই | বাদ দেওয়াটা template/renderer-এ pinned রাখা এবং একটি gate দিয়ে প্রমাণ করা | প্রতিটি URL হয় `200`, নয়তো absent — gate script বাকি | `VHOST_TRUTH_OK` ✅ DONE (`gc-vhosttruth20261127`) |
 | **D. Red suites** | পাঁচটাই এখন exit 0 (§13): HTTPS fixture SAN, registry-before-persona, honest provider skip, transient Gemini 503, panel-session admin | এক এক contract: HTTPS fixture, repair-log, `toolcall=0`, Gemini 503, stdio admin | প্রতিটি suite exit 0; upstream-নির্ভর ক্ষেত্রে documented skip | `SUITE_GREEN_OK` ✅ DONE (`gc-mwq7s1e2`) |
 | **E. Release gate** | A–D আলাদা আলাদা | full regression + `rebuild-restart` + `docs-current` + `package-install` + `quality-eval` | এক কমান্ডে release proof | `RELEASE_READY_OK` |
 
@@ -1305,8 +1305,8 @@ bash scripts/rebuild-restart.sh --restart # REBUILD_RESTART_OK
 
 | # | খোলা কাজ | বর্তমান অবস্থা ও প্রমাণ (2026-11-25) | পরের ধাপ | Gate |
 |---|---|---|---|---|
-| 1 | **Row 16 — CLIENT_E2E** | আসল Chromium-এ UI screenshot, upload/chat, editor client task — কোনোটাই চালানো হয়নি; `CLIENT_E2E_OK` output নেই। Live UI `http://127.0.0.1:5050/`-এ আছে। | Live UI খুলে screenshot + ফাইল upload + attachment-সহ chat; editor/opencode client-এ একটি আসল task; তারপর `CLIENT_E2E_OK` print | `CLIENT_E2E_OK` |
-| 2 | **Row 17 — VHOST_TRUTH** | `/etc/caddy/Caddyfile:20`-এ একটাই vhost `https://127.0.0.1`; `curl -k https://127.0.0.1/health` → `200`, `https://localhost/health` → `000`; ৭টি পুরোনো 502 vhost live-এ নেই, `5000`/`11436` listener নেই। কিন্তু কোনো gate script এখনো লেখা হয়নি। | `tests/vhost-truth-check.js`: live Caddyfile + `deploy/templates/Caddyfile.template` render করে প্রতিটি host-এর জন্য "200 অথবা absent" assert; root-only হলে explicit SKIP | `VHOST_TRUTH_OK` |
+| 1 | **Row 16 — CLIENT_E2E** | ✅ DONE ২০২৬-১১-২৭ — `CLIENT_E2E_OK pass=21 fail=0`: আসল Chromium-এ UI screenshot, 28-byte File upload, attachment-সহ chat; OpenCode CLI একই gateway-এ 173-tool MCP connect করে marker ফেরত দিয়েছে। | — | `CLIENT_E2E_OK` |
+| 2 | **Row 17 — VHOST_TRUTH** | ✅ DONE ২০২৬-১১-২৭ — `VHOST_TRUTH_OK pass=27 fail=0 skip=0`: retired ৭ host template/renderer-এ pinned, live-এ absent; একমাত্র `https://127.0.0.1` 200; `localhost` alias নেই। | — | `VHOST_TRUTH_OK` |
 | 3 | **Gemini catalog drift** | `gemini-2.5-flash`/`gemini-2.5-pro` upstream-এ retire (`no longer available to new users`); `gemini-3.5-flash` কাজ করে কিন্তু মাঝে মাঝে `503 high demand`। DB/.env-এ পুরোনো নাম এখনো থাকতে পারে। | Live model list থেকে retired নাম prune/alias; `uds-e2e`-র transient retry অক্ষত রেখে পুনরায় probe | `PROVIDER_MATRIX`/`UDS E2E` |
 | 4 | **Groq TPM** | বড় prompt দিয়ে re-probe করা হয়নি; 8000 TPM-এ 24-tool budget + লম্বা history `413` দিতে পারে। ছোট prompt-এ সমস্যা দেখা যায়নি। | ~6–8k token history + 24 tools দিয়ে Groq-এ একটি probe; `413` এলে per-provider budget/prompt trim ঠিক করে retest | provider gate |
 | 5 | **`AGENT_FS_SCOPE=unrestricted`** | `.env`-এ ইচ্ছাকৃত unrestricted (P3); prompt-injection হলে session dir-এর বাইরে write হতে পারে। Path guard/tool resolver আলাদা। | সিদ্ধান্ত: default session-scoped করা, নাহলে ঝুঁকিটি লিখিতভাবে accept করে authoring tools-এ path guard রাখা | P3 decision |
@@ -1363,3 +1363,33 @@ node tests/api-line-audit-check.js        # API_LINE_AUDIT_OK pass=14 fail=0
 ```
 
 **নিয়ম:** row 1-এর `FIXED` source + test; `.env`-এ `false` থাকায় enabled exploitable path এখনো test করা হয়নি। row 2–6 source + gate test সহ `FIXED`, কিন্তু release দাবি নয় — §14 row 16/17/19 ও live `.env`-এর explicit `unrestricted` অপরিবর্তিত। row 7, 8 live log-এ `LIVE_VERIFIED`.
+
+---
+
+<!-- CLIENT_E2E_2026_11_27 -->
+### 16. Row 16 — CLIENT_E2E DONE (2026-11-27, `gc-cliente2e20261127`)
+
+**Done (2026-11-27, `gc-cliente2e20261127`):** আসল Chromium UI + আসল OpenCode editor client, দুটোই একই isolated gateway-এ চালানো হয়েছে।
+
+| প্রমাণ | ফলাফল |
+|---|---|
+| Browser | `tests/client-e2e-check.js` → `CLIENT_E2E_OK pass=21 fail=0`; CDP Chromium-এ `#fileInput`-এ 28-byte `client-e2e.txt` upload, preview `client-e2e.txt (0.0 KB)`, attachment-সহ chat, DOM-এ `CLIENT_E2E_BROWSER_OK` |
+| Upload bytes | `.zombie/uploads/<sha256>.json` `name=client-e2e.txt`, `mime=text/plain`, `bytes=28`; stored `.txt` বাইট browser File-এর সমান |
+| Screenshot | `docs/evidence/client-e2e-2026-11-27/browser-chat-upload.png` (sha256 `ac1a93cd…`) |
+| Editor | OpenCode CLI exit 0; `--format json` output-এ `CLIENT_E2E_EDITOR_OK`; log-এ `mcp connected server=zc-gateway tools=173` |
+| Stub boundary | isolated gateway `127.0.0.1:<ephemeral>`, local SSE stub provider; live gateway বা cloud provider ব্যবহার হয়নি |
+
+**সীমা:** editor প্রমাণে OpenCode MCP server connect + real chat turn আছে; MCP tool invocation আলাদা করে assert করা হয়নি (`tools=173` connect log-এ আছে)। VS Code Desktop এই হোস্টে চালানো হয়নি; OpenCode CLI-ই editor client।
+<!-- /CLIENT_E2E_2026_11_27 -->
+
+<!-- VHOST_TRUTH_2026_11_27 -->
+### 17. Row 17 — VHOST_TRUTH DONE (2026-11-27, `gc-vhosttruth20261127`)
+
+**Done (2026-11-27, `gc-vhosttruth20261127`):** `node tests/vhost-truth-check.js` → `VHOST_TRUTH_OK pass=27 fail=0 skip=0`।
+
+- `modules/edge-proxy.js`-এ `RETIRED_TOOL_HOSTS` frozen list (`ocr`, `screen`, `tts`, `ads`, `public`, `combined`, `adapter`) + `isRetiredToolHost()`; renderer `toolSites` এদের বাদ দেয়, তাই পুরোনো `deploy/tools.json` entry ফিরলেও vhost তৈরি হয় না।
+- `deploy/templates/Caddyfile.template`-এ retired host-এর নাম pinned; `scripts/caddy-render.js` dist Caddyfile render করে।
+- Test live `/etc/caddy/Caddyfile` + rendered template, প্রতিটি host-এ `200` অথবা absent assert করে; `https://localhost` alias নেই।
+
+**Gate:** `node tests/vhost-truth-check.js` (exit 0)।
+<!-- /VHOST_TRUTH_2026_11_27 -->

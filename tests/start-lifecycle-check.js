@@ -151,6 +151,10 @@ function startStack(port) {
   });
   delete env.DB_BOOTSTRAP;
   delete env.ZC_SKIP_BUILD;
+  // The test shell itself may run inside a systemd unit; do not let that make
+  // start.js take the "already under systemd" branch and skip the stub.
+  delete env.INVOCATION_ID;
+  delete env.SYSTEMD_EXEC_PID;
   const child = spawn(
     process.execPath,
     [path.join(ROOT, "start.js"), "--start-all", "-s"],

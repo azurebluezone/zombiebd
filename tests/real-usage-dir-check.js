@@ -656,10 +656,15 @@ async function main() {
     session_write_race:
       "writeSessions is now synchronous + atomic; two createSession calls no longer overwrite each other",
   };
-  fs.writeFileSync(
-    path.join(evidenceDir, "phase-a-check.json"),
-    JSON.stringify(evidence, null, 2) + "\n",
-  );
+  // The dated evidence file is a historical record, not a mutable log.
+  // Only refresh it when explicitly asked, so running the gate cannot dirty
+  // the tracked docs slice.
+  if (process.env.ZC_WRITE_EVIDENCE === "1") {
+    fs.writeFileSync(
+      path.join(evidenceDir, "phase-a-check.json"),
+      JSON.stringify(evidence, null, 2) + "\n",
+    );
+  }
   console.log(
     "EVIDENCE docs/evidence/real-usage-2026-11-21/phase-a-check.json sessions=" +
       [httpSession, mcpSession].join(","),

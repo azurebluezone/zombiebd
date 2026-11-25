@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 
 VOICE = "bn-BD-NabanitaNeural"
-DEFAULT_OUT = "/home/sahon/Music/mp3/zbd/today/fday/zombiecoder-brief-bn.mp3"
+DEFAULT_OUT = os.path.expanduser("~/Music/mp3/zbd/today/fday/zombiecoder-brief-bn.mp3")
 
 # (section title, narration) — kept as data so --check can validate the whole
 # brief without synthesizing it. Facts here mirror the runbook and the live
