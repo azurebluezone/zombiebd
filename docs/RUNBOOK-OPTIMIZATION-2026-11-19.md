@@ -1054,7 +1054,7 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 
 ### 11.2 ব্যবহারকারীর ধাপে ধাপে যাত্রা (আজকের বাস্তব ফল)
 
-1. **`GET /health`** → `200`, `healthy:true`, `version:3.2.1`, `models:268`, `agents:9`। ব্যবহারকারী হিসেবে server প্রস্তুত।
+1. **`GET /health`** → `200`, `healthy:true`, `version:3.2.1`, `models:268` (2026-11-21 snapshot; হালনাগাদ §11.5), `agents:9`। ব্যবহারকারী হিসেবে server প্রস্তুত।
 2. **`GET /`** → `200`, `40780` bytes, sha `8ac355beb703…`; served bytes == `public/index.html` বাইট-বাই-বাইট। ফ্রন্টএন্ড আসল।
 3. **`POST /v1/chat/completions`** (`code-guru`, "Reply with exactly: USER_JOURNEY_OK") → `200`, উত্তর `USER_JOURNEY_OK`। সাধারণ চ্যাট কাজ করে।
 4. **`POST /mcp` initialize + `tools/list`** → `101` tool; **`tools/call system_info`** → `200`, `node v24.22.2`। ব্যবহারকারীর tool সত্যিই চলে।
@@ -1140,7 +1140,7 @@ Gate: `pass_rate ≥ 0.90`, `injection_escapes = 0`, `p95 < provider timeout`, `
 
 ### 12.5 Phase A-এর বাইরে (এই contract-এ নয়)
 
-Browser CDP screenshot, VS Code/opencode client, ৭ vhost, ৫ red suite, release gate — Phase B–E; আলাদা contract।
+Browser CDP screenshot, VS Code/opencode client, ৭ vhost, release gate — Phase B–E; আলাদা contract (৫ red suite 2026-11-25-এ শেষ, §13)।
 
 <!-- REAL_USAGE_DIR_2026_11_21 -->
 ### 12.6 Phase A — DONE (2026-11-21, `gc-mwpvfkly`)
